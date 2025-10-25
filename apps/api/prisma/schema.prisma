@@ -1,0 +1,638 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  CREATOR
+  SUBSCRIBER
+  ADMIN
+  MODERATOR
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  PENDING_VERIFICATION
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+  RESUBMIT_REQUIRED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+  PAST_DUE
+  PAUSED
+}
+
+enum TransactionType {
+  SUBSCRIPTION
+  TIP
+  PPV_UNLOCK
+  PAYOUT
+  REFUND
+  PLATFORM_FEE
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum ContentType {
+  PHOTO
+  VIDEO
+  AUDIO
+  TEXT
+  ALBUM
+}
+
+enum ContentVisibility {
+  PUBLIC
+  SUBSCRIBERS_ONLY
+  PREMIUM_SUBSCRIBERS
+  PPV
+  PRIVATE
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+  UNDER_REVIEW
+  REJECTED
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+  DELETED
+}
+
+enum NotificationType {
+  NEW_SUBSCRIBER
+  NEW_MESSAGE
+  NEW_TIP
+  NEW_COMMENT
+  SUBSCRIPTION_RENEWAL
+  PAYOUT_COMPLETED
+  CONTENT_APPROVED
+  CONTENT_REJECTED
+  SYSTEM
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// Models
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  username  String   @unique
+  password  String
+  role      UserRole @default(SUBSCRIBER)
+  status    UserStatus @default(PENDING_VERIFICATION)
+
+  // Profile
+  displayName      String?
+  bio              String?
+  avatar           String?
+  coverImage       String?
+  location         String?
+  website          String?
+
+  // Verification
+  emailVerified    Boolean @default(false)
+  emailVerifiedAt  DateTime?
+  phoneNumber      String?
+  phoneVerified    Boolean @default(false)
+  phoneVerifiedAt  DateTime?
+
+  // KYC
+  kycStatus        KycStatus @default(NOT_STARTED)
+  kycProvider      String?
+  kycProviderId    String?
+  kycSubmittedAt   DateTime?
+  kycVerifiedAt    DateTime?
+  kycRejectedAt    DateTime?
+  kycRejectionReason String?
+
+  // 2FA
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String?
+
+  // Stripe
+  stripeCustomerId String? @unique
+  stripeAccountId  String? @unique
+  stripeOnboarded  Boolean @default(false)
+
+  // Dates
+  lastLoginAt      DateTime?
+  lastActiveAt     DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deletedAt        DateTime?
+
+  // Relations
+  creatorProfile          CreatorProfile?
+  subscriberProfile       SubscriberProfile?
+
+  // As Creator
+  subscriptionTiers       SubscriptionTier[]
+  content                 Content[]
+  sentMessages            Message[] @relation("SentMessages")
+  receivedMessages        Message[] @relation("ReceivedMessages")
+  payoutsReceived         Payout[]
+
+  // As Subscriber
+  subscriptions           Subscription[]
+  transactionsFrom        Transaction[] @relation("TransactionsFrom")
+  transactionsTo          Transaction[] @relation("TransactionsTo")
+
+  // Other
+  notifications           Notification[]
+  sessions                Session[]
+  refreshTokens           RefreshToken[]
+  contentLikes            ContentLike[]
+  comments                Comment[]
+  reports                 Report[]
+
+  @@index([email])
+  @@index([username])
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CreatorProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Stats
+  totalEarnings         Decimal @default(0) @db.Decimal(12, 2)
+  totalSubscribers      Int     @default(0)
+  totalContent          Int     @default(0)
+  averageRating         Decimal @default(0) @db.Decimal(3, 2)
+
+  // Settings
+  allowMessages         Boolean @default(true)
+  allowTips             Boolean @default(true)
+  autoAcceptSubscribers Boolean @default(true)
+  welcomeMessage        String?
+
+  // Prices
+  minimumTip            Decimal @default(5) @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model SubscriberProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Stats
+  totalSpent            Decimal @default(0) @db.Decimal(12, 2)
+  totalSubscriptions    Int     @default(0)
+
+  // Settings
+  autoRenewSubscriptions Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model SubscriptionTier {
+  id          String   @id @default(uuid())
+  creatorId   String
+  creator     User     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("EUR")
+  interval    String   @default("month") // month, year
+
+  // Features
+  benefits    String[] // Liste des bénéfices
+
+  // Stripe
+  stripePriceId     String?
+  stripeProductId   String?
+
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  subscriptions Subscription[]
+
+  @@index([creatorId])
+  @@index([isActive])
+}
+
+model Subscription {
+  id                    String             @id @default(uuid())
+  subscriberId          String
+  subscriber            User               @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+  tierId                String
+  tier                  SubscriptionTier   @relation(fields: [tierId], references: [id])
+
+  status                SubscriptionStatus @default(ACTIVE)
+
+  // Stripe
+  stripeSubscriptionId  String?            @unique
+
+  // Dates
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelledAt           DateTime?
+  cancelAtPeriodEnd     Boolean            @default(false)
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@unique([subscriberId, tierId])
+  @@index([subscriberId])
+  @@index([tierId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+}
+
+model Content {
+  id          String            @id @default(uuid())
+  creatorId   String
+  creator     User              @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  type        ContentType
+  visibility  ContentVisibility @default(SUBSCRIBERS_ONLY)
+  status      ContentStatus     @default(DRAFT)
+
+  title       String?
+  description String?
+  caption     String?
+
+  // Media files
+  files       ContentFile[]
+
+  // PPV
+  isPpv       Boolean           @default(false)
+  ppvPrice    Decimal?          @db.Decimal(10, 2)
+
+  // Stats
+  viewCount   Int               @default(0)
+  likeCount   Int               @default(0)
+  commentCount Int              @default(0)
+
+  // Moderation
+  isModerated Boolean           @default(false)
+  moderatedAt DateTime?
+  moderatedBy String?
+  moderationNotes String?
+
+  // Scheduling
+  scheduledFor DateTime?
+  publishedAt  DateTime?
+
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  likes       ContentLike[]
+  comments    Comment[]
+  unlocks     ContentUnlock[]
+
+  @@index([creatorId])
+  @@index([type])
+  @@index([status])
+  @@index([visibility])
+  @@index([publishedAt])
+  @@index([createdAt])
+}
+
+model ContentFile {
+  id          String   @id @default(uuid())
+  contentId   String
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  filename    String
+  originalName String
+  mimeType    String
+  size        BigInt
+
+  // Storage
+  storagePath String
+  thumbnailPath String?
+
+  // Media metadata
+  width       Int?
+  height      Int?
+  duration    Int? // seconds for video/audio
+
+  // Security
+  isEncrypted Boolean  @default(true)
+  hasWatermark Boolean @default(false)
+
+  order       Int      @default(0)
+
+  createdAt   DateTime @default(now())
+
+  @@index([contentId])
+}
+
+model ContentUnlock {
+  id          String   @id @default(uuid())
+  contentId   String
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  userId      String
+
+  paidAmount  Decimal  @db.Decimal(10, 2)
+
+  createdAt   DateTime @default(now())
+
+  @@unique([contentId, userId])
+  @@index([userId])
+  @@index([contentId])
+}
+
+model ContentLike {
+  id          String   @id @default(uuid())
+  contentId   String
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+
+  @@unique([contentId, userId])
+  @@index([userId])
+  @@index([contentId])
+}
+
+model Comment {
+  id          String   @id @default(uuid())
+  contentId   String
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  text        String
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  @@index([contentId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model Message {
+  id          String        @id @default(uuid())
+  senderId    String
+  sender      User          @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId  String
+  receiver    User          @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  content     String
+
+  // Attachments
+  hasAttachment Boolean     @default(false)
+  attachmentUrl String?
+
+  // Status
+  status      MessageStatus @default(SENT)
+  readAt      DateTime?
+
+  // PPV
+  isPpv       Boolean       @default(false)
+  ppvPrice    Decimal?      @db.Decimal(10, 2)
+  isPurchased Boolean       @default(false)
+
+  createdAt   DateTime      @default(now())
+  deletedAt   DateTime?
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Transaction {
+  id              String            @id @default(uuid())
+
+  fromUserId      String
+  fromUser        User              @relation("TransactionsFrom", fields: [fromUserId], references: [id])
+  toUserId        String?
+  toUser          User?             @relation("TransactionsTo", fields: [toUserId], references: [id])
+
+  type            TransactionType
+  status          TransactionStatus @default(PENDING)
+
+  amount          Decimal           @db.Decimal(10, 2)
+  currency        String            @default("EUR")
+  platformFee     Decimal           @db.Decimal(10, 2)
+  netAmount       Decimal           @db.Decimal(10, 2)
+
+  // Stripe
+  stripePaymentIntentId String?     @unique
+  stripeChargeId        String?
+  stripeTransferId      String?
+
+  // References
+  subscriptionId  String?
+  contentId       String?
+
+  // Metadata
+  metadata        Json?
+
+  // Dates
+  processedAt     DateTime?
+  failedAt        DateTime?
+  failureReason   String?
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([fromUserId])
+  @@index([toUserId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Payout {
+  id              String        @id @default(uuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status          PayoutStatus  @default(PENDING)
+
+  amount          Decimal       @db.Decimal(10, 2)
+  currency        String        @default("EUR")
+
+  // Stripe
+  stripePayoutId  String?       @unique
+
+  // Bank details (encrypted)
+  destinationType String        // bank_account, debit_card, paypal
+  destination     String?       // Last 4 digits
+
+  // Dates
+  requestedAt     DateTime      @default(now())
+  processedAt     DateTime?
+  completedAt     DateTime?
+  failedAt        DateTime?
+  failureReason   String?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Notification {
+  id          String             @id @default(uuid())
+  userId      String
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type        NotificationType
+  title       String
+  message     String
+
+  // Link
+  linkUrl     String?
+
+  // Status
+  isRead      Boolean            @default(false)
+  readAt      DateTime?
+
+  // Metadata
+  metadata    Json?
+
+  createdAt   DateTime           @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+model Session {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token       String   @unique
+
+  ipAddress   String?
+  userAgent   String?
+
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token       String   @unique
+
+  isRevoked   Boolean  @default(false)
+  revokedAt   DateTime?
+
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+model Report {
+  id          String   @id @default(uuid())
+  reporterId  String
+  reporter    User     @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  // What's being reported
+  reportedType String  // user, content, message
+  reportedId   String
+
+  reason      String
+  description String?
+
+  // Status
+  status      String   @default("pending") // pending, reviewed, resolved, dismissed
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  resolution  String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([reporterId])
+  @@index([reportedType, reportedId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+
+  userId      String?
+  action      String
+  resource    String
+  resourceId  String?
+
+  // Details
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
