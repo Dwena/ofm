@@ -1,81 +1,137 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 
 @Injectable()
 export class MessagingService {
-  private readonly logger = new Logger(MessagingService.name);
-
   constructor(private prisma: PrismaService) {}
 
   async getConversations(userId: string) {
-    // Get unique conversations
-    const messages = await this.prisma.message.findMany({
+    const conversations = await this.prisma.conversation.findMany({
       where: {
-        OR: [{ senderId: userId }, { receiverId: userId }],
-        deletedAt: null,
+        OR: [{ participant1Id: userId }, { participant2Id: userId }],
       },
       include: {
-        sender: {
+        participant1: {
           select: {
             id: true,
             username: true,
-            displayName: true,
-            avatar: true,
+            creatorProfile: {
+              select: {
+                displayName: true,
+                profilePicture: true,
+              },
+            },
           },
         },
-        receiver: {
+        participant2: {
           select: {
             id: true,
             username: true,
-            displayName: true,
-            avatar: true,
+            creatorProfile: {
+              select: {
+                displayName: true,
+                profilePicture: true,
+              },
+            },
+          },
+        },
+        lastMessage: {
+          select: {
+            id: true,
+            content: true,
+            type: true,
+            createdAt: true,
+            isRead: true,
+            senderId: true,
           },
         },
       },
       orderBy: {
-        createdAt: 'desc',
+        updatedAt: 'desc',
       },
     });
 
-    // Group by conversation partner
-    const conversations = new Map();
+    // Transform to include the "other" participant
+    return conversations.map(conv => {
+      const otherParticipant =
+        conv.participant1Id === userId ? conv.participant2 : conv.participant1;
 
-    messages.forEach((message) => {
-      const partnerId = message.senderId === userId ? message.receiverId : message.senderId;
-      const partner = message.senderId === userId ? message.receiver : message.sender;
-
-      if (!conversations.has(partnerId)) {
-        conversations.set(partnerId, {
-          partner,
-          lastMessage: message,
-          unreadCount: 0,
-        });
-      }
-
-      // Count unread messages
-      if (message.receiverId === userId && message.status !== 'READ') {
-        const conv = conversations.get(partnerId);
-        conv.unreadCount++;
-      }
+      return {
+        id: conv.id,
+        participant: otherParticipant,
+        lastMessage: conv.lastMessage,
+        updatedAt: conv.updatedAt,
+        unreadCount: conv.lastMessage?.senderId !== userId && !conv.lastMessage?.isRead ? 1 : 0,
+      };
     });
-
-    return Array.from(conversations.values());
   }
 
-  async getMessages(userId: string, partnerId: string) {
-    return this.prisma.message.findMany({
+  async getMessages(userId: string, partnerId: string, page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      this.prisma.message.findMany({
+        where: {
+          OR: [
+            { senderId: userId, recipientId: partnerId },
+            { senderId: partnerId, recipientId: userId },
+          ],
+        },
+        include: {
+          sender: {
+            select: {
+              id: true,
+              username: true,
+              creatorProfile: {
+                select: {
+                  displayName: true,
+                  profilePicture: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip,
+        take: limit,
+      }),
+      this.prisma.message.count({
+        where: {
+          OR: [
+            { senderId: userId, recipientId: partnerId },
+            { senderId: partnerId, recipientId: userId },
+          ],
+        },
+      }),
+    ]);
+
+    return {
+      items: messages.reverse(), // Reverse to show oldest first
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async deleteMessage(messageId: string, userId: string) {
+    // Only allow deletion of own messages
+    const message = await this.prisma.message.findFirst({
       where: {
-        OR: [
-          { senderId: userId, receiverId: partnerId },
-          { senderId: partnerId, receiverId: userId },
-        ],
-        deletedAt: null,
-      },
-      orderBy: {
-        createdAt: 'asc',
+        id: messageId,
+        senderId: userId,
       },
     });
-  }
 
-  // TODO: Implement send message, mark as read, etc.
+    if (!message) {
+      throw new Error('Message not found or unauthorized');
+    }
+
+    await this.prisma.message.delete({
+      where: { id: messageId },
+    });
+
+    return { success: true };
+  }
 }

@@ -77,12 +77,18 @@ export const authApi = {
 
 export const usersApi = {
   getMe: () => api.get('/users/me'),
+  getProfile: () => api.get('/users/me'),
   getByUsername: (username: string) => api.get(`/users/${username}`),
   updateProfile: (data: any) => api.put('/users/profile', data),
   getStats: () => api.get('/users/stats'),
 }
 
 export const mediaApi = {
+  upload: (formData: FormData, config?: any) =>
+    api.post('/media/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      ...config,
+    }),
   uploadImage: (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -109,6 +115,7 @@ export const paymentsApi = {
   getOnboardingStatus: () => api.get('/payments/connect/status'),
   requestPayout: (amount: number) => api.post('/payments/payout/request', { amount }),
   getEarnings: () => api.get('/payments/earnings'),
+  getCreatorEarnings: () => api.get('/payments/creator/earnings'),
   getTransactions: (page: number = 1, limit: number = 20) =>
     api.get(`/payments/transactions?page=${page}&limit=${limit}`),
   getPayouts: () => api.get('/payments/payouts'),
@@ -122,10 +129,26 @@ export const subscriptionsApi = {
 }
 
 export const contentApi = {
-  getFeed: (page: number = 1, limit: number = 20) =>
-    api.get(`/content/feed?page=${page}&limit=${limit}`),
+  getFeed: (params: { page?: number; limit?: number } = {}) =>
+    api.get('/content/feed', { params }),
+  getSubscriptionsFeed: (params: { page?: number; limit?: number } = {}) =>
+    api.get('/content/feed/subscriptions', { params }),
   getCreatorContent: (creatorId: string) =>
     api.get(`/content/creator/${creatorId}`),
+  getMyContent: (params: { page?: number; limit?: number } = {}) =>
+    api.get('/content/my-content', { params }),
+  create: (data: {
+    title: string
+    description?: string
+    tier: string
+    mediaIds: string[]
+    isPPV?: boolean
+    ppvPrice?: number
+  }) => api.post('/content', data),
+  update: (id: string, data: any) => api.put(`/content/${id}`, data),
+  delete: (id: string) => api.delete(`/content/${id}`),
+  likeContent: (id: string) => api.post(`/content/${id}/like`),
+  unlockPPV: (id: string) => api.post(`/content/${id}/unlock`),
 }
 
 export const messagesApi = {
