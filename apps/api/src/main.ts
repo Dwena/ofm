@@ -3,7 +3,7 @@ import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
-import * as compression from 'compression';
+import compression from 'compression';
 import * as Sentry from '@sentry/node';
 
 import { AppModule } from './app.module';

@@ -91,21 +91,17 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       const message = await this.prisma.message.create({
         data: {
           senderId: client.userId,
-          recipientId,
+          receiverId: recipientId,
           content,
-          type: type as any,
+          status: 'SENT' as any,
         },
         include: {
           sender: {
             select: {
               id: true,
               username: true,
-              creatorProfile: {
-                select: {
-                  displayName: true,
-                  profilePicture: true,
-                },
-              },
+              displayName: true,
+              avatar: true,
             },
           },
         },
@@ -119,9 +115,8 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
         message: {
           id: message.id,
           content: message.content,
-          type: message.type,
           senderId: message.senderId,
-          recipientId: message.recipientId,
+          receiverId: message.receiverId,
           createdAt: message.createdAt,
           sender: message.sender,
         },
@@ -132,9 +127,8 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
         message: {
           id: message.id,
           content: message.content,
-          type: message.type,
           senderId: message.senderId,
-          recipientId: message.recipientId,
+          receiverId: message.receiverId,
           createdAt: message.createdAt,
         },
       });
@@ -174,10 +168,10 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       await this.prisma.message.updateMany({
         where: {
           id: { in: data.messageIds },
-          recipientId: client.userId,
+          receiverId: client.userId,
         },
         data: {
-          isRead: true,
+          status: 'READ' as any,
           readAt: new Date(),
         },
       });

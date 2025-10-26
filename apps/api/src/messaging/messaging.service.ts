@@ -15,33 +15,24 @@ export class MessagingService {
           select: {
             id: true,
             username: true,
-            creatorProfile: {
-              select: {
-                displayName: true,
-                profilePicture: true,
-              },
-            },
+            displayName: true,
+            avatar: true,
           },
         },
         participant2: {
           select: {
             id: true,
             username: true,
-            creatorProfile: {
-              select: {
-                displayName: true,
-                profilePicture: true,
-              },
-            },
+            displayName: true,
+            avatar: true,
           },
         },
         lastMessage: {
           select: {
             id: true,
             content: true,
-            type: true,
             createdAt: true,
-            isRead: true,
+            status: true,
             senderId: true,
           },
         },
@@ -52,7 +43,7 @@ export class MessagingService {
     });
 
     // Transform to include the "other" participant
-    return conversations.map(conv => {
+    return conversations.map((conv: any) => {
       const otherParticipant =
         conv.participant1Id === userId ? conv.participant2 : conv.participant1;
 
@@ -61,7 +52,7 @@ export class MessagingService {
         participant: otherParticipant,
         lastMessage: conv.lastMessage,
         updatedAt: conv.updatedAt,
-        unreadCount: conv.lastMessage?.senderId !== userId && !conv.lastMessage?.isRead ? 1 : 0,
+        unreadCount: conv.lastMessage?.senderId !== userId && conv.lastMessage?.status !== 'READ' ? 1 : 0,
       };
     });
   }
@@ -73,8 +64,8 @@ export class MessagingService {
       this.prisma.message.findMany({
         where: {
           OR: [
-            { senderId: userId, recipientId: partnerId },
-            { senderId: partnerId, recipientId: userId },
+            { senderId: userId, receiverId: partnerId },
+            { senderId: partnerId, receiverId: userId },
           ],
         },
         include: {
@@ -82,12 +73,8 @@ export class MessagingService {
             select: {
               id: true,
               username: true,
-              creatorProfile: {
-                select: {
-                  displayName: true,
-                  profilePicture: true,
-                },
-              },
+              displayName: true,
+              avatar: true,
             },
           },
         },
@@ -100,8 +87,8 @@ export class MessagingService {
       this.prisma.message.count({
         where: {
           OR: [
-            { senderId: userId, recipientId: partnerId },
-            { senderId: partnerId, recipientId: userId },
+            { senderId: userId, receiverId: partnerId },
+            { senderId: partnerId, receiverId: userId },
           ],
         },
       }),

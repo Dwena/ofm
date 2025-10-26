@@ -198,10 +198,6 @@ model CreatorProfile {
   userId    String   @unique
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Profile
-  displayName           String?
-  profilePicture        String?
-
   // Stats
   totalEarnings         Decimal @default(0) @db.Decimal(12, 2)
   totalSubscribers      Int     @default(0)
@@ -453,10 +449,8 @@ model Message {
   sender      User          @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
   receiverId  String
   receiver    User          @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
-  recipientId String?       // Alias for receiverId (compatibility)
 
   content     String
-  type        String        @default("TEXT")
 
   // Attachments
   hasAttachment Boolean     @default(false)
@@ -464,7 +458,6 @@ model Message {
 
   // Status
   status      MessageStatus @default(SENT)
-  isRead      Boolean       @default(false)
   readAt      DateTime?
 
   // PPV
