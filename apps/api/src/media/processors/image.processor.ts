@@ -2,7 +2,7 @@ import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job } from 'bull';
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import * as path from 'path';
 
 import { StorageService } from '../../storage/storage.service';

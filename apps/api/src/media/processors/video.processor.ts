@@ -2,7 +2,7 @@ import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job } from 'bull';
-import * as ffmpeg from 'fluent-ffmpeg';
+import ffmpeg from 'fluent-ffmpeg';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -200,7 +200,7 @@ export class VideoProcessor {
         .output(outputPath)
         .on('end', () => resolve())
         .on('error', reject)
-        .on('progress', (progress) => {
+        .on('progress', (progress: any) => {
           this.logger.debug(`Transcoding progress: ${progress.percent?.toFixed(2)}%`);
         })
         .run();
