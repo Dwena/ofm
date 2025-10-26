@@ -74,7 +74,10 @@ secrets/
 
 # Uploads (dev only)
 uploads/
-media/
+# User uploaded media files (not source code)
+uploads/
+storage/media/
+public/media/
 
 # Terraform
 **/.terraform/*

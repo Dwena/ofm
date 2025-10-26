@@ -16,18 +16,22 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     });
 
     // Log queries in development
+    // Note: These type assertions are needed until Prisma client is regenerated
     if (process.env.NODE_ENV === 'development') {
-      this.$on('query' as any, (e: any) => {
+      // @ts-expect-error - Prisma client needs regeneration after schema changes
+      this.$on('query', (e: any) => {
         this.logger.debug(`Query: ${e.query}`);
         this.logger.debug(`Duration: ${e.duration}ms`);
       });
     }
 
-    this.$on('error' as any, (e: any) => {
+    // @ts-expect-error - Prisma client needs regeneration after schema changes
+    this.$on('error', (e: any) => {
       this.logger.error(`Error: ${e.message}`);
     });
 
-    this.$on('warn' as any, (e: any) => {
+    // @ts-expect-error - Prisma client needs regeneration after schema changes
+    this.$on('warn', (e: any) => {
       this.logger.warn(`Warning: ${e.message}`);
     });
   }
