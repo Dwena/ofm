@@ -169,6 +169,8 @@ model User {
   content                 Content[]
   sentMessages            Message[] @relation("SentMessages")
   receivedMessages        Message[] @relation("ReceivedMessages")
+  conversationsAsParticipant1 Conversation[] @relation("ConversationParticipant1")
+  conversationsAsParticipant2 Conversation[] @relation("ConversationParticipant2")
   payoutsReceived         Payout[]
 
   // As Subscriber
@@ -195,6 +197,10 @@ model CreatorProfile {
   id        String   @id @default(uuid())
   userId    String   @unique
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Profile
+  displayName           String?
+  profilePicture        String?
 
   // Stats
   totalEarnings         Decimal @default(0) @db.Decimal(12, 2)
@@ -421,14 +427,36 @@ model Comment {
   @@index([createdAt])
 }
 
+model Conversation {
+  id             String    @id @default(uuid())
+  participant1Id String
+  participant2Id String
+  lastMessageId  String?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  participant1   User      @relation("ConversationParticipant1", fields: [participant1Id], references: [id], onDelete: Cascade)
+  participant2   User      @relation("ConversationParticipant2", fields: [participant2Id], references: [id], onDelete: Cascade)
+  lastMessage    Message?  @relation("ConversationLastMessage", fields: [lastMessageId], references: [id])
+
+  @@unique([participant1Id, participant2Id])
+  @@index([participant1Id])
+  @@index([participant2Id])
+  @@index([updatedAt])
+  @@map("conversations")
+}
+
 model Message {
   id          String        @id @default(uuid())
   senderId    String
   sender      User          @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
   receiverId  String
   receiver    User          @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+  recipientId String?       // Alias for receiverId (compatibility)
 
   content     String
+  type        String        @default("TEXT")
 
   // Attachments
   hasAttachment Boolean     @default(false)
@@ -436,6 +464,7 @@ model Message {
 
   // Status
   status      MessageStatus @default(SENT)
+  isRead      Boolean       @default(false)
   readAt      DateTime?
 
   // PPV
@@ -445,6 +474,9 @@ model Message {
 
   createdAt   DateTime      @default(now())
   deletedAt   DateTime?
+
+  // Relations
+  conversationsAsLast Conversation[] @relation("ConversationLastMessage")
 
   @@index([senderId])
   @@index([receiverId])

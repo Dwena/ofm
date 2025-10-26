@@ -14,7 +14,7 @@ export class StripeService {
     private prisma: PrismaService,
   ) {
     this.stripe = new Stripe(this.configService.get('STRIPE_SECRET_KEY')!, {
-      apiVersion: '2024-12-18.acacia',
+      apiVersion: '2023-10-16',
     });
     this.platformFeePercentage = parseFloat(
       this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
