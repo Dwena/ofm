@@ -126,6 +126,27 @@ export const subscriptionsApi = {
   getMySubscribers: () => api.get('/subscriptions/my-subscribers'),
   getCreatorTiers: (creatorId: string) =>
     api.get(`/subscriptions/creator/${creatorId}/tiers`),
+  // Tier management
+  getMyTiers: () => api.get('/subscriptions/my-tiers'),
+  createTier: (data: {
+    name: string
+    description?: string
+    price: number
+    currency?: string
+    interval?: string
+    benefits?: string[]
+    isActive?: boolean
+  }) => api.post('/subscriptions/tiers', data),
+  updateTier: (tierId: string, data: {
+    name?: string
+    description?: string
+    price?: number
+    currency?: string
+    interval?: string
+    benefits?: string[]
+    isActive?: boolean
+  }) => api.put(`/subscriptions/tiers/${tierId}`, data),
+  deleteTier: (tierId: string) => api.delete(`/subscriptions/tiers/${tierId}`),
 }
 
 export const contentApi = {
