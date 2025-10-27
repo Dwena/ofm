@@ -122,9 +122,9 @@ export default function FeedPage() {
         </TabsList>
 
         <TabsContent value={selectedTab} className="space-y-6 mt-6">
-          {feedData && feedData.items.length > 0 ? (
+          {feedData && Array.isArray(feedData) && feedData.length > 0 ? (
             <>
-              {feedData.items.map((content: ContentItem) => (
+              {feedData.map((content: ContentItem) => (
                 <ContentCard
                   key={content.id}
                   content={content}
@@ -134,7 +134,7 @@ export default function FeedPage() {
               ))}
 
               {/* Pagination */}
-              {feedData.totalPages > 1 && (
+              {false && (
                 <div className="flex justify-center items-center space-x-4">
                   <Button
                     variant="outline"
