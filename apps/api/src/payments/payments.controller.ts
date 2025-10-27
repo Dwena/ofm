@@ -8,6 +8,7 @@ import {
   RawBodyRequest,
   Req,
   UseGuards,
+  Param,
 } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,6 +16,12 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
+import {
+  RequestPayoutDto,
+  CreateRefundDto,
+  FilterTransactionsDto,
+  GetStatsDto,
+} from './dto/payments.dto';
 
 @Controller('payments')
 export class PaymentsController {
@@ -124,6 +131,66 @@ export class PaymentsController {
       body.amount,
       body.currency,
     );
+  }
+
+  /**
+   * Get filtered transactions
+   */
+  @Get('transactions/filter')
+  @UseGuards(JwtAuthGuard)
+  async getFilteredTransactions(
+    @CurrentUser('id') userId: string,
+    @Query() filters: FilterTransactionsDto,
+  ) {
+    return this.paymentsService.getFilteredTransactions(userId, filters);
+  }
+
+  /**
+   * Create refund for a transaction
+   */
+  @Post('refund')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CREATOR')
+  async createRefund(
+    @CurrentUser('id') userId: string,
+    @Body() dto: CreateRefundDto,
+  ) {
+    return this.paymentsService.createRefund(
+      userId,
+      dto.transactionId,
+      dto.amount,
+      dto.reason,
+    );
+  }
+
+  /**
+   * Get refund history
+   */
+  @Get('refunds')
+  @UseGuards(JwtAuthGuard)
+  async getRefunds(
+    @CurrentUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.paymentsService.getRefunds(
+      userId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 20,
+    );
+  }
+
+  /**
+   * Get revenue statistics by period
+   */
+  @Get('stats/revenue')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CREATOR')
+  async getRevenueStats(
+    @CurrentUser('id') userId: string,
+    @Query() filters: GetStatsDto,
+  ) {
+    return this.paymentsService.getRevenueStats(userId, filters);
   }
 
   /**

@@ -240,6 +240,28 @@ export class StripeService {
   }
 
   /**
+   * Create refund for a payment intent
+   */
+  async createRefund(paymentIntentId: string, amount?: number, reason?: string) {
+    const refundData: Stripe.RefundCreateParams = {
+      payment_intent: paymentIntentId,
+    };
+
+    if (amount) {
+      refundData.amount = amount; // Already in cents
+    }
+
+    if (reason) {
+      refundData.metadata = {
+        reason,
+        platform: 'ofm',
+      };
+    }
+
+    return this.stripe.refunds.create(refundData);
+  }
+
+  /**
    * Handle Stripe webhooks
    */
   async handleWebhook(signature: string, payload: Buffer) {

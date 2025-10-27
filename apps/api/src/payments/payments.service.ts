@@ -1,9 +1,10 @@
-import { Injectable, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
+import { FilterTransactionsDto, GetStatsDto, StatsInterval } from './dto/payments.dto';
 
 @Injectable()
 export class PaymentsService {
@@ -425,5 +426,388 @@ export class PaymentsService {
    */
   async handleWebhook(signature: string, payload: Buffer) {
     return this.stripeService.handleWebhook(signature, payload);
+  }
+
+  /**
+   * Get filtered transaction history
+   */
+  async getFilteredTransactions(userId: string, filters: FilterTransactionsDto) {
+    const { type, status, startDate, endDate, page = 1, limit = 20 } = filters;
+    const skip = (page - 1) * limit;
+
+    const where: any = {
+      OR: [
+        { fromUserId: userId },
+        { toUserId: userId },
+      ],
+    };
+
+    if (type) {
+      where.type = type;
+    }
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) {
+        where.createdAt.gte = new Date(startDate);
+      }
+      if (endDate) {
+        where.createdAt.lte = new Date(endDate);
+      }
+    }
+
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip,
+        take: limit,
+        include: {
+          fromUser: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatar: true,
+            },
+          },
+          toUser: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatar: true,
+            },
+          },
+        },
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      items: transactions,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Create refund for a transaction
+   */
+  async createRefund(userId: string, transactionId: string, amount?: number, reason?: string) {
+    // Get the transaction
+    const transaction = await this.prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: {
+        toUser: true,
+      },
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    // Check if user is the creator who received the payment
+    if (transaction.toUserId !== userId) {
+      throw new ForbiddenException('You can only refund transactions where you are the recipient');
+    }
+
+    if (transaction.status === 'REFUNDED') {
+      throw new BadRequestException('Transaction already refunded');
+    }
+
+    if (transaction.status !== 'COMPLETED') {
+      throw new BadRequestException('Can only refund completed transactions');
+    }
+
+    // Calculate refund amount
+    const refundAmount = amount || Number(transaction.amount);
+
+    if (refundAmount > Number(transaction.amount)) {
+      throw new BadRequestException('Refund amount cannot exceed transaction amount');
+    }
+
+    // Create refund via Stripe
+    let stripeRefund;
+    if (transaction.stripePaymentIntentId) {
+      try {
+        stripeRefund = await this.stripeService.createRefund(
+          transaction.stripePaymentIntentId,
+          Math.round(refundAmount * 100),
+          reason,
+        );
+      } catch (error) {
+        this.logger.error(`Stripe refund failed: ${error.message}`);
+        throw new BadRequestException(`Failed to process refund: ${error.message}`);
+      }
+    }
+
+    // Update transaction status
+    await this.prisma.transaction.update({
+      where: { id: transactionId },
+      data: {
+        status: 'REFUNDED',
+        metadata: {
+          ...(transaction.metadata as any),
+          refundedAt: new Date().toISOString(),
+          refundAmount,
+          refundReason: reason,
+          stripeRefundId: stripeRefund?.id,
+        },
+      },
+    });
+
+    // Create a reverse transaction for the refund
+    await this.prisma.transaction.create({
+      data: {
+        fromUserId: transaction.toUserId,
+        toUserId: transaction.fromUserId,
+        type: 'REFUND',
+        amount: refundAmount,
+        currency: transaction.currency,
+        status: 'COMPLETED',
+        platformFee: 0,
+        netAmount: refundAmount,
+        description: `Refund for transaction ${transactionId}`,
+        metadata: {
+          originalTransactionId: transactionId,
+          reason,
+        },
+      },
+    });
+
+    this.logger.log(`Refund processed: ${transactionId}, amount: ${refundAmount}`);
+
+    return {
+      message: 'Refund processed successfully',
+      refundAmount,
+      originalTransactionId: transactionId,
+    };
+  }
+
+  /**
+   * Get detailed revenue statistics by period
+   */
+  async getRevenueStats(userId: string, filters: GetStatsDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user || user.role !== 'CREATOR') {
+      throw new ForbiddenException('Only creators can view revenue statistics');
+    }
+
+    const { interval = StatsInterval.MONTH, periods = 12, startDate, endDate } = filters;
+
+    // Calculate date range
+    const end = endDate ? new Date(endDate) : new Date();
+    let start: Date;
+
+    if (startDate) {
+      start = new Date(startDate);
+    } else {
+      start = new Date(end);
+      switch (interval) {
+        case StatsInterval.DAY:
+          start.setDate(start.getDate() - periods);
+          break;
+        case StatsInterval.WEEK:
+          start.setDate(start.getDate() - (periods * 7));
+          break;
+        case StatsInterval.MONTH:
+          start.setMonth(start.getMonth() - periods);
+          break;
+        case StatsInterval.YEAR:
+          start.setFullYear(start.getFullYear() - periods);
+          break;
+      }
+    }
+
+    // Get all transactions in date range
+    const transactions = await this.prisma.transaction.findMany({
+      where: {
+        toUserId: userId,
+        status: 'COMPLETED',
+        createdAt: {
+          gte: start,
+          lte: end,
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+
+    // Group transactions by period
+    const stats: any[] = [];
+    const periodMap = new Map<string, any>();
+
+    transactions.forEach((tx) => {
+      const periodKey = this.getPeriodKey(tx.createdAt, interval);
+
+      if (!periodMap.has(periodKey)) {
+        periodMap.set(periodKey, {
+          period: periodKey,
+          totalRevenue: 0,
+          subscriptionRevenue: 0,
+          ppvRevenue: 0,
+          tipRevenue: 0,
+          transactionCount: 0,
+          refundAmount: 0,
+          netRevenue: 0,
+        });
+      }
+
+      const periodData = periodMap.get(periodKey);
+      const amount = Number(tx.netAmount);
+
+      periodData.totalRevenue += amount;
+      periodData.transactionCount++;
+
+      switch (tx.type) {
+        case 'SUBSCRIPTION':
+          periodData.subscriptionRevenue += amount;
+          break;
+        case 'PPV':
+          periodData.ppvRevenue += amount;
+          break;
+        case 'TIP':
+          periodData.tipRevenue += amount;
+          break;
+        case 'REFUND':
+          periodData.refundAmount += amount;
+          break;
+      }
+    });
+
+    // Convert map to array and calculate net revenue
+    periodMap.forEach((data) => {
+      data.netRevenue = data.totalRevenue - data.refundAmount;
+      stats.push(data);
+    });
+
+    // Sort by period
+    stats.sort((a, b) => a.period.localeCompare(b.period));
+
+    // Calculate totals
+    const totals = {
+      totalRevenue: stats.reduce((sum, s) => sum + s.totalRevenue, 0),
+      subscriptionRevenue: stats.reduce((sum, s) => sum + s.subscriptionRevenue, 0),
+      ppvRevenue: stats.reduce((sum, s) => sum + s.ppvRevenue, 0),
+      tipRevenue: stats.reduce((sum, s) => sum + s.tipRevenue, 0),
+      refundAmount: stats.reduce((sum, s) => sum + s.refundAmount, 0),
+      netRevenue: stats.reduce((sum, s) => sum + s.netRevenue, 0),
+      transactionCount: stats.reduce((sum, s) => sum + s.transactionCount, 0),
+    };
+
+    // Calculate average per period
+    const averages = {
+      avgRevenuePerPeriod: stats.length > 0 ? totals.totalRevenue / stats.length : 0,
+      avgTransactionsPerPeriod: stats.length > 0 ? totals.transactionCount / stats.length : 0,
+    };
+
+    return {
+      interval,
+      dateRange: {
+        start: start.toISOString(),
+        end: end.toISOString(),
+      },
+      periods: stats,
+      totals,
+      averages,
+    };
+  }
+
+  /**
+   * Get period key for grouping
+   */
+  private getPeriodKey(date: Date, interval: StatsInterval): string {
+    const d = new Date(date);
+
+    switch (interval) {
+      case StatsInterval.DAY:
+        return d.toISOString().split('T')[0]; // YYYY-MM-DD
+
+      case StatsInterval.WEEK:
+        const weekStart = new Date(d);
+        weekStart.setDate(d.getDate() - d.getDay()); // Start of week (Sunday)
+        return weekStart.toISOString().split('T')[0];
+
+      case StatsInterval.MONTH:
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; // YYYY-MM
+
+      case StatsInterval.YEAR:
+        return String(d.getFullYear()); // YYYY
+
+      default:
+        return d.toISOString().split('T')[0];
+    }
+  }
+
+  /**
+   * Get refund history
+   */
+  async getRefunds(userId: string, page: number = 1, limit: number = 20) {
+    const skip = (page - 1) * limit;
+
+    const [refunds, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: {
+          OR: [
+            { fromUserId: userId, type: 'REFUND' },
+            { toUserId: userId, status: 'REFUNDED' },
+          ],
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip,
+        take: limit,
+        include: {
+          fromUser: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+            },
+          },
+          toUser: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.transaction.count({
+        where: {
+          OR: [
+            { fromUserId: userId, type: 'REFUND' },
+            { toUserId: userId, status: 'REFUNDED' },
+          ],
+        },
+      }),
+    ]);
+
+    return {
+      items: refunds,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 }
