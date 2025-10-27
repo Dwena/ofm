@@ -22,6 +22,7 @@ import { MessagingModule } from './messaging/messaging.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { StorageModule } from './storage/storage.module';
 import { MediaModule } from './media/media.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { MediaModule } from './media/media.module';
     NotificationsModule,
     StorageModule,
     MediaModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
