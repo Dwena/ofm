@@ -24,6 +24,7 @@ import { StorageModule } from './storage/storage.module';
 import { MediaModule } from './media/media.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { SocialModule } from './social/social.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -83,6 +84,7 @@ import { SocialModule } from './social/social.module';
     MediaModule,
     AnalyticsModule,
     SocialModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
