@@ -74,6 +74,16 @@ export class PaymentsController {
   }
 
   /**
+   * Get earnings summary (creator alias)
+   */
+  @Get('creator/earnings')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CREATOR')
+  async getCreatorEarnings(@CurrentUser('id') userId: string) {
+    return this.paymentsService.getEarnings(userId);
+  }
+
+  /**
    * Get transaction history
    */
   @Get('transactions')
