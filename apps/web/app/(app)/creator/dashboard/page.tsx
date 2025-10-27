@@ -125,9 +125,9 @@ export default function CreatorDashboard() {
           <CardTitle>Contenus Récents</CardTitle>
         </CardHeader>
         <CardContent>
-          {content && content.items.length > 0 ? (
+          {content && Array.isArray(content) && content.length > 0 ? (
             <div className="space-y-4">
-              {content.items.map((item: any) => (
+              {content.map((item: any) => (
                 <div
                   key={item.id}
                   className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent transition-colors"
