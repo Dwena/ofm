@@ -19,6 +19,25 @@ import { MediaService } from './media.service';
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
+  @Post('upload')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: {
+        fileSize: 500 * 1024 * 1024, // 500MB max
+      },
+    }),
+  )
+  async upload(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser('id') userId: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+
+    return this.mediaService.upload(file, userId);
+  }
+
   @Post('upload/image')
   @UseInterceptors(
     FileInterceptor('file', {

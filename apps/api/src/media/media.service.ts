@@ -21,6 +21,87 @@ export class MediaService {
   ) {}
 
   /**
+   * General file upload - Auto-detects type and creates ContentFile record
+   */
+  async upload(file: Express.Multer.File, userId: string) {
+    // Determine file type
+    const isImage = file.mimetype.startsWith('image/');
+    const isVideo = file.mimetype.startsWith('video/');
+    const isPdf = file.mimetype === 'application/pdf';
+
+    let type: 'IMAGE' | 'VIDEO' | 'FILE';
+    let folder: string;
+    let queue: Queue | null = null;
+
+    if (isImage) {
+      this.mediaValidator.validateImage(file);
+      type = 'IMAGE';
+      folder = this.storageService.generateUserPath(userId, 'images');
+      queue = this.imageQueue;
+    } else if (isVideo) {
+      this.mediaValidator.validateVideo(file);
+      type = 'VIDEO';
+      folder = this.storageService.generateUserPath(userId, 'videos');
+      queue = this.videoQueue;
+    } else if (isPdf) {
+      type = 'FILE';
+      folder = this.storageService.generateUserPath(userId, 'files');
+    } else {
+      throw new BadRequestException('Unsupported file type');
+    }
+
+    // Upload to storage
+    const { key, url } = await this.storageService.uploadFile(
+      file.buffer,
+      file.originalname,
+      file.mimetype,
+      folder,
+    );
+
+    // Create ContentFile record
+    const contentFile = await this.prisma.contentFile.create({
+      data: {
+        type,
+        storagePath: key,
+        url,
+        filename: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        status: queue ? 'PROCESSING' : 'READY',
+        metadata: {
+          uploadedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    // Queue for processing if needed
+    if (queue) {
+      await queue.add(`process-${type.toLowerCase()}`, {
+        contentFileId: contentFile.id,
+        key,
+        userId,
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+      });
+
+      this.logger.log(`${type} queued for processing: ${key}`);
+    }
+
+    return {
+      id: contentFile.id,
+      type: contentFile.type,
+      filename: contentFile.filename,
+      url: contentFile.url,
+      size: contentFile.size,
+      status: contentFile.status,
+      message: queue
+        ? `${type} uploaded and queued for processing`
+        : 'File uploaded successfully',
+    };
+  }
+
+  /**
    * Upload an image
    */
   async uploadImage(

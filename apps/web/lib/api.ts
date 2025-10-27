@@ -141,7 +141,9 @@ export const contentApi = {
     title: string
     description?: string
     tier: string
-    mediaIds: string[]
+    type: string
+    mediaIds?: string[]
+    fileIds?: string[]
     isPPV?: boolean
     ppvPrice?: number
   }) => api.post('/content', data),
