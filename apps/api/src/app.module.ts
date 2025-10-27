@@ -21,8 +21,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { StorageModule } from './storage/storage.module';
-// MediaModule temporarily disabled due to Sharp Windows compatibility issues
-// import { MediaModule } from './media/media.module';
+import { MediaModule } from './media/media.module';
 
 @Module({
   imports: [
@@ -79,7 +78,7 @@ import { StorageModule } from './storage/storage.module';
     MessagingModule,
     NotificationsModule,
     StorageModule,
-    // MediaModule, // Temporarily disabled - re-enable after fixing Sharp on Windows
+    MediaModule,
   ],
   controllers: [AppController],
   providers: [AppService],
