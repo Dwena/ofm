@@ -37,11 +37,15 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1">
-          <CardTitle className="text-3xl font-bold text-center">OFM</CardTitle>
-          <CardDescription className="text-center">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800 p-4">
+      <Card className="w-full max-w-md shadow-2xl border-2">
+        <CardHeader className="space-y-1 pb-6">
+          <div className="flex items-center justify-center mb-2">
+            <CardTitle className="text-4xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+              OFM
+            </CardTitle>
+          </div>
+          <CardDescription className="text-center text-base">
             Connectez-vous à votre compte
           </CardDescription>
         </CardHeader>
@@ -90,7 +94,11 @@ export default function LoginPage() {
             )}
           </CardContent>
           <CardFooter className="flex flex-col space-y-4">
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button
+              type="submit"
+              className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg py-6"
+              disabled={loading}
+            >
               {loading ? 'Connexion...' : 'Se connecter'}
             </Button>
             <p className="text-sm text-center text-muted-foreground">
