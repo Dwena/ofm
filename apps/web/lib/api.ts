@@ -119,6 +119,16 @@ export const paymentsApi = {
   getTransactions: (page: number = 1, limit: number = 20) =>
     api.get(`/payments/transactions?page=${page}&limit=${limit}`),
   getPayouts: () => api.get('/payments/payouts'),
+  createPaymentIntent: (data: { amount: number; currency?: string }) =>
+    api.post('/payments/create-intent', data),
+  getFilteredTransactions: (filters: any) =>
+    api.get('/payments/transactions/filter', { params: filters }),
+  createRefund: (data: { transactionId: string; amount?: number; reason?: string }) =>
+    api.post('/payments/refund', data),
+  getRefunds: (page: number = 1, limit: number = 20) =>
+    api.get(`/payments/refunds?page=${page}&limit=${limit}`),
+  getRevenueStats: (filters: any) =>
+    api.get('/payments/stats/revenue', { params: filters }),
 }
 
 export const subscriptionsApi = {
