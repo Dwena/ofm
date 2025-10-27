@@ -24,15 +24,8 @@ export class ContentController {
   @Get('my-content')
   async getMyContent(
     @CurrentUser('id') userId: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
   ) {
-    return this.contentService.getCreatorContent(
-      userId,
-      userId,
-      page ? parseInt(page) : 1,
-      limit ? parseInt(limit) : 20,
-    );
+    return this.contentService.getCreatorContent(userId, userId);
   }
 
   @Get('creator/:creatorId')
