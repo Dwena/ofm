@@ -1,5 +1,6 @@
 import { Injectable, Logger, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
+import { RedisService } from '../common/redis/redis.service';
 import {
   GetAnalyticsDto,
   TrackViewDto,
@@ -12,7 +13,10 @@ import {
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
 
   /**
    * Track content view
@@ -52,133 +56,147 @@ export class AnalyticsService {
   }
 
   /**
-   * Get overview analytics for creator
+   * Get overview analytics for creator (with caching)
    */
   async getOverview(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        creatorProfile: true,
-      },
-    });
+    // Cache for 5 minutes
+    return this.redis.memoize(
+      `analytics:overview:${userId}`,
+      async () => {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          include: {
+            creatorProfile: true,
+          },
+        });
 
-    if (!user || user.role !== 'CREATOR') {
-      throw new ForbiddenException('Only creators can view analytics');
-    }
+        if (!user || user.role !== 'CREATOR') {
+          throw new ForbiddenException('Only creators can view analytics');
+        }
 
-    // Total views
-    const totalViews = await this.prisma.content.aggregate({
-      where: {
-        creatorId: userId,
-        deletedAt: null,
-      },
-      _sum: {
-        viewCount: true,
-      },
-    });
+        // Run aggregations in parallel
+        const [
+          totalViews,
+          totalLikes,
+          totalComments,
+          activeSubscriptions,
+          totalSubscribers,
+          totalContent,
+          monthlyRevenue,
+          topContent,
+        ] = await Promise.all([
+          // Total views
+          this.prisma.content.aggregate({
+            where: {
+              creatorId: userId,
+              deletedAt: null,
+            },
+            _sum: {
+              viewCount: true,
+            },
+          }),
+          // Total likes
+          this.prisma.content.aggregate({
+            where: {
+              creatorId: userId,
+              deletedAt: null,
+            },
+            _sum: {
+              likeCount: true,
+            },
+          }),
+          // Total comments
+          this.prisma.content.aggregate({
+            where: {
+              creatorId: userId,
+              deletedAt: null,
+            },
+            _sum: {
+              commentCount: true,
+            },
+          }),
+          // Active subscriptions
+          this.prisma.subscription.count({
+            where: {
+              tier: {
+                creatorId: userId,
+              },
+              status: 'ACTIVE',
+            },
+          }),
+          // Total subscribers (all time)
+          this.prisma.subscription.count({
+            where: {
+              tier: {
+                creatorId: userId,
+              },
+            },
+          }),
+          // Total content
+          this.prisma.content.count({
+            where: {
+              creatorId: userId,
+              status: 'PUBLISHED',
+              deletedAt: null,
+            },
+          }),
+          // This month's revenue
+          (async () => {
+            const startOfMonth = new Date();
+            startOfMonth.setDate(1);
+            startOfMonth.setHours(0, 0, 0, 0);
 
-    // Total likes
-    const totalLikes = await this.prisma.content.aggregate({
-      where: {
-        creatorId: userId,
-        deletedAt: null,
-      },
-      _sum: {
-        likeCount: true,
-      },
-    });
+            return this.prisma.transaction.aggregate({
+              where: {
+                toUserId: userId,
+                status: 'COMPLETED',
+                createdAt: {
+                  gte: startOfMonth,
+                },
+              },
+              _sum: {
+                netAmount: true,
+              },
+            });
+          })(),
+          // Top performing content
+          this.prisma.content.findMany({
+            where: {
+              creatorId: userId,
+              status: 'PUBLISHED',
+              deletedAt: null,
+            },
+            orderBy: {
+              viewCount: 'desc',
+            },
+            take: 5,
+            select: {
+              id: true,
+              title: true,
+              type: true,
+              viewCount: true,
+              likeCount: true,
+              commentCount: true,
+              publishedAt: true,
+            },
+          }),
+        ]);
 
-    // Total comments
-    const totalComments = await this.prisma.content.aggregate({
-      where: {
-        creatorId: userId,
-        deletedAt: null,
+        return {
+          summary: {
+            totalViews: totalViews._sum.viewCount || 0,
+            totalLikes: totalLikes._sum.likeCount || 0,
+            totalComments: totalComments._sum.commentCount || 0,
+            activeSubscriptions,
+            totalSubscribers,
+            totalContent,
+            monthlyRevenue: Number(monthlyRevenue._sum.netAmount || 0),
+          },
+          topContent,
+        };
       },
-      _sum: {
-        commentCount: true,
-      },
-    });
-
-    // Active subscriptions
-    const activeSubscriptions = await this.prisma.subscription.count({
-      where: {
-        tier: {
-          creatorId: userId,
-        },
-        status: 'ACTIVE',
-      },
-    });
-
-    // Total subscribers (all time)
-    const totalSubscribers = await this.prisma.subscription.count({
-      where: {
-        tier: {
-          creatorId: userId,
-        },
-      },
-    });
-
-    // Total content
-    const totalContent = await this.prisma.content.count({
-      where: {
-        creatorId: userId,
-        status: 'PUBLISHED',
-        deletedAt: null,
-      },
-    });
-
-    // This month's revenue
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
-
-    const monthlyRevenue = await this.prisma.transaction.aggregate({
-      where: {
-        toUserId: userId,
-        status: 'COMPLETED',
-        createdAt: {
-          gte: startOfMonth,
-        },
-      },
-      _sum: {
-        netAmount: true,
-      },
-    });
-
-    // Top performing content
-    const topContent = await this.prisma.content.findMany({
-      where: {
-        creatorId: userId,
-        status: 'PUBLISHED',
-        deletedAt: null,
-      },
-      orderBy: {
-        viewCount: 'desc',
-      },
-      take: 5,
-      select: {
-        id: true,
-        title: true,
-        type: true,
-        viewCount: true,
-        likeCount: true,
-        commentCount: true,
-        publishedAt: true,
-      },
-    });
-
-    return {
-      summary: {
-        totalViews: totalViews._sum.viewCount || 0,
-        totalLikes: totalLikes._sum.likeCount || 0,
-        totalComments: totalComments._sum.commentCount || 0,
-        activeSubscriptions,
-        totalSubscribers,
-        totalContent,
-        monthlyRevenue: Number(monthlyRevenue._sum.netAmount || 0),
-      },
-      topContent,
-    };
+      300, // 5 minutes
+    );
   }
 
   /**

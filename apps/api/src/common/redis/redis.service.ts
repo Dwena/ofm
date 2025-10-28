@@ -167,4 +167,43 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Cannot flush database in production!');
     }
   }
+
+  // JSON methods for caching objects
+  async setJSON(key: string, value: any, ttl?: number): Promise<void> {
+    const serialized = JSON.stringify(value);
+    await this.set(key, serialized, ttl);
+  }
+
+  async getJSON<T>(key: string): Promise<T | null> {
+    const data = await this.get(key);
+    if (!data) return null;
+    try {
+      return JSON.parse(data) as T;
+    } catch (error) {
+      this.logger.error(`Failed to parse JSON for key ${key}:`, error);
+      return null;
+    }
+  }
+
+  // Cache invalidation helpers
+  async invalidateCache(pattern: string): Promise<void> {
+    await this.deletePattern(pattern);
+    this.logger.log(`Invalidated cache pattern: ${pattern}`);
+  }
+
+  // Memoization wrapper
+  async memoize<T>(
+    key: string,
+    fn: () => Promise<T>,
+    ttl: number = 300,
+  ): Promise<T> {
+    const cached = await this.getJSON<T>(key);
+    if (cached !== null) {
+      return cached;
+    }
+
+    const result = await fn();
+    await this.setJSON(key, result, ttl);
+    return result;
+  }
 }

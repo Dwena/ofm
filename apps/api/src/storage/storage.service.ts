@@ -53,8 +53,12 @@ export class StorageService {
           ContentType: mimeType,
           // Server-side encryption
           ServerSideEncryption: 'AES256',
-          // Cache control
-          CacheControl: 'max-age=31536000', // 1 year
+          // Optimized cache control for CDN
+          CacheControl: 'public, max-age=31536000, immutable', // 1 year, immutable for better CDN caching
+          // Additional CDN-friendly headers
+          Metadata: {
+            'uploaded-at': new Date().toISOString(),
+          },
         }),
       );
 
