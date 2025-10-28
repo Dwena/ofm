@@ -194,4 +194,37 @@ export const notificationsApi = {
     api.get(`/notifications?unreadOnly=${unreadOnly}`),
   markAsRead: (id: string) => api.put(`/notifications/${id}/read`),
   markAllAsRead: () => api.put('/notifications/read-all'),
+  deleteNotification: (id: string) => api.delete(`/notifications/${id}`),
+}
+
+export const socialApi = {
+  // Comments
+  getComments: (contentId: string, page: number = 1, limit: number = 20) =>
+    api.get(`/social/comments/${contentId}?page=${page}&limit=${limit}`),
+  createComment: (contentId: string, text: string) =>
+    api.post('/social/comments', { contentId, text }),
+  updateComment: (commentId: string, text: string) =>
+    api.put(`/social/comments/${commentId}`, { text }),
+  deleteComment: (commentId: string) =>
+    api.delete(`/social/comments/${commentId}`),
+
+  // Follow/Unfollow
+  followCreator: (creatorId: string) =>
+    api.post(`/social/follow/${creatorId}`),
+  unfollowCreator: (creatorId: string) =>
+    api.delete(`/social/follow/${creatorId}`),
+  getFollowing: () =>
+    api.get('/social/following'),
+
+  // Discover
+  discoverCreators: (params?: {
+    search?: string
+    page?: number
+    limit?: number
+    sort?: string
+  }) => api.get('/social/discover', { params }),
+
+  // Search
+  searchCreators: (query: string) =>
+    api.get(`/social/search?q=${encodeURIComponent(query)}`),
 }
