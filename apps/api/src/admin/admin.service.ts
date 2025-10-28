@@ -252,7 +252,7 @@ export class AdminService {
     const report = await this.prisma.report.create({
       data: {
         reporterId,
-        reportedId,
+        reportedId: reportedId || '',
         reportedType: type,
         reason,
         description,

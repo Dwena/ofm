@@ -11,7 +11,9 @@ export type NotificationType =
   | 'PAYOUT_COMPLETED'
   | 'CONTENT_APPROVED'
   | 'CONTENT_REJECTED'
-  | 'SYSTEM';
+  | 'SYSTEM'
+  | 'COMMENT'
+  | 'SUBSCRIPTION';
 import {
   CreateCommentDto,
   UpdateCommentDto,
@@ -77,7 +79,7 @@ export class SocialService {
         type: 'COMMENT',
         title: 'Nouveau commentaire',
         message: `${comment.user.displayName || comment.user.username} a commenté votre contenu`,
-        relatedId: contentId,
+        linkUrl: `/content/${contentId}`,
       });
     }
 
@@ -252,7 +254,7 @@ export class SocialService {
       type: 'SUBSCRIPTION',
       title: 'Nouveau follower',
       message: `Quelqu'un vous suit maintenant`,
-      relatedId: userId,
+      linkUrl: `/profile/${userId}`,
     });
 
     this.logger.log(`User ${userId} followed creator ${creatorId}`);
@@ -400,7 +402,6 @@ export class SocialService {
             select: {
               totalSubscribers: true,
               totalContent: true,
-              activeSubscriptionsCount: true,
             },
           },
         },
@@ -554,7 +555,7 @@ export class SocialService {
     type: NotificationType;
     title: string;
     message: string;
-    relatedId?: string;
+    linkUrl?: string;
   }) {
     try {
       await this.prisma.notification.create({
@@ -563,7 +564,7 @@ export class SocialService {
           type: data.type,
           title: data.title,
           message: data.message,
-          relatedId: data.relatedId,
+          linkUrl: data.linkUrl,
         },
       });
     } catch (error) {

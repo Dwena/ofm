@@ -7,7 +7,11 @@ export class ThrottlerGuard extends NestThrottlerGuard {
   constructor(
     private redis: RedisService,
   ) {
-    super();
+    super(
+      { ttl: 60, limit: 10 },
+      {} as any,
+      {} as any,
+    );
   }
 
   async handleRequest(
