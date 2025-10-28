@@ -1,16 +1,19 @@
 import { IsString, IsEnum, IsOptional, IsBoolean, IsDecimal, IsArray, IsUUID } from 'class-validator';
 
 export enum ContentType {
-  POST = 'POST',
-  IMAGE = 'IMAGE',
+  PHOTO = 'PHOTO',
   VIDEO = 'VIDEO',
   AUDIO = 'AUDIO',
+  TEXT = 'TEXT',
+  ALBUM = 'ALBUM',
 }
 
 export enum ContentVisibility {
   PUBLIC = 'PUBLIC',
   SUBSCRIBERS_ONLY = 'SUBSCRIBERS_ONLY',
-  TIER_SPECIFIC = 'TIER_SPECIFIC',
+  PREMIUM_SUBSCRIBERS = 'PREMIUM_SUBSCRIBERS',
+  PPV = 'PPV',
+  PRIVATE = 'PRIVATE',
 }
 
 export class CreateContentDto {

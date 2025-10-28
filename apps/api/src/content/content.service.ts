@@ -50,7 +50,7 @@ export class ContentService {
       },
     });
 
-    const creatorIds = subscriptions.map((sub) => sub.tier.creatorId);
+    const creatorIds = subscriptions.map((sub: any) => sub.tier.creatorId);
 
     // Get content from subscribed creators
     return this.prisma.content.findMany({
@@ -112,7 +112,7 @@ export class ContentService {
         creatorId: userId,
         type: dto.type,
         visibility: dto.visibility || 'SUBSCRIBERS_ONLY',
-        status: dto.scheduledFor ? 'SCHEDULED' : 'DRAFT',
+        status: dto.scheduledFor ? 'DRAFT' : 'DRAFT',
         title: dto.title,
         description: dto.description,
         caption: dto.caption,
@@ -382,7 +382,7 @@ export class ContentService {
       this.prisma.content.findMany({
         where: {
           isModerated: false,
-          status: 'PENDING_REVIEW',
+          status: 'UNDER_REVIEW',
           deletedAt: null,
         },
         include: {
@@ -404,7 +404,7 @@ export class ContentService {
       this.prisma.content.count({
         where: {
           isModerated: false,
-          status: 'PENDING_REVIEW',
+          status: 'UNDER_REVIEW',
           deletedAt: null,
         },
       }),

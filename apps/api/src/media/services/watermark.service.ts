@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as sharp from 'sharp';
-import * as ffmpeg from 'fluent-ffmpeg';
+import ffmpeg from 'fluent-ffmpeg';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 
@@ -215,7 +215,7 @@ export class WatermarkService {
           this.logger.log('Video watermarked successfully');
           resolve(outputPath);
         })
-        .on('error', (err) => {
+        .on('error', (err: any) => {
           this.logger.error('Failed to watermark video:', err);
           reject(err);
         })
@@ -261,7 +261,7 @@ export class WatermarkService {
           this.logger.log('Video watermarked with logo successfully');
           resolve(outputPath);
         })
-        .on('error', (err) => {
+        .on('error', (err: any) => {
           this.logger.error('Failed to watermark video with logo:', err);
           reject(err);
         })

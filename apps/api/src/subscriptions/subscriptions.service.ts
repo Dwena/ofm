@@ -118,7 +118,7 @@ export class SubscriptionsService {
 
     // Get subscriber counts for each tier
     const tiersWithCounts = await Promise.all(
-      tiers.map(async (tier) => {
+      tiers.map(async (tier: any) => {
         const subscribersCount = await this.prisma.subscription.count({
           where: {
             tierId: tier.id,

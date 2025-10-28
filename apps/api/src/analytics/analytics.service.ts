@@ -275,7 +275,7 @@ export class AnalyticsService {
     // Group by period
     const periodMap = new Map<string, any>();
 
-    content.forEach((item) => {
+    content.forEach((item: any) => {
       const periodKey = this.getPeriodKey(item.publishedAt!, interval);
 
       if (!periodMap.has(periodKey)) {
@@ -425,7 +425,7 @@ export class AnalyticsService {
     const periodMap = new Map<string, any>();
 
     // Process likes
-    likes.forEach((like) => {
+    likes.forEach((like: any) => {
       const periodKey = this.getPeriodKey(like.createdAt, interval);
       if (!periodMap.has(periodKey)) {
         periodMap.set(periodKey, this.createEmptyPeriod(periodKey));
@@ -434,7 +434,7 @@ export class AnalyticsService {
     });
 
     // Process comments
-    comments.forEach((comment) => {
+    comments.forEach((comment: any) => {
       const periodKey = this.getPeriodKey(comment.createdAt, interval);
       if (!periodMap.has(periodKey)) {
         periodMap.set(periodKey, this.createEmptyPeriod(periodKey));
@@ -443,7 +443,7 @@ export class AnalyticsService {
     });
 
     // Process subscriptions
-    subscriptions.forEach((sub) => {
+    subscriptions.forEach((sub: any) => {
       const periodKey = this.getPeriodKey(sub.createdAt, interval);
       if (!periodMap.has(periodKey)) {
         periodMap.set(periodKey, this.createEmptyPeriod(periodKey));
@@ -549,7 +549,7 @@ export class AnalyticsService {
     // Group by period
     const periodMap = new Map<string, any>();
 
-    subscriptions.forEach((sub) => {
+    subscriptions.forEach((sub: any) => {
       const periodKey = this.getPeriodKey(sub.createdAt, interval);
 
       if (!periodMap.has(periodKey)) {
@@ -655,7 +655,7 @@ export class AnalyticsService {
       contentAnalytics,
       engagementStats,
       subscriberGrowth,
-      contentBreakdown: contentByType.map((item) => ({
+      contentBreakdown: contentByType.map((item: any) => ({
         type: item.type,
         count: item._count.id,
         totalViews: item._sum.viewCount || 0,

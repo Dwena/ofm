@@ -188,7 +188,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
         select: { senderId: true },
       });
 
-      const senderIds = [...new Set(messages.map(m => m.senderId))];
+      const senderIds = [...new Set(messages.map((m: any) => m.senderId))];
 
       // Notify senders
       senderIds.forEach(senderId => {

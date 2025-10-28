@@ -578,10 +578,10 @@ export class PaymentsService {
         status: 'COMPLETED',
         platformFee: 0,
         netAmount: refundAmount,
-        description: `Refund for transaction ${transactionId}`,
         metadata: {
           originalTransactionId: transactionId,
           reason,
+          description: `Refund for transaction ${transactionId}`,
         },
       },
     });
@@ -652,7 +652,7 @@ export class PaymentsService {
     const stats: any[] = [];
     const periodMap = new Map<string, any>();
 
-    transactions.forEach((tx) => {
+    transactions.forEach((tx: any) => {
       const periodKey = this.getPeriodKey(tx.createdAt, interval);
 
       if (!periodMap.has(periodKey)) {
@@ -678,7 +678,7 @@ export class PaymentsService {
         case 'SUBSCRIPTION':
           periodData.subscriptionRevenue += amount;
           break;
-        case 'PPV':
+        case 'PPV_UNLOCK':
           periodData.ppvRevenue += amount;
           break;
         case 'TIP':

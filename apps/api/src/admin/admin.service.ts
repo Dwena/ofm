@@ -64,7 +64,7 @@ export class AdminService {
           lastLoginAt: true,
           creatorProfile: {
             select: {
-              subscribersCount: true,
+              totalSubscribers: true,
               totalContent: true,
             },
           },
@@ -253,11 +253,10 @@ export class AdminService {
       data: {
         reporterId,
         reportedId,
-        targetId,
-        targetType: type,
+        reportedType: type,
         reason,
         description,
-        status: 'PENDING',
+        status: 'pending',
       },
       include: {
         reporter: {
@@ -307,14 +306,6 @@ export class AdminService {
               avatar: true,
             },
           },
-          reported: {
-            select: {
-              id: true,
-              username: true,
-              displayName: true,
-              avatar: true,
-            },
-          },
         },
       }),
       this.prisma.report.count({ where }),
@@ -352,7 +343,7 @@ export class AdminService {
         status,
         reviewedBy: adminId,
         reviewedAt: new Date(),
-        adminNotes,
+        resolution: adminNotes,
       },
     });
 
@@ -542,7 +533,7 @@ export class AdminService {
       },
       orderBy: {
         creatorProfile: {
-          subscribersCount: 'desc',
+          totalSubscribers: 'desc',
         },
       },
       take: 10,
@@ -553,7 +544,7 @@ export class AdminService {
         avatar: true,
         creatorProfile: {
           select: {
-            subscribersCount: true,
+            totalSubscribers: true,
             totalContent: true,
           },
         },
@@ -575,7 +566,7 @@ export class AdminService {
       content: {
         total: totalContent,
         new: newContent,
-        byType: contentByType.map((item) => ({
+        byType: contentByType.map((item: any) => ({
           type: item.type,
           count: item._count.id,
         })),
@@ -590,7 +581,7 @@ export class AdminService {
       revenue: {
         total: Number(totalRevenue._sum.amount || 0) / 100,
         platformFees: Number(platformFees._sum.platformFee || 0) / 100,
-        byType: revenueByType.map((item) => ({
+        byType: revenueByType.map((item: any) => ({
           type: item.type,
           amount: Number(item._sum.amount || 0) / 100,
         })),
@@ -673,7 +664,7 @@ export class AdminService {
           id: true,
           reason: true,
           status: true,
-          targetType: true,
+          reportedType: true,
           createdAt: true,
           reporter: {
             select: { username: true },
@@ -685,7 +676,7 @@ export class AdminService {
     // Combine and format all activities
     const activities: any[] = [];
 
-    recentTransactions.forEach((tx) => {
+    recentTransactions.forEach((tx: any) => {
       activities.push({
         type: 'TRANSACTION',
         id: tx.id,
@@ -696,7 +687,7 @@ export class AdminService {
       });
     });
 
-    recentContent.forEach((content) => {
+    recentContent.forEach((content: any) => {
       activities.push({
         type: 'CONTENT',
         id: content.id,
@@ -706,7 +697,7 @@ export class AdminService {
       });
     });
 
-    recentSubscriptions.forEach((sub) => {
+    recentSubscriptions.forEach((sub: any) => {
       activities.push({
         type: 'SUBSCRIPTION',
         id: sub.id,
@@ -716,11 +707,11 @@ export class AdminService {
       });
     });
 
-    recentReports.forEach((report) => {
+    recentReports.forEach((report: any) => {
       activities.push({
         type: 'REPORT',
         id: report.id,
-        description: `${report.reporter.username} reported ${report.targetType}: ${report.reason}`,
+        description: `${report.reporter.username} reported ${report.reportedType}: ${report.reason}`,
         status: report.status,
         timestamp: report.createdAt,
       });

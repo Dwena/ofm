@@ -45,7 +45,7 @@ export class MediaService {
       queue = this.videoQueue;
     } else if (isPdf) {
       type = 'FILE';
-      folder = this.storageService.generateUserPath(userId, 'files');
+      folder = this.storageService.generateUserPath(userId, 'images');
     } else {
       throw new BadRequestException('Unsupported file type');
     }
@@ -61,16 +61,11 @@ export class MediaService {
     // Create ContentFile record
     const contentFile = await this.prisma.contentFile.create({
       data: {
-        type,
         storagePath: key,
-        url,
         filename: file.originalname,
+        originalName: file.originalname,
         mimeType: file.mimetype,
-        size: file.size,
-        status: queue ? 'PROCESSING' : 'READY',
-        metadata: {
-          uploadedAt: new Date().toISOString(),
-        },
+        size: BigInt(file.size),
       },
     });
 
@@ -90,11 +85,9 @@ export class MediaService {
 
     return {
       id: contentFile.id,
-      type: contentFile.type,
       filename: contentFile.filename,
-      url: contentFile.url,
-      size: contentFile.size,
-      status: contentFile.status,
+      url: url,
+      size: Number(contentFile.size),
       message: queue
         ? `${type} uploaded and queued for processing`
         : 'File uploaded successfully',
@@ -205,6 +198,10 @@ export class MediaService {
       throw new BadRequestException('Content file not found');
     }
 
+    if (!contentFile.content) {
+      throw new BadRequestException('Content file is not linked to content');
+    }
+
     // Check access permissions
     const hasAccess = await this.checkAccess(
       userId,
@@ -290,6 +287,10 @@ export class MediaService {
 
     if (!contentFile) {
       throw new BadRequestException('Content file not found');
+    }
+
+    if (!contentFile.content) {
+      throw new BadRequestException('Content file is not linked to content');
     }
 
     // Check ownership

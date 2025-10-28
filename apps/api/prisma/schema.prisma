@@ -348,8 +348,8 @@ model Content {
 
 model ContentFile {
   id          String   @id @default(uuid())
-  contentId   String
-  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentId   String?
+  content     Content?  @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
   filename    String
   originalName String

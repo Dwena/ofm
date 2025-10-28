@@ -1,5 +1,17 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
+
+// Define NotificationType type manually until Prisma client is regenerated
+export type NotificationType =
+  | 'NEW_SUBSCRIBER'
+  | 'NEW_MESSAGE'
+  | 'NEW_TIP'
+  | 'NEW_COMMENT'
+  | 'SUBSCRIPTION_RENEWAL'
+  | 'PAYOUT_COMPLETED'
+  | 'CONTENT_APPROVED'
+  | 'CONTENT_REJECTED'
+  | 'SYSTEM';
 import {
   CreateCommentDto,
   UpdateCommentDto,
@@ -228,7 +240,7 @@ export class SocialService {
     await this.prisma.creatorProfile.update({
       where: { userId: creatorId },
       data: {
-        subscribersCount: {
+        totalSubscribers: {
           increment: 1,
         },
       },
@@ -269,7 +281,7 @@ export class SocialService {
     await this.prisma.creatorProfile.update({
       where: { userId: creatorId },
       data: {
-        subscribersCount: {
+        totalSubscribers: {
           decrement: 1,
         },
       },
@@ -306,7 +318,7 @@ export class SocialService {
                 coverImage: true,
                 creatorProfile: {
                   select: {
-                    subscribersCount: true,
+                    totalSubscribers: true,
                     totalContent: true,
                   },
                 },
@@ -318,7 +330,9 @@ export class SocialService {
     });
 
     return {
-      items: subscriptions.map((sub) => sub.tier.creator),
+      items: subscriptions
+        .filter((sub: any) => sub.tier?.creator)
+        .map((sub: any) => sub.tier.creator),
       total: subscriptions.length,
     };
   }
@@ -384,7 +398,7 @@ export class SocialService {
           createdAt: true,
           creatorProfile: {
             select: {
-              subscribersCount: true,
+              totalSubscribers: true,
               totalContent: true,
               activeSubscriptionsCount: true,
             },
@@ -401,7 +415,7 @@ export class SocialService {
         status: 'ACTIVE',
         tier: {
           creatorId: {
-            in: creators.map((c) => c.id),
+            in: creators.map((c: any) => c.id),
           },
         },
       },
@@ -414,9 +428,9 @@ export class SocialService {
       },
     });
 
-    const followingIds = new Set(userSubscriptions.map((s) => s.tier.creatorId));
+    const followingIds = new Set(userSubscriptions.map((s: any) => s.tier.creatorId));
 
-    const creatorsWithFollowStatus = creators.map((creator) => ({
+    const creatorsWithFollowStatus = creators.map((creator: any) => ({
       ...creator,
       isFollowing: followingIds.has(creator.id),
     }));
@@ -537,7 +551,7 @@ export class SocialService {
    */
   private async createNotification(data: {
     userId: string;
-    type: string;
+    type: NotificationType;
     title: string;
     message: string;
     relatedId?: string;
