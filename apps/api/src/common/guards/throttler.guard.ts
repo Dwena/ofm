@@ -4,14 +4,13 @@ import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class ThrottlerGuard extends NestThrottlerGuard {
+  private redis: RedisService;
+
   constructor(
-    private redis: RedisService,
+    redis: RedisService,
   ) {
-    super(
-      { ttl: 60, limit: 10 },
-      {} as any,
-      {} as any,
-    );
+    super();
+    this.redis = redis;
   }
 
   async handleRequest(
