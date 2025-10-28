@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { paymentsApi, contentApi } from '@/lib/api'
+import { analyticsApi, paymentsApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -23,111 +23,148 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { useState } from 'react'
-import { TrendingUp, Users, DollarSign, FileText, Eye } from 'lucide-react'
+import { TrendingUp, Users, DollarSign, FileText, Eye, Heart, MessageCircle, Loader2 } from 'lucide-react'
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8']
 
-export default function AnalyticsPage() {
-  const [period, setPeriod] = useState('30d')
+type Interval = 'day' | 'week' | 'month' | 'year'
 
-  // Fetch analytics data
-  const { data: analytics, isLoading } = useQuery({
-    queryKey: ['analytics', period],
+export default function AnalyticsPage() {
+  const [interval, setInterval] = useState<Interval>('day')
+  const [periods, setPeriods] = useState(30)
+
+  // Fetch overview analytics
+  const { data: overview, isLoading: overviewLoading } = useQuery({
+    queryKey: ['analytics-overview'],
     queryFn: async () => {
-      // In a real app, this would fetch from an analytics endpoint
-      // For now, we'll use mock data structure
-      return {
-        revenue: {
-          total: 25680,
-          trend: '+12.5%',
-          data: [
-            { date: '2024-01-01', amount: 1200 },
-            { date: '2024-01-08', amount: 1800 },
-            { date: '2024-01-15', amount: 2100 },
-            { date: '2024-01-22', amount: 1950 },
-            { date: '2024-01-29', amount: 2300 },
-            { date: '2024-02-05', amount: 2650 },
-            { date: '2024-02-12', amount: 2850 },
-          ],
-        },
-        subscribers: {
-          total: 342,
-          trend: '+8.3%',
-          data: [
-            { date: '2024-01-01', count: 280 },
-            { date: '2024-01-08', count: 295 },
-            { date: '2024-01-15', count: 305 },
-            { date: '2024-01-22', count: 318 },
-            { date: '2024-01-29', count: 328 },
-            { date: '2024-02-05', count: 335 },
-            { date: '2024-02-12', count: 342 },
-          ],
-        },
-        contentPerformance: [
-          { title: 'Photo Set #45', views: 1250, likes: 340, revenue: 2400 },
-          { title: 'Video Tutorial', views: 980, likes: 280, revenue: 1960 },
-          { title: 'Behind the Scenes', views: 850, likes: 220, revenue: 1700 },
-          { title: 'Exclusive Content', views: 720, likes: 195, revenue: 1440 },
-          { title: 'Q&A Session', views: 650, likes: 175, revenue: 1300 },
-        ],
-        tierDistribution: [
-          { name: 'FREE', value: 120, revenue: 0 },
-          { name: 'BASIC', value: 95, revenue: 4750 },
-          { name: 'PREMIUM', value: 85, revenue: 8500 },
-          { name: 'VIP', value: 42, revenue: 12600 },
-        ],
-        revenueByType: [
-          { type: 'Subscriptions', amount: 18500 },
-          { type: 'PPV', amount: 5800 },
-          { type: 'Tips', amount: 1380 },
-        ],
-      }
+      const response = await analyticsApi.getOverview()
+      return response.data
     },
   })
+
+  // Fetch subscriber growth
+  const { data: subscriberGrowth, isLoading: subscriberLoading } = useQuery({
+    queryKey: ['analytics-subscriber-growth', interval, periods],
+    queryFn: async () => {
+      const response = await analyticsApi.getSubscriberGrowth({ interval, periods })
+      return response.data
+    },
+  })
+
+  // Fetch engagement stats
+  const { data: engagementStats, isLoading: engagementLoading } = useQuery({
+    queryKey: ['analytics-engagement', interval, periods],
+    queryFn: async () => {
+      const response = await analyticsApi.getEngagementStats({ interval, periods })
+      return response.data
+    },
+  })
+
+  // Fetch content analytics
+  const { data: contentAnalytics, isLoading: contentLoading } = useQuery({
+    queryKey: ['analytics-content', interval, periods],
+    queryFn: async () => {
+      const response = await analyticsApi.getContentAnalytics({ interval, periods })
+      return response.data
+    },
+  })
+
+  // Fetch payment/revenue data
+  const { data: paymentHistory, isLoading: paymentsLoading } = useQuery({
+    queryKey: ['payment-history'],
+    queryFn: async () => {
+      const response = await paymentsApi.getHistory()
+      return response.data
+    },
+  })
+
+  const isLoading = overviewLoading || subscriberLoading || engagementLoading || contentLoading
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <Loader2 className="h-12 w-12 animate-spin text-primary mx-auto" />
           <p className="mt-4 text-muted-foreground">Chargement des analytics...</p>
         </div>
       </div>
     )
   }
 
-  if (!analytics) return null
+  if (!overview) return null
+
+  // Calculate engagement rate
+  const engagementRate = overview.summary.totalViews > 0
+    ? ((overview.summary.totalLikes + overview.summary.totalComments) / overview.summary.totalViews * 100).toFixed(1)
+    : '0.0'
 
   const stats = [
     {
-      title: 'Revenus Totaux',
-      value: `${(analytics.revenue.total / 100).toFixed(2)} €`,
-      trend: analytics.revenue.trend,
+      title: 'Revenus ce mois',
+      value: `${(overview.summary.monthlyRevenue / 100).toFixed(2)} €`,
+      trend: '+12.5%',
       icon: DollarSign,
       color: 'text-green-600',
     },
     {
-      title: 'Abonnés',
-      value: analytics.subscribers.total,
-      trend: analytics.subscribers.trend,
+      title: 'Abonnés Actifs',
+      value: overview.summary.activeSubscriptions,
+      trend: `+${subscriberGrowth?.totals?.netGrowth || 0}`,
       icon: Users,
       color: 'text-blue-600',
     },
     {
-      title: 'Contenus Vus',
-      value: analytics.contentPerformance.reduce((sum, c) => sum + c.views, 0),
-      trend: '+15.2%',
+      title: 'Vues Totales',
+      value: overview.summary.totalViews.toLocaleString(),
+      trend: `${overview.summary.totalContent} contenus`,
       icon: Eye,
       color: 'text-purple-600',
     },
     {
       title: 'Engagement',
-      value: `${((analytics.contentPerformance.reduce((sum, c) => sum + c.likes, 0) / analytics.contentPerformance.reduce((sum, c) => sum + c.views, 0)) * 100).toFixed(1)}%`,
-      trend: '+2.4%',
+      value: `${engagementRate}%`,
+      trend: `${overview.summary.totalLikes} likes`,
       icon: TrendingUp,
       color: 'text-orange-600',
     },
   ]
+
+  // Prepare revenue data from payments
+  const revenueData = paymentHistory?.items
+    ?.filter((payment: any) => payment.status === 'COMPLETED')
+    ?.reduce((acc: any[], payment: any) => {
+      const date = new Date(payment.createdAt).toISOString().split('T')[0]
+      const existing = acc.find(item => item.date === date)
+      if (existing) {
+        existing.amount += payment.netAmount
+      } else {
+        acc.push({
+          date,
+          amount: payment.netAmount,
+        })
+      }
+      return acc
+    }, [])
+    ?.sort((a: any, b: any) => a.date.localeCompare(b.date))
+    ?.slice(-30) || []
+
+  // Calculate revenue by type
+  const revenueByType = paymentHistory?.items
+    ?.filter((payment: any) => payment.status === 'COMPLETED')
+    ?.reduce((acc: any[], payment: any) => {
+      const existing = acc.find(item => item.type === payment.type)
+      if (existing) {
+        existing.amount += payment.netAmount
+      } else {
+        acc.push({
+          type: payment.type === 'SUBSCRIPTION' ? 'Abonnements' :
+                payment.type === 'TIP' ? 'Pourboires' :
+                payment.type === 'PPV' ? 'PPV' : payment.type,
+          amount: payment.netAmount,
+        })
+      }
+      return acc
+    }, []) || []
 
   return (
     <div className="space-y-6">
@@ -138,17 +175,30 @@ export default function AnalyticsPage() {
             Suivez vos performances et optimisez votre contenu
           </p>
         </div>
-        <Select value={period} onValueChange={setPeriod}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7d">7 derniers jours</SelectItem>
-            <SelectItem value="30d">30 derniers jours</SelectItem>
-            <SelectItem value="90d">90 derniers jours</SelectItem>
-            <SelectItem value="1y">1 an</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex gap-2">
+          <Select value={interval} onValueChange={(v) => setInterval(v as Interval)}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="day">Par jour</SelectItem>
+              <SelectItem value="week">Par semaine</SelectItem>
+              <SelectItem value="month">Par mois</SelectItem>
+              <SelectItem value="year">Par année</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={periods.toString()} onValueChange={(v) => setPeriods(parseInt(v))}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7">7 dernières périodes</SelectItem>
+              <SelectItem value="30">30 dernières périodes</SelectItem>
+              <SelectItem value="90">90 dernières périodes</SelectItem>
+              <SelectItem value="365">365 dernières périodes</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -165,8 +215,8 @@ export default function AnalyticsPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{stat.value}</div>
-                <p className="text-xs text-green-600 mt-1">
-                  {stat.trend} vs période précédente
+                <p className="text-xs text-muted-foreground mt-1">
+                  {stat.trend}
                 </p>
               </CardContent>
             </Card>
@@ -179,8 +229,8 @@ export default function AnalyticsPage() {
         <TabsList>
           <TabsTrigger value="revenue">Revenus</TabsTrigger>
           <TabsTrigger value="subscribers">Abonnés</TabsTrigger>
+          <TabsTrigger value="engagement">Engagement</TabsTrigger>
           <TabsTrigger value="content">Contenu</TabsTrigger>
-          <TabsTrigger value="tiers">Tiers</TabsTrigger>
         </TabsList>
 
         <TabsContent value="revenue" className="space-y-4">
@@ -188,47 +238,55 @@ export default function AnalyticsPage() {
             <CardHeader>
               <CardTitle>Évolution des Revenus</CardTitle>
               <CardDescription>
-                Revenus au fil du temps
+                Revenus au fil du temps (30 derniers jours)
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ResponsiveContainer width="100%" height={350}>
-                <AreaChart data={analytics.revenue.data}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="date"
-                    tickFormatter={(value) => new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })}
-                  />
-                  <YAxis tickFormatter={(value) => `${(value / 100).toFixed(0)}€`} />
-                  <Tooltip
-                    formatter={(value: any) => [`${(value / 100).toFixed(2)}€`, 'Revenus']}
-                    labelFormatter={(label) => new Date(label).toLocaleDateString('fr-FR')}
-                  />
-                  <Area type="monotone" dataKey="amount" stroke="#8884d8" fill="#8884d8" fillOpacity={0.6} />
-                </AreaChart>
-              </ResponsiveContainer>
+              {revenueData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={350}>
+                  <AreaChart data={revenueData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="date"
+                      tickFormatter={(value) => new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })}
+                    />
+                    <YAxis tickFormatter={(value) => `${(value / 100).toFixed(0)}€`} />
+                    <Tooltip
+                      formatter={(value: any) => [`${(value / 100).toFixed(2)}€`, 'Revenus']}
+                      labelFormatter={(label) => new Date(label).toLocaleDateString('fr-FR')}
+                    />
+                    <Area type="monotone" dataKey="amount" stroke="#8884d8" fill="#8884d8" fillOpacity={0.6} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[350px] flex items-center justify-center text-muted-foreground">
+                  Aucune donnée de revenus disponible
+                </div>
+              )}
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Revenus par Type</CardTitle>
-              <CardDescription>
-                Répartition des sources de revenus
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={analytics.revenueByType}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="type" />
-                  <YAxis tickFormatter={(value) => `${(value / 100).toFixed(0)}€`} />
-                  <Tooltip formatter={(value: any) => `${(value / 100).toFixed(2)}€`} />
-                  <Bar dataKey="amount" fill="#8884d8" />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+          {revenueByType.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Revenus par Type</CardTitle>
+                <CardDescription>
+                  Répartition des sources de revenus
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={revenueByType}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="type" />
+                    <YAxis tickFormatter={(value) => `${(value / 100).toFixed(0)}€`} />
+                    <Tooltip formatter={(value: any) => `${(value / 100).toFixed(2)}€`} />
+                    <Bar dataKey="amount" fill="#8884d8" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="subscribers">
@@ -236,25 +294,126 @@ export default function AnalyticsPage() {
             <CardHeader>
               <CardTitle>Croissance des Abonnés</CardTitle>
               <CardDescription>
-                Nombre d'abonnés au fil du temps
+                Nouveaux abonnés et désabonnements sur la période
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ResponsiveContainer width="100%" height={350}>
-                <LineChart data={analytics.subscribers.data}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="date"
-                    tickFormatter={(value) => new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })}
-                  />
-                  <YAxis />
-                  <Tooltip
-                    labelFormatter={(label) => new Date(label).toLocaleDateString('fr-FR')}
-                  />
-                  <Legend />
-                  <Line type="monotone" dataKey="count" stroke="#82ca9d" strokeWidth={2} name="Abonnés" />
-                </LineChart>
-              </ResponsiveContainer>
+              {subscriberGrowth?.periods && subscriberGrowth.periods.length > 0 ? (
+                <ResponsiveContainer width="100%" height={350}>
+                  <LineChart data={subscriberGrowth.periods}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="period"
+                      tickFormatter={(value) => {
+                        if (interval === 'day') {
+                          return new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })
+                        } else if (interval === 'month') {
+                          const [year, month] = value.split('-')
+                          return new Date(parseInt(year), parseInt(month) - 1).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })
+                        }
+                        return value
+                      }}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={(label) => {
+                        if (interval === 'day') {
+                          return new Date(label).toLocaleDateString('fr-FR')
+                        }
+                        return label
+                      }}
+                    />
+                    <Legend />
+                    <Line type="monotone" dataKey="newSubscribers" stroke="#82ca9d" strokeWidth={2} name="Nouveaux" />
+                    <Line type="monotone" dataKey="cancelledSubscribers" stroke="#ff8042" strokeWidth={2} name="Annulations" />
+                    <Line type="monotone" dataKey="netGrowth" stroke="#8884d8" strokeWidth={2} name="Croissance nette" />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[350px] flex items-center justify-center text-muted-foreground">
+                  Aucune donnée d'abonnés disponible
+                </div>
+              )}
+              {subscriberGrowth?.totals && (
+                <div className="mt-4 grid grid-cols-3 gap-4">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">{subscriberGrowth.totals.totalNewSubscribers}</p>
+                    <p className="text-sm text-muted-foreground">Nouveaux abonnés</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-red-600">{subscriberGrowth.totals.totalCancelled}</p>
+                    <p className="text-sm text-muted-foreground">Annulations</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-blue-600">{subscriberGrowth.totals.netGrowth}</p>
+                    <p className="text-sm text-muted-foreground">Croissance nette</p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="engagement">
+          <Card>
+            <CardHeader>
+              <CardTitle>Statistiques d'Engagement</CardTitle>
+              <CardDescription>
+                Likes, commentaires et nouveaux abonnés sur la période
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {engagementStats?.periods && engagementStats.periods.length > 0 ? (
+                <ResponsiveContainer width="100%" height={350}>
+                  <AreaChart data={engagementStats.periods}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="period"
+                      tickFormatter={(value) => {
+                        if (interval === 'day') {
+                          return new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })
+                        } else if (interval === 'month') {
+                          const [year, month] = value.split('-')
+                          return new Date(parseInt(year), parseInt(month) - 1).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })
+                        }
+                        return value
+                      }}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={(label) => {
+                        if (interval === 'day') {
+                          return new Date(label).toLocaleDateString('fr-FR')
+                        }
+                        return label
+                      }}
+                    />
+                    <Legend />
+                    <Area type="monotone" dataKey="likes" stackId="1" stroke="#ff6b9d" fill="#ff6b9d" fillOpacity={0.6} name="Likes" />
+                    <Area type="monotone" dataKey="comments" stackId="1" stroke="#4ecdc4" fill="#4ecdc4" fillOpacity={0.6} name="Commentaires" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[350px] flex items-center justify-center text-muted-foreground">
+                  Aucune donnée d'engagement disponible
+                </div>
+              )}
+              {engagementStats?.totals && (
+                <div className="mt-4 grid grid-cols-3 gap-4">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-pink-600">{engagementStats.totals.totalLikes}</p>
+                    <p className="text-sm text-muted-foreground">Total Likes</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-blue-600">{engagementStats.totals.totalComments}</p>
+                    <p className="text-sm text-muted-foreground">Total Commentaires</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">{engagementStats.totals.totalNewSubscribers}</p>
+                    <p className="text-sm text-muted-foreground">Nouveaux Abonnés</p>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -264,103 +423,99 @@ export default function AnalyticsPage() {
             <CardHeader>
               <CardTitle>Performance du Contenu</CardTitle>
               <CardDescription>
-                Top 5 contenus les plus performants
+                Top 5 contenus les plus vus
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {analytics.contentPerformance.map((content, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center justify-between p-4 border rounded-lg"
-                  >
-                    <div className="space-y-1">
-                      <p className="font-medium">{content.title}</p>
-                      <div className="flex items-center space-x-4 text-sm text-muted-foreground">
-                        <span className="flex items-center">
-                          <Eye className="h-3 w-3 mr-1" />
-                          {content.views} vues
-                        </span>
-                        <span>❤️ {content.likes} likes</span>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-bold text-green-600">
-                        {(content.revenue / 100).toFixed(2)}€
-                      </p>
-                      <p className="text-xs text-muted-foreground">Revenus</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="tiers">
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Distribution des Tiers</CardTitle>
-                <CardDescription>
-                  Répartition des abonnés par tier
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={analytics.tierDistribution}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                      outerRadius={80}
-                      fill="#8884d8"
-                      dataKey="value"
-                    >
-                      {analytics.tierDistribution.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Revenus par Tier</CardTitle>
-                <CardDescription>
-                  Contribution de chaque tier aux revenus
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
+              {overview.topContent && overview.topContent.length > 0 ? (
                 <div className="space-y-4">
-                  {analytics.tierDistribution.filter(t => t.revenue > 0).map((tier, index) => (
-                    <div key={tier.name} className="space-y-2">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="font-medium">{tier.name}</span>
-                        <span className="text-muted-foreground">
-                          {tier.value} abonnés - {(tier.revenue / 100).toFixed(2)}€
-                        </span>
+                  {overview.topContent.map((content: any, index: number) => (
+                    <div
+                      key={content.id}
+                      className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent transition-colors"
+                    >
+                      <div className="space-y-1 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-2xl font-bold text-muted-foreground">#{index + 1}</span>
+                          <p className="font-medium">{content.title || 'Sans titre'}</p>
+                          <span className="text-xs px-2 py-1 bg-primary/10 text-primary rounded">
+                            {content.type}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-4 text-sm text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Eye className="h-3 w-3" />
+                            {content.viewCount} vues
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Heart className="h-3 w-3" />
+                            {content.likeCount} likes
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <MessageCircle className="h-3 w-3" />
+                            {content.commentCount} commentaires
+                          </span>
+                        </div>
                       </div>
-                      <div className="h-2 bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full transition-all"
-                          style={{
-                            width: `${(tier.revenue / analytics.revenue.total * 100).toFixed(0)}%`,
-                            backgroundColor: COLORS[index % COLORS.length],
-                          }}
-                        />
+                      <div className="text-right">
+                        <p className="text-sm text-muted-foreground">
+                          {new Date(content.publishedAt).toLocaleDateString('fr-FR')}
+                        </p>
                       </div>
                     </div>
                   ))}
                 </div>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">
+                  <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                  <p>Aucun contenu publié</p>
+                  <p className="text-sm mt-1">Commencez à créer du contenu pour voir les analytics</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {contentAnalytics?.periods && contentAnalytics.periods.length > 0 && (
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle>Publication de Contenu</CardTitle>
+                <CardDescription>
+                  Nombre de contenus publiés et vues moyennes
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={contentAnalytics.periods}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="period"
+                      tickFormatter={(value) => {
+                        if (interval === 'day') {
+                          return new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })
+                        } else if (interval === 'month') {
+                          const [year, month] = value.split('-')
+                          return new Date(parseInt(year), parseInt(month) - 1).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })
+                        }
+                        return value
+                      }}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={(label) => {
+                        if (interval === 'day') {
+                          return new Date(label).toLocaleDateString('fr-FR')
+                        }
+                        return label
+                      }}
+                    />
+                    <Legend />
+                    <Bar dataKey="contentPublished" fill="#8884d8" name="Contenus publiés" />
+                    <Bar dataKey="totalViews" fill="#82ca9d" name="Vues totales" />
+                  </BarChart>
+                </ResponsiveContainer>
               </CardContent>
             </Card>
-          </div>
+          )}
         </TabsContent>
       </Tabs>
     </div>

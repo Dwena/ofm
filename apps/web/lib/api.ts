@@ -228,3 +228,45 @@ export const socialApi = {
   searchCreators: (query: string) =>
     api.get(`/social/search?q=${encodeURIComponent(query)}`),
 }
+
+export const analyticsApi = {
+  // Track views
+  trackView: (contentId: string, data?: { ipAddress?: string; userAgent?: string }) =>
+    api.post('/analytics/track/view', { contentId, ...data }),
+
+  // Get overview analytics
+  getOverview: () =>
+    api.get('/analytics/overview'),
+
+  // Get content analytics
+  getContentAnalytics: (params?: {
+    interval?: 'day' | 'week' | 'month' | 'year'
+    periods?: number
+    startDate?: string
+    endDate?: string
+    contentId?: string
+    contentType?: string
+  }) => api.get('/analytics/content', { params }),
+
+  // Get engagement statistics
+  getEngagementStats: (params?: {
+    interval?: 'day' | 'week' | 'month' | 'year'
+    periods?: number
+  }) => api.get('/analytics/engagement', { params }),
+
+  // Get subscriber growth
+  getSubscriberGrowth: (params?: {
+    interval?: 'day' | 'week' | 'month' | 'year'
+    periods?: number
+    startDate?: string
+    endDate?: string
+  }) => api.get('/analytics/subscribers/growth', { params }),
+
+  // Get detailed report
+  getDetailedReport: (params?: {
+    interval?: 'day' | 'week' | 'month' | 'year'
+    periods?: number
+    startDate?: string
+    endDate?: string
+  }) => api.get('/analytics/report/detailed', { params }),
+}
