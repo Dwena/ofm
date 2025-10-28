@@ -78,10 +78,15 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
   @SubscribeMessage('message:send')
   async handleSendMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { recipientId: string; content: string; type?: string },
+    @MessageBody() data: {
+      recipientId: string;
+      content: string;
+      type?: string;
+      attachmentUrl?: string;
+    },
   ) {
     try {
-      const { recipientId, content, type = 'TEXT' } = data;
+      const { recipientId, content, type = 'TEXT', attachmentUrl } = data;
 
       if (!client.userId) {
         return { error: 'Unauthorized' };
@@ -94,6 +99,8 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
           receiverId: recipientId,
           content,
           status: 'SENT' as any,
+          hasAttachment: !!attachmentUrl,
+          attachmentUrl: attachmentUrl || null,
         },
         include: {
           sender: {
@@ -110,27 +117,26 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       // Update or create conversation
       await this.updateConversation(client.userId, recipientId, message.id);
 
+      // Prepare message data to emit
+      const messageData = {
+        id: message.id,
+        content: message.content,
+        senderId: message.senderId,
+        receiverId: message.receiverId,
+        createdAt: message.createdAt,
+        hasAttachment: message.hasAttachment,
+        attachmentUrl: message.attachmentUrl,
+        sender: message.sender,
+      };
+
       // Emit to recipient if online
       this.server.to(`user:${recipientId}`).emit('message:new', {
-        message: {
-          id: message.id,
-          content: message.content,
-          senderId: message.senderId,
-          receiverId: message.receiverId,
-          createdAt: message.createdAt,
-          sender: message.sender,
-        },
+        message: messageData,
       });
 
       // Emit to sender for confirmation
       client.emit('message:sent', {
-        message: {
-          id: message.id,
-          content: message.content,
-          senderId: message.senderId,
-          receiverId: message.receiverId,
-          createdAt: message.createdAt,
-        },
+        message: messageData,
       });
 
       return { success: true, messageId: message.id };

@@ -2,14 +2,14 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { messagesApi } from '@/lib/api'
+import { messagesApi, mediaApi } from '@/lib/api'
 import { useSocket } from '@/hooks/use-socket'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { Send, Loader2 } from 'lucide-react'
+import { Send, Loader2, Image as ImageIcon, X, FileVideo } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import { useAuth } from '@/contexts/auth-context'
@@ -39,6 +39,8 @@ interface Message {
   senderId: string
   recipientId: string
   createdAt: string
+  hasAttachment?: boolean
+  attachmentUrl?: string
   sender: {
     id: string
     username: string
@@ -55,8 +57,11 @@ export default function MessagesPage() {
   const [messageInput, setMessageInput] = useState('')
   const [sending, setSending] = useState(false)
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set())
+  const [uploadingMedia, setUploadingMedia] = useState(false)
+  const [selectedMedia, setSelectedMedia] = useState<{ url: string; type: 'image' | 'video' } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout>()
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
 
   const {
@@ -143,18 +148,81 @@ export default function MessagesPage() {
   }, [connected, selectedConversation])
 
   const handleSendMessage = async () => {
-    if (!messageInput.trim() || !selectedConversation || !connected) return
+    if ((!messageInput.trim() && !selectedMedia) || !selectedConversation || !connected) return
 
     setSending(true)
     try {
-      await sendMessage(selectedConversation.participant.id, messageInput.trim())
+      const content = messageInput.trim() || (selectedMedia ? 'Fichier joint' : '')
+      await sendMessage(
+        selectedConversation.participant.id,
+        content,
+        'TEXT',
+        selectedMedia?.url
+      )
       setMessageInput('')
+      setSelectedMedia(null)
       setTyping(selectedConversation.participant.id, false)
     } catch (error) {
       console.error('Failed to send message:', error)
     } finally {
       setSending(false)
     }
+  }
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Check file type
+    const isImage = file.type.startsWith('image/')
+    const isVideo = file.type.startsWith('video/')
+
+    if (!isImage && !isVideo) {
+      alert('Veuillez sélectionner une image ou une vidéo')
+      return
+    }
+
+    // Check file size (max 50MB)
+    if (file.size > 50 * 1024 * 1024) {
+      alert('Le fichier est trop volumineux (max 50MB)')
+      return
+    }
+
+    setUploadingMedia(true)
+    try {
+      const response = await mediaApi.upload(
+        (() => {
+          const formData = new FormData()
+          formData.append('file', file)
+          return formData
+        })(),
+        {
+          onUploadProgress: (progressEvent: any) => {
+            const percentCompleted = Math.round(
+              (progressEvent.loaded * 100) / progressEvent.total
+            )
+            console.log('Upload progress:', percentCompleted)
+          },
+        }
+      )
+
+      setSelectedMedia({
+        url: response.data.url,
+        type: isImage ? 'image' : 'video',
+      })
+    } catch (error) {
+      console.error('Failed to upload file:', error)
+      alert('Échec du téléchargement du fichier')
+    } finally {
+      setUploadingMedia(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleRemoveMedia = () => {
+    setSelectedMedia(null)
   }
 
   const handleInputChange = (value: string) => {
@@ -292,19 +360,41 @@ export default function MessagesPage() {
                         className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
                       >
                         <div
-                          className={`max-w-[70%] rounded-lg p-3 ${
+                          className={`max-w-[70%] rounded-lg overflow-hidden ${
                             isOwn
                               ? 'bg-primary text-primary-foreground'
                               : 'bg-muted'
                           }`}
                         >
-                          <p className="text-sm">{message.content}</p>
-                          <p className="text-xs opacity-70 mt-1">
-                            {formatDistanceToNow(new Date(message.createdAt), {
-                              addSuffix: true,
-                              locale: fr,
-                            })}
-                          </p>
+                          {message.hasAttachment && message.attachmentUrl && (
+                            <div className="mb-2">
+                              {message.attachmentUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+                                <img
+                                  src={message.attachmentUrl}
+                                  alt="Attachment"
+                                  className="max-w-full h-auto rounded cursor-pointer"
+                                  onClick={() => window.open(message.attachmentUrl, '_blank')}
+                                />
+                              ) : (
+                                <video
+                                  src={message.attachmentUrl}
+                                  controls
+                                  className="max-w-full h-auto rounded"
+                                />
+                              )}
+                            </div>
+                          )}
+                          <div className="p-3">
+                            {message.content && (
+                              <p className="text-sm">{message.content}</p>
+                            )}
+                            <p className="text-xs opacity-70 mt-1">
+                              {formatDistanceToNow(new Date(message.createdAt), {
+                                addSuffix: true,
+                                locale: fr,
+                              })}
+                            </p>
+                          </div>
                         </div>
                       </div>
                     )
@@ -331,7 +421,31 @@ export default function MessagesPage() {
             </div>
 
             {/* Input */}
-            <div className="p-4 border-t">
+            <div className="p-4 border-t space-y-2">
+              {/* Media Preview */}
+              {selectedMedia && (
+                <div className="relative inline-block">
+                  {selectedMedia.type === 'image' ? (
+                    <img
+                      src={selectedMedia.url}
+                      alt="Preview"
+                      className="max-h-32 rounded border"
+                    />
+                  ) : (
+                    <div className="flex items-center gap-2 p-3 bg-muted rounded border">
+                      <FileVideo className="h-6 w-6" />
+                      <span className="text-sm">Vidéo sélectionnée</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleRemoveMedia}
+                    className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 hover:bg-destructive/90"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
@@ -339,13 +453,37 @@ export default function MessagesPage() {
                 }}
                 className="flex space-x-2"
               >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingMedia || sending || !connected}
+                >
+                  {uploadingMedia ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ImageIcon className="h-4 w-4" />
+                  )}
+                </Button>
                 <Input
                   placeholder="Tapez votre message..."
                   value={messageInput}
                   onChange={(e) => handleInputChange(e.target.value)}
                   disabled={sending || !connected}
+                  className="flex-1"
                 />
-                <Button type="submit" disabled={sending || !connected || !messageInput.trim()}>
+                <Button
+                  type="submit"
+                  disabled={sending || !connected || (!messageInput.trim() && !selectedMedia)}
+                >
                   {sending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (

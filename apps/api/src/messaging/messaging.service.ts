@@ -68,7 +68,15 @@ export class MessagingService {
             { senderId: partnerId, receiverId: userId },
           ],
         },
-        include: {
+        select: {
+          id: true,
+          content: true,
+          senderId: true,
+          receiverId: true,
+          createdAt: true,
+          status: true,
+          hasAttachment: true,
+          attachmentUrl: true,
           sender: {
             select: {
               id: true,

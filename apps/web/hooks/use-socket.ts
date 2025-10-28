@@ -16,6 +16,8 @@ interface Message {
   senderId: string
   recipientId: string
   createdAt: string
+  hasAttachment?: boolean
+  attachmentUrl?: string
   sender?: {
     id: string
     username: string
@@ -83,7 +85,12 @@ export function useSocket(options: UseSocketOptions = {}) {
   }, [autoConnect])
 
   // Send message
-  const sendMessage = (recipientId: string, content: string, type = 'TEXT') => {
+  const sendMessage = (
+    recipientId: string,
+    content: string,
+    type = 'TEXT',
+    attachmentUrl?: string
+  ) => {
     return new Promise((resolve, reject) => {
       if (!socketRef.current?.connected) {
         reject(new Error('Socket not connected'))
@@ -92,7 +99,7 @@ export function useSocket(options: UseSocketOptions = {}) {
 
       socketRef.current.emit(
         'message:send',
-        { recipientId, content, type },
+        { recipientId, content, type, attachmentUrl },
         (response: any) => {
           if (response.error) {
             reject(new Error(response.error))
