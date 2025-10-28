@@ -41,6 +41,11 @@ export class MediaValidator {
       );
     }
 
+    // Check if file is empty
+    if (file.size === 0) {
+      throw new BadRequestException('File is empty');
+    }
+
     // Check MIME type
     const allowedMimeTypes = [
       'image/jpeg',
@@ -63,6 +68,12 @@ export class MediaValidator {
         `Invalid file extension. Allowed: ${this.allowedImageFormats.join(', ')}`,
       );
     }
+
+    // Validate file signature (magic bytes) to prevent file spoofing
+    this.validateFileSignature(file.buffer, file.mimetype);
+
+    // Validate filename
+    this.validateFilename(file.originalname);
   }
 
   validateVideo(file: Express.Multer.File): void {
@@ -134,5 +145,97 @@ export class MediaValidator {
         `Invalid file extension. Allowed: ${this.allowedAudioFormats.join(', ')}`,
       );
     }
+  }
+
+  /**
+   * Validate file signature (magic bytes) to prevent MIME type spoofing
+   */
+  private validateFileSignature(buffer: Buffer, mimeType: string): void {
+    if (!buffer || buffer.length < 4) {
+      throw new BadRequestException('Invalid file: insufficient data');
+    }
+
+    const signatures: Record<string, number[][]> = {
+      'image/jpeg': [[0xff, 0xd8, 0xff]],
+      'image/png': [[0x89, 0x50, 0x4e, 0x47]],
+      'image/gif': [[0x47, 0x49, 0x46, 0x38]],
+      'image/webp': [[0x52, 0x49, 0x46, 0x46]], // RIFF
+      'video/mp4': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]], // ftyp at offset 4
+      'video/webm': [[0x1a, 0x45, 0xdf, 0xa3]],
+    };
+
+    const expectedSignatures = signatures[mimeType];
+    if (!expectedSignatures) {
+      return; // No signature validation for this type
+    }
+
+    const fileSignature = Array.from(buffer.slice(0, 8));
+
+    const isValid = expectedSignatures.some(signature =>
+      signature.every((byte, index) => fileSignature[index] === byte)
+    );
+
+    if (!isValid) {
+      throw new BadRequestException(
+        'File signature does not match declared MIME type. Possible file spoofing detected.',
+      );
+    }
+  }
+
+  /**
+   * Validate filename for security
+   */
+  private validateFilename(filename: string): void {
+    // Check for path traversal attempts
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      throw new BadRequestException('Invalid filename: path traversal detected');
+    }
+
+    // Check for null bytes
+    if (filename.includes('\0')) {
+      throw new BadRequestException('Invalid filename: null byte detected');
+    }
+
+    // Check length
+    if (filename.length > 255) {
+      throw new BadRequestException('Filename too long (max 255 characters)');
+    }
+
+    // Check for suspicious characters
+    const dangerousChars = /[<>:"|?*\x00-\x1f]/;
+    if (dangerousChars.test(filename)) {
+      throw new BadRequestException('Invalid filename: contains dangerous characters');
+    }
+  }
+
+  /**
+   * Validate total upload size for multiple files
+   */
+  validateTotalSize(files: Express.Multer.File[], maxTotalSize: number): void {
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+
+    if (totalSize > maxTotalSize) {
+      throw new BadRequestException(
+        `Total upload size exceeds maximum allowed size of ${maxTotalSize / 1024 / 1024}MB`,
+      );
+    }
+  }
+
+  /**
+   * Sanitize filename
+   */
+  sanitizeFilename(filename: string): string {
+    // Remove path components
+    filename = filename.split('/').pop()!.split('\\').pop()!;
+
+    // Remove dangerous characters
+    filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    // Ensure it has an extension
+    if (!filename.includes('.')) {
+      filename += '.bin';
+    }
+
+    return filename;
   }
 }

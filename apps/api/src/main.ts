@@ -61,13 +61,32 @@ async function bootstrap() {
   // Compression
   app.use(compression());
 
-  // CORS
+  // CORS - Production-ready configuration
+  const nodeEnv = configService.get('NODE_ENV');
   const corsOrigins = configService
     .get('CORS_ORIGINS', 'http://localhost:3000')
-    .split(',');
+    .split(',')
+    .map(origin => origin.trim());
 
   app.enableCors({
-    origin: corsOrigins,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, Postman, etc.)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // In production, strictly validate origins
+      if (nodeEnv === 'production') {
+        if (corsOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      } else {
+        // In development, allow all origins
+        callback(null, true);
+      }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
@@ -75,8 +94,13 @@ async function bootstrap() {
       'Authorization',
       'X-Requested-With',
       'X-CSRF-Token',
+      'Accept',
+      'Origin',
     ],
-    exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page'],
+    exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page', 'X-RateLimit-Remaining'],
+    maxAge: 86400, // 24 hours
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   });
 
   // Global pipes
