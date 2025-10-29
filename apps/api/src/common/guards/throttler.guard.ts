@@ -1,5 +1,6 @@
 import { Injectable, ExecutionContext } from '@nestjs/common';
-import { ThrottlerGuard as NestThrottlerGuard, ThrottlerException } from '@nestjs/throttler';
+import { ThrottlerGuard as NestThrottlerGuard, ThrottlerException, ThrottlerModuleOptions, ThrottlerStorage } from '@nestjs/throttler';
+import { Reflector } from '@nestjs/core';
 import { RedisService } from '../redis/redis.service';
 
 @Injectable()
@@ -7,9 +8,12 @@ export class ThrottlerGuard extends NestThrottlerGuard {
   private redis: RedisService;
 
   constructor(
+    options: ThrottlerModuleOptions,
+    storageService: ThrottlerStorage,
+    reflector: Reflector,
     redis: RedisService,
   ) {
-    super();
+    super(options, storageService, reflector);
     this.redis = redis;
   }
 

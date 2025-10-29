@@ -58,6 +58,8 @@ enum TransactionStatus {
   FAILED
   CANCELLED
   REFUNDED
+  PARTIALLY_REFUNDED
+  DISPUTED
 }
 
 enum ContentType {
@@ -513,6 +515,9 @@ model Transaction {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
+  // Relations
+  disputes        Dispute[]
+
   @@index([fromUserId])
   @@index([toUserId])
   @@index([type])
@@ -520,10 +525,36 @@ model Transaction {
   @@index([createdAt])
 }
 
+model Dispute {
+  id                String      @id @default(uuid())
+
+  stripeDisputeId   String      @unique
+  transactionId     String
+  transaction       Transaction @relation(fields: [transactionId], references: [id])
+
+  amount            Int
+  currency          String
+  reason            String
+  status            String      // needs_response, under_review, charge_refunded, won, lost
+
+  // Evidence
+  evidence          Json?
+  evidenceDueBy     DateTime?
+
+  // Dates
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  closedAt          DateTime?
+
+  @@index([transactionId])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model Payout {
   id              String        @id @default(uuid())
-  userId          String
-  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creatorId       String
+  creator         User          @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
   status          PayoutStatus  @default(PENDING)
 
@@ -540,14 +571,14 @@ model Payout {
   // Dates
   requestedAt     DateTime      @default(now())
   processedAt     DateTime?
-  completedAt     DateTime?
+  paidAt          DateTime?
   failedAt        DateTime?
   failureReason   String?
 
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  @@index([userId])
+  @@index([creatorId])
   @@index([status])
   @@index([createdAt])
 }

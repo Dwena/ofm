@@ -1,8 +1,18 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 
-// Use Prisma's NotificationType enum
-import { NotificationType } from '@prisma/client';
+// Temporary local enum definition until Prisma client is regenerated
+enum NotificationType {
+  NEW_SUBSCRIBER = 'NEW_SUBSCRIBER',
+  NEW_MESSAGE = 'NEW_MESSAGE',
+  NEW_TIP = 'NEW_TIP',
+  NEW_COMMENT = 'NEW_COMMENT',
+  SUBSCRIPTION_RENEWAL = 'SUBSCRIPTION_RENEWAL',
+  PAYOUT_COMPLETED = 'PAYOUT_COMPLETED',
+  CONTENT_APPROVED = 'CONTENT_APPROVED',
+  CONTENT_REJECTED = 'CONTENT_REJECTED',
+  SYSTEM = 'SYSTEM',
+}
 import {
   CreateCommentDto,
   UpdateCommentDto,
@@ -65,7 +75,7 @@ export class SocialService {
     if (content.creatorId !== userId) {
       await this.createNotification({
         userId: content.creatorId,
-        type: 'NEW_COMMENT',
+        type: NotificationType.NEW_COMMENT,
         title: 'Nouveau commentaire',
         message: `${comment.user.displayName || comment.user.username} a commenté votre contenu`,
         linkUrl: `/content/${contentId}`,
@@ -240,7 +250,7 @@ export class SocialService {
     // Create notification
     await this.createNotification({
       userId: creatorId,
-      type: 'NEW_SUBSCRIBER',
+      type: NotificationType.NEW_SUBSCRIBER,
       title: 'Nouveau follower',
       message: `Quelqu'un vous suit maintenant`,
       linkUrl: `/profile/${userId}`,

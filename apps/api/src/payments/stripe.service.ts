@@ -202,11 +202,14 @@ export class StripeService {
 
   /**
    * Create payout to connected account
+   * @param accountId Stripe connected account ID
+   * @param amount Amount in cents
+   * @param currency Currency code (default: eur)
    */
   async createPayout(accountId: string, amount: number, currency: string = 'eur') {
     return this.stripe.payouts.create(
       {
-        amount: Math.round(amount * 100),
+        amount: Math.round(amount), // Already in cents
         currency,
       },
       {
