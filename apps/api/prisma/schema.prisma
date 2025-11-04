@@ -155,6 +155,12 @@ model User {
   stripeAccountId  String? @unique
   stripeOnboarded  Boolean @default(false)
 
+  // Moderation
+  bannedAt         DateTime?
+  banReason        String?
+  suspendedUntil   DateTime?
+  suspensionReason String?
+
   // Dates
   lastLoginAt      DateTime?
   lastActiveAt     DateTime?
