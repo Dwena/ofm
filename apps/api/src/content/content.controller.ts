@@ -121,4 +121,35 @@ export class ContentController {
       body.notes,
     );
   }
+
+  // Likes endpoints
+  @Post(':id/like')
+  async toggleLike(
+    @CurrentUser('id') userId: string,
+    @Param('id') contentId: string,
+  ) {
+    return this.contentService.toggleLike(userId, contentId);
+  }
+
+  @Get(':id/likes')
+  async getLikes(
+    @Param('id') contentId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.contentService.getLikes(
+      contentId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 20,
+    );
+  }
+
+  @Get(':id/liked')
+  async hasUserLiked(
+    @CurrentUser('id') userId: string,
+    @Param('id') contentId: string,
+  ) {
+    const liked = await this.contentService.hasUserLiked(userId, contentId);
+    return { liked };
+  }
 }
