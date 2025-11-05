@@ -19,7 +19,7 @@ async function main() {
     await prisma.$executeRaw`TRUNCATE TABLE "Report" CASCADE`;
     await prisma.$executeRaw`TRUNCATE TABLE "Notification" CASCADE`;
     await prisma.$executeRaw`TRUNCATE TABLE "Message" CASCADE`;
-    await prisma.$executeRaw`TRUNCATE TABLE "Conversation" CASCADE`;
+    await prisma.$executeRaw`TRUNCATE TABLE "conversations" CASCADE`;
     await prisma.$executeRaw`TRUNCATE TABLE "Transaction" CASCADE`;
     await prisma.$executeRaw`TRUNCATE TABLE "Payout" CASCADE`;
     await prisma.$executeRaw`TRUNCATE TABLE "Subscription" CASCADE`;
