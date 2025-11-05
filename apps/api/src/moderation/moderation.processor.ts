@@ -59,7 +59,7 @@ export class ModerationProcessor {
 
         if (content) {
           const analysis = await this.contentModerationService.analyzeContent(
-            content.title,
+            content.title || '',
             content.description || '',
           );
 

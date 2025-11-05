@@ -466,7 +466,7 @@ export class StripeService {
       where: { stripePayoutId: payout.id },
       data: {
         status: 'COMPLETED',
-        completedAt: new Date(payout.arrival_date * 1000),
+        paidAt: new Date(payout.arrival_date * 1000),
       },
     });
   }

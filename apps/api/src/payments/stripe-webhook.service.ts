@@ -420,10 +420,18 @@ export class StripeWebhookService {
     });
 
     if (dbSubscription) {
+      // Map Stripe status to our status
+      let dbStatus: 'ACTIVE' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE' | 'PAUSED' = 'ACTIVE';
+      if (subscription.status === 'active') dbStatus = 'ACTIVE';
+      else if (subscription.status === 'canceled') dbStatus = 'CANCELLED';
+      else if (subscription.status === 'past_due') dbStatus = 'PAST_DUE';
+      else if (subscription.status === 'unpaid') dbStatus = 'PAST_DUE';
+      else if (subscription.status === 'paused') dbStatus = 'PAUSED';
+
       await this.prisma.subscription.update({
         where: { id: dbSubscription.id },
         data: {
-          status: subscription.status === 'active' ? 'ACTIVE' : 'PENDING',
+          status: dbStatus,
           currentPeriodStart: new Date(subscription.current_period_start * 1000),
           currentPeriodEnd: new Date(subscription.current_period_end * 1000),
         },
@@ -440,7 +448,7 @@ export class StripeWebhookService {
 
     if (!dbSubscription) return;
 
-    let status: string;
+    let status: 'ACTIVE' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE' | 'PAUSED';
     switch (subscription.status) {
       case 'active':
         status = 'ACTIVE';
@@ -449,7 +457,11 @@ export class StripeWebhookService {
         status = 'CANCELLED';
         break;
       case 'past_due':
+      case 'unpaid':
         status = 'PAST_DUE';
+        break;
+      case 'paused':
+        status = 'PAUSED';
         break;
       default:
         status = dbSubscription.status;
@@ -532,6 +544,7 @@ export class StripeWebhookService {
 
     const subscription = await this.prisma.subscription.findUnique({
       where: { stripeSubscriptionId: invoice.subscription as string },
+      include: { tier: true },
     });
 
     if (!subscription) return;
@@ -540,7 +553,7 @@ export class StripeWebhookService {
     await this.prisma.transaction.create({
       data: {
         fromUserId: subscription.subscriberId,
-        toUserId: subscription.tier ? (subscription.tier as any).creatorId : null,
+        toUserId: subscription.tier ? subscription.tier.creatorId : null,
         type: 'SUBSCRIPTION',
         status: 'COMPLETED',
         amount: invoice.amount_paid,
@@ -554,9 +567,9 @@ export class StripeWebhookService {
     });
 
     // Notify creator of new payment
-    if (subscription.tier && (subscription.tier as any).creatorId) {
+    if (subscription.tier && subscription.tier.creatorId) {
       await this.createNotification({
-        userId: (subscription.tier as any).creatorId,
+        userId: subscription.tier.creatorId,
         type: 'SUBSCRIPTION_RENEWAL',
         title: 'Renouvellement d\'abonnement',
         message: `Un abonnement a été renouvelé pour ${(invoice.amount_paid / 100).toFixed(2)}€`,
@@ -636,7 +649,7 @@ export class StripeWebhookService {
     await this.prisma.payout.update({
       where: { id: dbPayout.id },
       data: {
-        status: 'PAID',
+        status: 'COMPLETED',
         paidAt: new Date(payout.arrival_date * 1000),
       },
     });

@@ -1,7 +1,7 @@
 import { IsString, IsEnum, IsOptional, IsInt, Min } from 'class-validator';
 
 export enum StoryType {
-  IMAGE = 'IMAGE',
+  PHOTO = 'PHOTO',
   VIDEO = 'VIDEO',
   TEXT = 'TEXT',
 }

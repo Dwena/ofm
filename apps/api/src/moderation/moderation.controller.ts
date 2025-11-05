@@ -15,6 +15,10 @@ import { ModerationService } from './moderation.service';
 import { CreateReportDto, ModerationDecisionDto } from './dto/moderation.dto';
 import { ThrottleAuth } from '../common/decorators/throttle.decorator';
 
+interface RequestWithUser {
+  user: { sub: string; email: string; role: string };
+}
+
 @Controller('moderation')
 @UseGuards(JwtAuthGuard)
 export class ModerationController {
@@ -25,7 +29,7 @@ export class ModerationController {
    */
   @Post('reports')
   @ThrottleAuth()
-  async createReport(@Request() req, @Body() dto: CreateReportDto) {
+  async createReport(@Request() req: RequestWithUser, @Body() dto: CreateReportDto) {
     return this.moderationService.createReport(req.user.sub, dto);
   }
 
@@ -33,7 +37,7 @@ export class ModerationController {
    * User endpoint: Get my reports
    */
   @Get('reports/my')
-  async getMyReports(@Request() req) {
+  async getMyReports(@Request() req: RequestWithUser) {
     // Could implement this to show user their report history
     return { message: 'To be implemented' };
   }
@@ -65,7 +69,7 @@ export class ModerationController {
   @UseGuards(RolesGuard)
   @Roles('ADMIN', 'MODERATOR')
   async handleReport(
-    @Request() req,
+    @Request() req: RequestWithUser,
     @Param('id') reportId: string,
     @Body() body: { decision: 'RESOLVE' | 'DISMISS' | 'ESCALATE'; resolution: string },
   ) {
@@ -84,7 +88,7 @@ export class ModerationController {
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
   async banUser(
-    @Request() req,
+    @Request() req: RequestWithUser,
     @Param('id') userId: string,
     @Body() body: { reason: string },
   ) {
@@ -98,7 +102,7 @@ export class ModerationController {
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
   async suspendUser(
-    @Request() req,
+    @Request() req: RequestWithUser,
     @Param('id') userId: string,
     @Body() body: { reason: string; durationDays: number },
   ) {
