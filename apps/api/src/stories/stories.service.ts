@@ -28,8 +28,8 @@ export class StoriesService {
       throw new BadRequestException('Text stories must have text content');
     }
 
-    if ((dto.type === 'IMAGE' || dto.type === 'VIDEO') && !dto.mediaUrl) {
-      throw new BadRequestException('Image/Video stories must have a media URL');
+    if ((dto.type === 'PHOTO' || dto.type === 'VIDEO') && !dto.mediaUrl) {
+      throw new BadRequestException('Photo/Video stories must have a media URL');
     }
 
     // Set expiration to 24h from now

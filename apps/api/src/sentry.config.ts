@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/node';
-import { ProfilingIntegration } from '@sentry/profiling-node';
+import { nodeProfilingIntegration } from '@sentry/profiling-node';
 
 export function initSentry() {
   if (!process.env.SENTRY_DSN) {
@@ -18,7 +18,7 @@ export function initSentry() {
     // Profiling
     profilesSampleRate: parseFloat(process.env.SENTRY_PROFILES_SAMPLE_RATE || '0.1'),
     integrations: [
-      new ProfilingIntegration(),
+      nodeProfilingIntegration(),
       new Sentry.Integrations.Http({ tracing: true }),
       new Sentry.Integrations.Express({ app: undefined as any }),
     ],

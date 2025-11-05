@@ -869,12 +869,11 @@ export class PaymentsService {
     }
 
     // Create Stripe payment intent
-    const paymentIntent = await this.stripeService.createDirectPayment(
-      user.stripeCustomerId || undefined,
+    const paymentIntent = await this.stripeService.createPaymentIntent(
       amount,
+      'EUR',
+      user.stripeCustomerId || undefined,
       creator.stripeAccountId,
-      netAmount,
-      `Tip from ${user.username || user.email}`,
     );
 
     // Create transaction record
