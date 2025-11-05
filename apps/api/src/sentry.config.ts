@@ -1,5 +1,4 @@
 import * as Sentry from '@sentry/node';
-import { nodeProfilingIntegration } from '@sentry/profiling-node';
 
 export function initSentry() {
   if (!process.env.SENTRY_DSN) {
@@ -10,15 +9,13 @@ export function initSentry() {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || 'development',
-    
+
     // Set tracesSampleRate to 1.0 to capture 100% of transactions for performance monitoring.
     // We recommend adjusting this value in production
     tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
 
-    // Profiling
-    profilesSampleRate: parseFloat(process.env.SENTRY_PROFILES_SAMPLE_RATE || '0.1'),
+    // Integrations
     integrations: [
-      nodeProfilingIntegration(),
       new Sentry.Integrations.Http({ tracing: true }),
       new Sentry.Integrations.Express({ app: undefined as any }),
     ],
