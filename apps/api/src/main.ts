@@ -132,6 +132,9 @@ async function bootstrap() {
   app.useBodyParser('json', { limit: '10mb' });
   app.useBodyParser('urlencoded', { extended: true, limit: '10mb' });
 
+  // Get port configuration
+  const port = configService.get('PORT', 3001);
+
   // Swagger API Documentation
   if (nodeEnv !== 'production') {
     const config = new DocumentBuilder()
@@ -181,7 +184,6 @@ async function bootstrap() {
   }
 
   // Start server
-  const port = configService.get('PORT', 3001);
   await app.listen(port);
 
   console.log(`
