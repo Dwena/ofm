@@ -181,12 +181,12 @@ export class ModerationService {
       // Notify creator
       const content = await this.prisma.content.findUnique({
         where: { id: contentId },
-        select: { userId: true },
+        select: { creatorId: true },
       });
 
       if (content) {
         await this.notificationsService.create({
-          userId: content.userId,
+          userId: content.creatorId,
           type: 'CONTENT_REJECTED',
           title: 'Contenu rejeté',
           message: 'Votre contenu a été rejeté car il ne respecte pas nos règles communautaires',
@@ -381,7 +381,7 @@ export class ModerationService {
             title: true,
             type: true,
             createdAt: true,
-            user: { select: { username: true } },
+            creator: { select: { username: true } },
           },
         });
       case 'COMMENT':

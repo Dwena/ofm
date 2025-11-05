@@ -162,7 +162,7 @@ export class PaymentsService {
     // Save payout record
     const payoutRecord = await this.prisma.payout.create({
       data: {
-        userId,
+        creatorId: userId,
         amount,
         currency: 'EUR',
         status: 'PROCESSING',
@@ -228,7 +228,7 @@ export class PaymentsService {
     // Total payouts
     const totalPayouts = await this.prisma.payout.aggregate({
       where: {
-        userId,
+        creatorId: userId,
         status: 'COMPLETED',
       },
       _sum: {
@@ -240,7 +240,7 @@ export class PaymentsService {
       totalEarnings: totalEarnings._sum.netAmount || 0,
       monthlyEarnings: monthlyEarnings._sum.netAmount || 0,
       pendingBalance: pendingBalance?.available[0]?.amount || 0,
-      totalPayouts: totalPayouts._sum.amount || 0,
+      totalPayouts: totalPayouts._sum?.amount || 0,
       availableForPayout:
         (pendingBalance?.available[0]?.amount || 0) / 100,
     };
@@ -310,7 +310,7 @@ export class PaymentsService {
    */
   async getPayouts(userId: string) {
     return this.prisma.payout.findMany({
-      where: { userId },
+      where: { creatorId: userId },
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
@@ -359,7 +359,7 @@ export class PaymentsService {
           // Save record
           await this.prisma.payout.create({
             data: {
-              userId: creator.id,
+              creatorId: creator.id,
               amount,
               currency: 'EUR',
               status: 'PROCESSING',

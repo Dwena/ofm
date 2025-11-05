@@ -207,10 +207,10 @@ export class ModerationProcessor {
         break;
 
       case 'COMMENT':
-        // Delete comment
+        // Delete comment (soft delete)
         await this.prisma.comment.update({
           where: { id },
-          data: { isDeleted: true },
+          data: { deletedAt: new Date() },
         });
         break;
     }

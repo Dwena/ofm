@@ -249,7 +249,7 @@ export class BillingService {
         const payouts = await this.prisma.payout.findMany({
           where: {
             creatorId: creator.id,
-            status: { in: ['PENDING', 'PROCESSING', 'PAID'] },
+            status: { in: ['PENDING', 'PROCESSING', 'COMPLETED'] },
           },
         });
 

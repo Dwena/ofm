@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from './prisma.service';
+import { PrismaService } from '../common/database/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 export interface DatabaseMetrics {
