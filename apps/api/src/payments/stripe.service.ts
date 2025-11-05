@@ -40,13 +40,13 @@ export class StripeService {
   async createPaymentIntent(
     amount: number,
     currency: string,
-    customerId: string,
+    customerId?: string,
     connectedAccountId?: string,
   ) {
     const paymentIntentData: Stripe.PaymentIntentCreateParams = {
       amount: Math.round(amount * 100), // Convert to cents
       currency,
-      customer: customerId,
+      ...(customerId && { customer: customerId }),
       automatic_payment_methods: {
         enabled: true,
       },
