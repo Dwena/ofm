@@ -810,4 +810,141 @@ export class PaymentsService {
       },
     };
   }
+
+  /**
+   * Send a tip to a creator
+   */
+  async sendTip(userId: string, creatorId: string, amount: number, message?: string) {
+    // Validate users exist
+    const [user, creator] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId } }),
+      this.prisma.user.findUnique({
+        where: { id: creatorId },
+        include: { creatorProfile: true },
+      }),
+    ]);
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!creator || creator.role !== 'CREATOR') {
+      throw new NotFoundException('Creator not found');
+    }
+
+    if (!creator.creatorProfile) {
+      throw new BadRequestException('Creator profile not found');
+    }
+
+    // Check if tips are allowed
+    if (!creator.creatorProfile.allowTips) {
+      throw new BadRequestException('This creator does not accept tips');
+    }
+
+    // Check minimum tip amount
+    const minimumTip = parseFloat(creator.creatorProfile.minimumTip.toString());
+    if (amount < minimumTip) {
+      throw new BadRequestException(`Minimum tip amount is €${minimumTip}`);
+    }
+
+    // Cannot tip yourself
+    if (userId === creatorId) {
+      throw new BadRequestException('You cannot tip yourself');
+    }
+
+    // Calculate platform fee (15% default)
+    const platformFeePercentage = parseFloat(
+      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
+    );
+    const platformFee = (amount * platformFeePercentage) / 100;
+    const netAmount = amount - platformFee;
+
+    // Check if creator has Stripe account
+    if (!creator.stripeAccountId) {
+      throw new BadRequestException('Creator has not set up payment account');
+    }
+
+    if (!creator.stripeOnboarded) {
+      throw new BadRequestException('Creator payment account is not ready');
+    }
+
+    // Create Stripe payment intent
+    const paymentIntent = await this.stripeService.createDirectPayment(
+      user.stripeCustomerId || undefined,
+      amount,
+      creator.stripeAccountId,
+      netAmount,
+      `Tip from ${user.username || user.email}`,
+    );
+
+    // Create transaction record
+    const transaction = await this.prisma.transaction.create({
+      data: {
+        fromUserId: userId,
+        toUserId: creatorId,
+        type: 'TIP',
+        status: 'COMPLETED',
+        amount,
+        currency: 'EUR',
+        platformFee,
+        netAmount,
+        stripePaymentIntentId: paymentIntent.id,
+        description: message || 'Tip',
+        metadata: {
+          message: message || null,
+        },
+      },
+      include: {
+        fromUser: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatar: true,
+          },
+        },
+        toUser: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatar: true,
+          },
+        },
+      },
+    });
+
+    // Update creator's total earnings
+    await this.prisma.creatorProfile.update({
+      where: { userId: creatorId },
+      data: {
+        totalEarnings: {
+          increment: netAmount,
+        },
+      },
+    });
+
+    // Create notification for creator
+    await this.prisma.notification.create({
+      data: {
+        userId: creatorId,
+        type: 'NEW_TIP',
+        title: 'New Tip Received!',
+        content: `${user.username || 'A fan'} sent you a €${amount} tip${message ? ': ' + message : ''}`,
+        metadata: {
+          fromUserId: userId,
+          amount,
+          transactionId: transaction.id,
+        },
+      },
+    });
+
+    this.logger.log(`Tip sent: €${amount} from ${userId} to ${creatorId}`);
+
+    return {
+      success: true,
+      transaction,
+      paymentIntentClientSecret: paymentIntent.client_secret,
+    };
+  }
 }

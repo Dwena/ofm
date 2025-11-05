@@ -134,6 +134,24 @@ export class PaymentsController {
   }
 
   /**
+   * Send a tip to a creator
+   */
+  @Post('tip/:creatorId')
+  @UseGuards(JwtAuthGuard)
+  async sendTip(
+    @CurrentUser('id') userId: string,
+    @Param('creatorId') creatorId: string,
+    @Body() body: { amount: number; message?: string },
+  ) {
+    return this.paymentsService.sendTip(
+      userId,
+      creatorId,
+      body.amount,
+      body.message,
+    );
+  }
+
+  /**
    * Get filtered transactions
    */
   @Get('transactions/filter')

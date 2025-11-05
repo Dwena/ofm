@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import compression from 'compression';
 import * as Sentry from '@sentry/node';
@@ -131,6 +132,54 @@ async function bootstrap() {
   app.useBodyParser('json', { limit: '10mb' });
   app.useBodyParser('urlencoded', { extended: true, limit: '10mb' });
 
+  // Swagger API Documentation
+  if (nodeEnv !== 'production') {
+    const config = new DocumentBuilder()
+      .setTitle('OFM Platform API')
+      .setDescription('OnlyFans Management Platform - Complete API Documentation')
+      .setVersion('1.0')
+      .addTag('auth', 'Authentication endpoints')
+      .addTag('users', 'User management')
+      .addTag('content', 'Content management')
+      .addTag('stories', 'Ephemeral stories (24h)')
+      .addTag('streaming', 'Live streaming')
+      .addTag('subscriptions', 'Subscription management')
+      .addTag('payments', 'Payment & billing')
+      .addTag('messaging', 'Direct messaging')
+      .addTag('notifications', 'Notifications')
+      .addTag('analytics', 'Analytics & stats')
+      .addTag('media', 'Media upload & processing')
+      .addTag('moderation', 'Content moderation')
+      .addTag('admin', 'Admin operations')
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: 'Enter JWT token',
+          name: 'JWT',
+          in: 'header',
+        },
+        'JWT-auth',
+      )
+      .addServer(`http://localhost:${port}`, 'Development')
+      .build();
+
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api/docs', app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
+        docExpansion: 'none',
+        filter: true,
+        showRequestDuration: true,
+      },
+      customSiteTitle: 'OFM API Documentation',
+      customCss: '.swagger-ui .topbar { display: none }',
+    });
+
+    console.log(`   📚 Swagger Docs: http://localhost:${port}/api/docs`);
+  }
+
   // Start server
   const port = configService.get('PORT', 3001);
   await app.listen(port);
@@ -142,7 +191,8 @@ async function bootstrap() {
     ║                                                               ║
     ║   Environment: ${configService.get('NODE_ENV')?.padEnd(40)}  ║
     ║   URL: http://localhost:${port}${' '.repeat(35)}  ║
-    ║   API: http://localhost:${port}/${apiPrefix}${' '.repeat(Math.max(0, 24 - apiPrefix.length))}  ║
+    ║   API: http://localhost:${port}/${apiPrefix}${' '.repeat(Math.max(0, 24 - apiPrefix.length))}  ║${nodeEnv !== 'production' ? `
+    ║   📚 Docs: http://localhost:${port}/api/docs${' '.repeat(26)}  ║` : ''}
     ║                                                               ║
     ╚═══════════════════════════════════════════════════════════════╝
   `);

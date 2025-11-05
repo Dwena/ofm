@@ -418,4 +418,121 @@ export class ContentService {
       totalPages: Math.ceil(total / limit),
     };
   }
+
+  // Likes methods
+  async toggleLike(userId: string, contentId: string) {
+    // Verify content exists
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: { id: true, deletedAt: true, status: true },
+    });
+
+    if (!content || content.deletedAt) {
+      throw new NotFoundException('Content not found');
+    }
+
+    if (content.status !== 'PUBLISHED') {
+      throw new BadRequestException('Cannot like unpublished content');
+    }
+
+    // Check if already liked
+    const existingLike = await this.prisma.contentLike.findUnique({
+      where: {
+        contentId_userId: {
+          contentId,
+          userId,
+        },
+      },
+    });
+
+    if (existingLike) {
+      // Unlike - delete the like and decrement count
+      await this.prisma.$transaction([
+        this.prisma.contentLike.delete({
+          where: { id: existingLike.id },
+        }),
+        this.prisma.content.update({
+          where: { id: contentId },
+          data: { likeCount: { decrement: 1 } },
+        }),
+      ]);
+
+      this.logger.log(`Content unliked: ${contentId} by user ${userId}`);
+      return { liked: false, message: 'Content unliked' };
+    } else {
+      // Like - create the like and increment count
+      await this.prisma.$transaction([
+        this.prisma.contentLike.create({
+          data: {
+            contentId,
+            userId,
+          },
+        }),
+        this.prisma.content.update({
+          where: { id: contentId },
+          data: { likeCount: { increment: 1 } },
+        }),
+      ]);
+
+      this.logger.log(`Content liked: ${contentId} by user ${userId}`);
+      return { liked: true, message: 'Content liked' };
+    }
+  }
+
+  async getLikes(contentId: string, page: number = 1, limit: number = 20) {
+    const skip = (page - 1) * limit;
+
+    // Verify content exists
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: { id: true, deletedAt: true },
+    });
+
+    if (!content || content.deletedAt) {
+      throw new NotFoundException('Content not found');
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.contentLike.findMany({
+        where: { contentId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatar: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip,
+        take: limit,
+      }),
+      this.prisma.contentLike.count({ where: { contentId } }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async hasUserLiked(userId: string, contentId: string): Promise<boolean> {
+    const like = await this.prisma.contentLike.findUnique({
+      where: {
+        contentId_userId: {
+          contentId,
+          userId,
+        },
+      },
+    });
+
+    return !!like;
+  }
 }

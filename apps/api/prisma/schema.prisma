@@ -155,6 +155,12 @@ model User {
   stripeAccountId  String? @unique
   stripeOnboarded  Boolean @default(false)
 
+  // Moderation
+  bannedAt         DateTime?
+  banReason        String?
+  suspendedUntil   DateTime?
+  suspensionReason String?
+
   // Dates
   lastLoginAt      DateTime?
   lastActiveAt     DateTime?
@@ -187,6 +193,11 @@ model User {
   contentLikes            ContentLike[]
   comments                Comment[]
   reports                 Report[]
+  stories                 Story[]         @relation("CreatorStories")
+  storyViews              StoryView[]     @relation("StoryViews")
+  liveStreams             LiveStream[]    @relation("CreatorStreams")
+  streamViews             StreamViewer[]  @relation("StreamViews")
+  streamMessages          StreamMessage[] @relation("StreamMessages")
 
   @@index([email])
   @@index([username])
@@ -690,5 +701,143 @@ model AuditLog {
   @@index([userId])
   @@index([action])
   @@index([resource])
+  @@index([createdAt])
+}
+
+model Story {
+  id          String   @id @default(uuid())
+
+  creatorId   String
+  creator     User     @relation("CreatorStories", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  // Content
+  type        ContentType // IMAGE, VIDEO, TEXT
+  mediaUrl    String?  // S3 path for image/video
+  thumbnailUrl String? // Thumbnail for videos
+  text        String?  // For text stories or captions
+  caption     String?
+  duration    Int?     // Video duration in seconds
+
+  // Media metadata
+  width       Int?
+  height      Int?
+
+  // Visibility
+  visibility  ContentVisibility @default(SUBSCRIBERS_ONLY)
+
+  // Stats
+  viewCount   Int      @default(0)
+  views       StoryView[]
+
+  // Expiration (24h auto-delete)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  deletedAt   DateTime?
+
+  @@index([creatorId])
+  @@index([expiresAt])
+  @@index([createdAt])
+}
+
+model StoryView {
+  id        String   @id @default(uuid())
+
+  storyId   String
+  story     Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  viewerId  String
+  viewer    User     @relation("StoryViews", fields: [viewerId], references: [id], onDelete: Cascade)
+
+  viewedAt  DateTime @default(now())
+
+  @@unique([storyId, viewerId])
+  @@index([storyId])
+  @@index([viewerId])
+}
+
+enum StreamStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELLED
+}
+
+model LiveStream {
+  id          String       @id @default(uuid())
+
+  creatorId   String
+  creator     User         @relation("CreatorStreams", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  // Stream info
+  title       String
+  description String?
+  thumbnailUrl String?
+
+  // Streaming
+  status      StreamStatus @default(SCHEDULED)
+  streamKey   String       @unique  // For RTMP/WebRTC
+  streamUrl   String?      // Playback URL
+  recordingUrl String?     // Recording URL after stream ends
+
+  // Visibility & Access
+  visibility  ContentVisibility @default(SUBSCRIBERS_ONLY)
+  isPpv       Boolean      @default(false)
+  ppvPrice    Decimal?     @db.Decimal(10, 2)
+
+  // Stats
+  viewerCount Int          @default(0)
+  peakViewers Int          @default(0)
+  totalViews  Int          @default(0)
+  duration    Int?         // Duration in seconds
+
+  // Scheduling
+  scheduledFor DateTime?
+  startedAt    DateTime?
+  endedAt      DateTime?
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relations
+  viewers     StreamViewer[]
+  messages    StreamMessage[]
+
+  @@index([creatorId])
+  @@index([status])
+  @@index([scheduledFor])
+  @@index([createdAt])
+}
+
+model StreamViewer {
+  id        String   @id @default(uuid())
+
+  streamId  String
+  stream    LiveStream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  viewerId  String
+  viewer    User       @relation("StreamViews", fields: [viewerId], references: [id], onDelete: Cascade)
+
+  joinedAt  DateTime   @default(now())
+  leftAt    DateTime?
+
+  @@unique([streamId, viewerId])
+  @@index([streamId])
+  @@index([viewerId])
+}
+
+model StreamMessage {
+  id        String   @id @default(uuid())
+
+  streamId  String
+  stream    LiveStream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  senderId  String
+  sender    User       @relation("StreamMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  message   String
+  createdAt DateTime   @default(now())
+
+  @@index([streamId])
+  @@index([senderId])
   @@index([createdAt])
 }
