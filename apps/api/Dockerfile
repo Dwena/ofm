@@ -12,13 +12,14 @@ RUN npm ci
 
 # Copy source code
 COPY apps/api ./apps/api
-COPY prisma ./prisma
+
+# Change to API directory for Prisma and build
+WORKDIR /app/apps/api
 
 # Generate Prisma Client
 RUN npx prisma generate
 
 # Build application
-WORKDIR /app/apps/api
 RUN npm run build
 
 # Production stage
