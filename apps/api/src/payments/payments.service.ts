@@ -889,9 +889,9 @@ export class PaymentsService {
         platformFee,
         netAmount,
         stripePaymentIntentId: paymentIntent.id,
-        description: message || 'Tip',
         metadata: {
           message: message || null,
+          type: 'tip',
         },
       },
       include: {
@@ -930,7 +930,7 @@ export class PaymentsService {
         userId: creatorId,
         type: 'NEW_TIP',
         title: 'New Tip Received!',
-        content: `${user.username || 'A fan'} sent you a €${amount} tip${message ? ': ' + message : ''}`,
+        message: `${user.username || 'A fan'} sent you a €${amount} tip${message ? ': ' + message : ''}`,
         metadata: {
           fromUserId: userId,
           amount,

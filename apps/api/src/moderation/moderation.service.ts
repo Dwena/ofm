@@ -433,9 +433,11 @@ export class ModerationService {
       data: {
         userId: adminId,
         action,
-        targetType: 'USER',
-        targetId,
-        details,
+        resource: 'USER',
+        resourceId: targetId,
+        metadata: {
+          details,
+        },
         ipAddress: '0.0.0.0', // Should be captured from request
         userAgent: 'System',
       },

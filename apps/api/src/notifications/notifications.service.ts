@@ -46,5 +46,23 @@ export class NotificationsService {
     });
   }
 
-  // TODO: Implement notification creation, push notifications, etc.
+  async create(data: {
+    userId: string;
+    type: string;
+    title: string;
+    message: string;
+    linkUrl?: string;
+    metadata?: any;
+  }) {
+    return this.prisma.notification.create({
+      data: {
+        userId: data.userId,
+        type: data.type as any,
+        title: data.title,
+        message: data.message,
+        linkUrl: data.linkUrl,
+        metadata: data.metadata,
+      },
+    });
+  }
 }
