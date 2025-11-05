@@ -492,7 +492,7 @@ async function main() {
     data: [
       {
         creatorId: creator1.id,
-        type: 'IMAGE',
+        type: 'PHOTO',
         mediaUrl: 'https://images.unsplash.com/photo-1682687220742-aba13b6e50ba',
         caption: 'En direct de mon voyage! 🌴',
         expiresAt: new Date(now.getTime() + 22 * 60 * 60 * 1000),
@@ -508,7 +508,7 @@ async function main() {
       },
       {
         creatorId: creator3.id,
-        type: 'IMAGE',
+        type: 'PHOTO',
         mediaUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe',
         caption: 'Work in progress... 🎨✨',
         expiresAt: new Date(now.getTime() + 18 * 60 * 60 * 1000),
