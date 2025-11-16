@@ -1,0 +1,17 @@
+{
+  "creator": {
+    "email": "alice@ofm.com",
+    "password": "SecurePass123!",
+    "username": "alice"
+  },
+  "subscriber": {
+    "email": "david@ofm.com",
+    "password": "SecurePass123!",
+    "username": "david"
+  },
+  "admin": {
+    "email": "admin@ofm.com",
+    "password": "SecurePass123!",
+    "username": "admin"
+  }
+}
