@@ -30,6 +30,7 @@ import ContentActionsMenu from '@/components/social/content-actions-menu'
 import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 import { shareContent, useToggleLike } from '@/hooks/use-content-actions'
 import { cn, formatEuros } from '@/lib/utils'
+import { StoriesBar } from '@/components/stories/stories-bar'
 
 // Shape returned by /content/feed and /content/feed/subscriptions
 interface ContentFile {
@@ -88,6 +89,8 @@ export default function FeedPage() {
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <h1 className="text-2xl sm:text-3xl font-bold">Feed</h1>
+
+      <StoriesBar />
 
       <PpvUnlockDialog
         content={unlocking}

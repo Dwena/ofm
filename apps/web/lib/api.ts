@@ -560,9 +560,12 @@ export const liveApi = {
 }
 
 export const storiesApi = {
+  // Groups { creator, stories, hasUnviewed, isOwn }: own stories first, then unseen groups
   getFeed: () => api.get('/stories/feed'),
+  // Active stories of the current creator, with view/like counts
+  getMine: () => api.get('/stories/me'),
   getCreatorStories: (creatorId: string) => api.get(`/stories/creator/${creatorId}`),
-  // Groups a creator's active stories into the shape the stories viewer expects
+  // Groups a creator's active stories (chronological) into the shape the stories viewer expects
   getGroup: async (creatorId: string) => {
     const response = await api.get(`/stories/creator/${creatorId}`)
     const stories: any[] = Array.isArray(response.data) ? response.data : []
@@ -572,21 +575,45 @@ export const storiesApi = {
       data: {
         userId: creatorId,
         user: creator,
-        stories: stories
-          .map((story) => ({
-            ...story,
-            user: story.creator,
-            mediaType: story.type === 'VIDEO' ? 'VIDEO' : story.type === 'TEXT' ? 'TEXT' : 'IMAGE',
-            views: story._count?.views ?? 0,
-            likes: story._count?.likes ?? 0,
-          }))
-          .reverse(),
+        stories: stories.map((story) => ({
+          ...story,
+          user: story.creator,
+          mediaType: story.type === 'VIDEO' ? 'VIDEO' : story.type === 'TEXT' ? 'TEXT' : 'IMAGE',
+          views: story._count?.views ?? 0,
+          likes: story._count?.likes ?? 0,
+        })),
       },
     }
   },
+  // Uploads a story photo/video through the media API; resolves to { key, url, jobId }
+  uploadMedia: (file: File, onProgress?: (percent: number) => void) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const endpoint = file.type.startsWith('video/') ? '/media/upload/video' : '/media/upload/image'
+    return api.post(endpoint, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (event) => {
+        if (onProgress && event.total) onProgress(Math.round((event.loaded / event.total) * 100))
+      },
+    })
+  },
+  // mediaUrl is the `key` returned by uploadMedia
+  create: (data: {
+    type: 'PHOTO' | 'VIDEO' | 'TEXT'
+    mediaUrl?: string
+    text?: string
+    caption?: string
+    backgroundColor?: string
+    duration?: number
+    width?: number
+    height?: number
+    visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY'
+  }) => api.post('/stories', data),
   getStory: (storyId: string) => api.get(`/stories/${storyId}`),
   markAsViewed: (storyId: string) => api.post(`/stories/${storyId}/view`),
-  getViewers: (storyId: string) => api.get(`/stories/${storyId}/viewers`),
+  // Paginated { items: [{ viewer, viewedAt, hasLiked }], total, page, totalPages }
+  getViewers: (storyId: string, page = 1) =>
+    api.get(`/stories/${storyId}/viewers`, { params: { page, limit: 50 } }),
   // Toggles the like; resolves to { liked, likesCount }
   like: (storyId: string) => api.post(`/stories/${storyId}/like`),
   // Delivered to the creator as a direct message

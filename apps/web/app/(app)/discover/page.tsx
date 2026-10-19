@@ -10,7 +10,7 @@ import { useDebounce } from '@/hooks/use-debounce';
 import { toast } from '@/hooks/use-toast';
 import { cn, formatEuros } from '@/lib/utils';
 import SearchCreators from '@/components/social/search-creators';
-import StoriesBar from '@/components/social/stories-bar';
+import { StoriesBar } from '@/components/stories/stories-bar';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -249,7 +249,9 @@ function DiscoverContent() {
       </div>
 
       {/* Stories of subscribed creators */}
-      <StoriesBar className="mb-6" />
+      <div className="mb-6">
+        <StoriesBar />
+      </div>
 
       {/* Search and Filters */}
       <div className="space-y-4 mb-6">

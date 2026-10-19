@@ -34,6 +34,14 @@ export class StoriesController {
   }
 
   /**
+   * Active stories of the current creator (with view/like counts)
+   */
+  @Get('me')
+  async getMyStories(@CurrentUser('id') userId: string) {
+    return this.storiesService.getCreatorStories(userId, userId);
+  }
+
+  /**
    * Get stories from a specific creator
    */
   @Get('creator/:creatorId')
