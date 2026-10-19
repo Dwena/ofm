@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AlertCircle, Loader2 } from 'lucide-react'
 import { toast } from '@/hooks/use-toast'
+import { formatEuros } from '@/lib/utils'
 
 export interface TierSummary {
   id: string
@@ -80,7 +81,7 @@ export const formatDate = (date: string) => new Date(date).toLocaleDateString('f
 export const formatTierPrice = (tier: TierSummary) =>
   Number(tier.price) === 0
     ? 'Gratuit'
-    : `${Number(tier.price).toFixed(2)}€/${tier.interval === 'year' ? 'an' : 'mois'}`
+    : `${formatEuros(tier.price)}/${tier.interval === 'year' ? 'an' : 'mois'}`
 
 /**
  * "Passera à X le <date>" for a scheduled downgrade

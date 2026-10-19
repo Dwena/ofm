@@ -24,8 +24,8 @@ export class UsersController {
   }
 
   @Get(':username')
-  async getUserByUsername(@Param('username') username: string) {
-    return this.usersService.findByUsername(username);
+  async getUserByUsername(@Param('username') username: string, @CurrentUser('id') viewerId: string) {
+    return this.usersService.findByUsername(username, viewerId);
   }
 
   @Put('profile')

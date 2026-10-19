@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { MessagingService } from '../messaging/messaging.service';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private messagingService: MessagingService,
+  ) {}
 
   async findById(id: string) {
     const user = await this.prisma.user.findUnique({
@@ -39,7 +43,12 @@ export class UsersService {
     return user;
   }
 
-  async findByUsername(username: string) {
+  /**
+   * Public profile of a user, as seen by `viewerId`. Counters are computed
+   * from live data (active subscribers, visible publications, follows) and
+   * the viewer-specific flags drive the profile actions (message, stories, live).
+   */
+  async findByUsername(username: string, viewerId?: string) {
     const user = await this.prisma.user.findUnique({
       where: { username },
       select: {
@@ -52,13 +61,16 @@ export class UsersService {
         location: true,
         website: true,
         role: true,
+        status: true,
+        kycStatus: true,
+        deletedAt: true,
         createdAt: true,
         creatorProfile: {
           select: {
-            totalSubscribers: true,
-            totalContent: true,
             averageRating: true,
             allowMessages: true,
+            allowTips: true,
+            minimumTip: true,
           },
         },
         _count: {
@@ -67,19 +79,94 @@ export class UsersService {
       },
     });
 
-    if (!user) {
+    // Banned or deleted accounts have no public profile
+    if (!user || user.deletedAt || user.status === 'BANNED') {
       throw new NotFoundException('User not found');
     }
 
-    const { _count, creatorProfile, ...profile } = user;
+    const { _count, creatorProfile } = user;
+    const isSelf = viewerId === user.id;
+    const isOther = !!viewerId && !isSelf;
+
+    let creator: {
+      totalSubscribers: number;
+      totalContent: number;
+      averageRating: number;
+      allowMessages: boolean;
+      allowTips: boolean;
+      minimumTip: number;
+    } | null = null;
+    let liveStream: { id: string; title: string } | null = null;
+    let hasActiveStories = false;
+    let hasUnseenStories = false;
+
+    if (user.role === 'CREATOR' && creatorProfile) {
+      const now = new Date();
+      const activeStoriesWhere = { creatorId: user.id, deletedAt: null, expiresAt: { gt: now } };
+
+      const [subscribers, totalContent, live, activeStories, unseenStories] = await Promise.all([
+        // Distinct fans with an active subscription (free or paid)
+        this.prisma.subscription.findMany({
+          where: { tier: { creatorId: user.id }, status: 'ACTIVE' },
+          distinct: ['subscriberId'],
+          select: { subscriberId: true },
+        }),
+        // Same visibility rules as the profile's content grid
+        this.prisma.content.count({
+          where: {
+            creatorId: user.id,
+            status: 'PUBLISHED',
+            deletedAt: null,
+            ...(!isSelf && { visibility: { not: 'PRIVATE' as const } }),
+          },
+        }),
+        this.prisma.liveStream.findFirst({
+          where: { creatorId: user.id, status: 'LIVE' },
+          orderBy: { startedAt: 'desc' },
+          select: { id: true, title: true },
+        }),
+        this.prisma.story.count({ where: activeStoriesWhere }),
+        isOther
+          ? this.prisma.story.count({
+              where: { ...activeStoriesWhere, views: { none: { viewerId } } },
+            })
+          : Promise.resolve(0),
+      ]);
+
+      creator = {
+        totalSubscribers: subscribers.length,
+        totalContent,
+        averageRating: Number(creatorProfile.averageRating),
+        allowMessages: creatorProfile.allowMessages,
+        allowTips: creatorProfile.allowTips,
+        minimumTip: Number(creatorProfile.minimumTip),
+      };
+      liveStream = live;
+      hasActiveStories = activeStories > 0;
+      hasUnseenStories = unseenStories > 0;
+    }
 
     return {
-      ...profile,
-      creatorProfile: creatorProfile
-        ? { ...creatorProfile, averageRating: Number(creatorProfile.averageRating) }
-        : null,
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      bio: user.bio,
+      avatar: user.avatar,
+      coverImage: user.coverImage,
+      location: user.location,
+      website: user.website,
+      role: user.role,
+      createdAt: user.createdAt,
+      isVerified: user.kycStatus === 'VERIFIED',
+      creatorProfile: creator,
       // Free follows (Follow table), distinct from paid subscribers
       followersCount: _count?.followers ?? 0,
+      // Ongoing live of the creator, if any
+      liveStream,
+      hasActiveStories,
+      hasUnseenStories,
+      // Creators can disable messages for people they never wrote to
+      canMessage: isOther ? await this.messagingService.canMessage(viewerId as string, user.id) : false,
     };
   }
 
