@@ -3,6 +3,7 @@ import * as webpush from 'web-push';
 
 import { PushNotificationsService } from './push-notifications.service';
 import { PrismaService } from '../common/database/prisma.service';
+import { MessagingGateway } from '../messaging/messaging.gateway';
 
 jest.mock('web-push', () => ({
   setVapidDetails: jest.fn(),
@@ -164,6 +165,64 @@ describe('PushNotificationsService', () => {
       await middleware({ model: 'Notification', action: 'update', args: {} }, jest.fn().mockResolvedValue({ userId: 'x' }));
 
       expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('emits notification:new to the recipient over the socket gateway', async () => {
+      const gateway = { sendNotificationToUser: jest.fn() };
+      const service = new PushNotificationsService(
+        mockPrismaService as unknown as PrismaService,
+        { get: jest.fn((_key: string, defaultValue?: any) => defaultValue) } as unknown as ConfigService,
+        gateway as unknown as MessagingGateway,
+      );
+      service.onModuleInit();
+      const middleware = mockPrismaService.$use.mock.calls[0][0];
+
+      const notification = { id: 'n-2', userId: 'creator-1', title: 'T', message: 'M', type: 'NEW_TIP' };
+      await middleware({ model: 'Notification', action: 'create', args: {} }, jest.fn().mockResolvedValue(notification));
+      await middleware({ model: 'User', action: 'create', args: {} }, jest.fn().mockResolvedValue({ userId: 'x' }));
+
+      expect(gateway.sendNotificationToUser).toHaveBeenCalledTimes(1);
+      expect(gateway.sendNotificationToUser).toHaveBeenCalledWith('creator-1', notification);
+    });
+
+    it('does not fail the create when the socket emit throws', async () => {
+      const gateway = {
+        sendNotificationToUser: jest.fn(() => {
+          throw new Error('socket down');
+        }),
+      };
+      const service = new PushNotificationsService(
+        mockPrismaService as unknown as PrismaService,
+        { get: jest.fn((_key: string, defaultValue?: any) => defaultValue) } as unknown as ConfigService,
+        gateway as unknown as MessagingGateway,
+      );
+      service.onModuleInit();
+      const middleware = mockPrismaService.$use.mock.calls[0][0];
+
+      const notification = { id: 'n-3', userId: 'u-1', title: 'T', message: 'M', type: 'SYSTEM' };
+      await expect(
+        middleware({ model: 'Notification', action: 'create', args: {} }, jest.fn().mockResolvedValue(notification)),
+      ).resolves.toBe(notification);
+    });
+
+    it('normalizes the data (enum type, metadata.kind) before the create', async () => {
+      const service = buildService();
+      service.onModuleInit();
+      const middleware = mockPrismaService.$use.mock.calls[0][0];
+
+      const params = {
+        model: 'Notification',
+        action: 'create',
+        args: { data: { userId: 'u-1', type: 'PAYMENT_SUCCESS', title: 'T', message: 'M' } },
+      };
+      const next = jest.fn().mockResolvedValue(null);
+      await middleware(params, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({
+          args: { data: { userId: 'u-1', type: 'SYSTEM', title: 'T', message: 'M', metadata: { kind: 'PAYMENT_SUCCESS' } } },
+        }),
+      );
     });
 
     it('maps a notification to a push payload', async () => {

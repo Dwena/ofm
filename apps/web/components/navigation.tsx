@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import NotificationsDropdown from '@/components/social/notifications-dropdown'
 import {
   Home,
   Upload,
@@ -86,6 +87,7 @@ export function Navigation() {
             </div>
           </div>
           <div className="flex items-center space-x-4">
+            <NotificationsDropdown />
             <Link href="/settings">
               <Avatar>
                 <AvatarImage src={user.avatar || undefined} />

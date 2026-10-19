@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { subscriptionsApi, usersApi } from '@/lib/api'
+import { subscriptionsApi, usersApi, socialApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -27,6 +27,8 @@ interface Creator {
   avatar?: string
   bio?: string
   isFollowing?: boolean
+  isSubscribed?: boolean
+  followersCount?: number
   creatorProfile?: {
     totalSubscribers: number
     totalContent: number
@@ -91,6 +93,15 @@ export default function SubscriptionsPage() {
     },
   })
 
+  // Creators followed for free (Follow table)
+  const { data: following, isLoading: followingLoading } = useQuery({
+    queryKey: ['following'],
+    queryFn: async () => {
+      const response = await socialApi.getFollowing()
+      return (response.data as { items: Creator[]; total: number }).items
+    },
+  })
+
   const onError = (error: any) => {
     toast({
       title: 'Erreur',
@@ -98,6 +109,16 @@ export default function SubscriptionsPage() {
       variant: 'destructive',
     })
   }
+
+  const unfollowMutation = useMutation({
+    mutationFn: (creatorId: string) => socialApi.unfollowCreator(creatorId),
+    onSuccess: (_response, creatorId) => {
+      queryClient.invalidateQueries({ queryKey: ['following'] })
+      queryClient.invalidateQueries({ queryKey: ['follow-status', creatorId] })
+      toast({ title: 'Vous ne suivez plus ce créateur' })
+    },
+    onError,
+  })
 
   const cancelMutation = useMutation({
     mutationFn: (subscriptionId: string) => subscriptionsApi.cancel(subscriptionId),
@@ -175,6 +196,14 @@ export default function SubscriptionsPage() {
               </Badge>
             )}
           </TabsTrigger>
+          <TabsTrigger value="following">
+            Suivis
+            {following && following.length > 0 && (
+              <Badge className="ml-2" variant="secondary">
+                {following.length}
+              </Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="discover" className="space-y-4">
@@ -213,7 +242,10 @@ export default function SubscriptionsPage() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <CardTitle>{creator.displayName || creator.username}</CardTitle>
-                          {creator.isFollowing && <Badge variant="success">Abonné</Badge>}
+                          {creator.isSubscribed && <Badge variant="success">Abonné</Badge>}
+                          {creator.isFollowing && !creator.isSubscribed && (
+                            <Badge variant="secondary">Suivi</Badge>
+                          )}
                         </div>
                         <p className="text-sm text-muted-foreground">@{creator.username}</p>
                         {creator.bio && (
@@ -228,11 +260,11 @@ export default function SubscriptionsPage() {
                   </CardHeader>
                   <CardFooter>
                     <Button
-                      variant={creator.isFollowing ? 'outline' : 'default'}
+                      variant={creator.isSubscribed ? 'outline' : 'default'}
                       className="w-full"
                       onClick={() => router.push(`/${creator.username}`)}
                     >
-                      {creator.isFollowing ? 'Voir le profil' : 'Voir les offres'}
+                      {creator.isSubscribed ? 'Voir le profil' : 'Voir les offres'}
                     </Button>
                   </CardFooter>
                 </Card>
@@ -370,6 +402,64 @@ export default function SubscriptionsPage() {
                 </p>
                 <p className="text-sm text-muted-foreground mt-2">
                   Découvrez des créateurs et abonnez-vous à leur contenu
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        <TabsContent value="following">
+          {followingLoading ? (
+            <div className="flex justify-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+            </div>
+          ) : following && following.length > 0 ? (
+            <div className="grid md:grid-cols-2 gap-6">
+              {following.map((creator) => (
+                <Card key={creator.id}>
+                  <CardHeader>
+                    <div className="flex items-start space-x-4">
+                      <Avatar className="h-16 w-16">
+                        <AvatarImage src={creator.avatar} />
+                        <AvatarFallback>
+                          {(creator.displayName || creator.username).substring(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <CardTitle>{creator.displayName || creator.username}</CardTitle>
+                          {creator.isSubscribed && <Badge variant="success">Abonné</Badge>}
+                        </div>
+                        <p className="text-sm text-muted-foreground">@{creator.username}</p>
+                        {creator.bio && <p className="text-sm mt-2 line-clamp-2">{creator.bio}</p>}
+                        <div className="flex items-center space-x-4 mt-2 text-sm text-muted-foreground">
+                          <span>{creator.followersCount ?? 0} followers</span>
+                          <span>{creator.creatorProfile?.totalContent ?? 0} contenus</span>
+                        </div>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardFooter className="gap-2">
+                    <Button className="flex-1" onClick={() => router.push(`/${creator.username}`)}>
+                      Voir le profil
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => unfollowMutation.mutate(creator.id)}
+                      disabled={unfollowMutation.isPending}
+                    >
+                      Ne plus suivre
+                    </Button>
+                  </CardFooter>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <p className="text-muted-foreground">Vous ne suivez encore aucun créateur</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Suivez gratuitement vos créateurs préférés depuis leur profil
                 </p>
               </CardContent>
             </Card>

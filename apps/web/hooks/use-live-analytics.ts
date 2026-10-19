@@ -16,6 +16,20 @@ const METRIC_NOTIFICATION_TYPES = new Set([
   'NEW_COMMENT',
 ])
 
+/**
+ * `metadata.kind` markers set server-side on every notification (see
+ * apps/api/src/notifications/notification-kind.ts). Purchases and tips may be
+ * sent as SYSTEM notifications, so the kind is what identifies them.
+ */
+const METRIC_NOTIFICATION_KINDS = new Set([
+  'TIP',
+  'PPV_PURCHASE',
+  'PURCHASE',
+  'NEW_SUBSCRIBER',
+  'SUBSCRIPTION_RENEWAL',
+  'PAYOUT',
+])
+
 /** Socket events that should refresh metrics */
 const METRIC_EVENTS = ['notification:new', 'analytics:update'] as const
 
@@ -24,13 +38,12 @@ interface LiveEventPayload {
   metadata?: { kind?: string } | null
 }
 
-function isMetricEvent(event: string, payload: LiveEventPayload | undefined) {
+export function isMetricEvent(event: string, payload: LiveEventPayload | undefined) {
   if (event === 'analytics:update') return true
   if (!payload?.type) return false
   if (METRIC_NOTIFICATION_TYPES.has(payload.type)) return true
-  // PPV purchases are sent as SYSTEM notifications with a purchase marker
   const kind = payload.metadata?.kind?.toUpperCase()
-  return kind === 'PURCHASE' || kind === 'PPV_PURCHASE'
+  return !!kind && METRIC_NOTIFICATION_KINDS.has(kind)
 }
 
 /**

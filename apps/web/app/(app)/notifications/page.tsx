@@ -32,7 +32,8 @@ type NotificationType =
   | 'PAYOUT_COMPLETED'
   | 'CONTENT_APPROVED'
   | 'CONTENT_REJECTED'
-  | 'SYSTEM';
+  | 'SYSTEM'
+  | 'NEW_FOLLOWER';
 
 // Shape returned by GET /notifications
 interface Notification {
@@ -48,6 +49,7 @@ interface Notification {
 
 const notificationIcons: Partial<Record<NotificationType, any>> = {
   NEW_SUBSCRIBER: UserPlus,
+  NEW_FOLLOWER: UserPlus,
   NEW_MESSAGE: MessageCircle,
   NEW_TIP: DollarSign,
   NEW_COMMENT: MessageCircle,
@@ -59,6 +61,7 @@ const notificationIcons: Partial<Record<NotificationType, any>> = {
 
 const notificationColors: Partial<Record<NotificationType, string>> = {
   NEW_SUBSCRIBER: 'text-green-500',
+  NEW_FOLLOWER: 'text-pink-500',
   NEW_MESSAGE: 'text-purple-500',
   NEW_TIP: 'text-yellow-500',
   NEW_COMMENT: 'text-blue-500',

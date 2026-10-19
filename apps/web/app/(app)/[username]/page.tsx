@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { usersApi, subscriptionsApi, contentApi } from '@/lib/api'
+import { usersApi, subscriptionsApi, contentApi, socialApi } from '@/lib/api'
 import { useParams, useRouter } from 'next/navigation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,7 +20,9 @@ import {
   MessageCircle,
   Lock,
   CheckCircle,
-  ExternalLink
+  ExternalLink,
+  UserPlus,
+  UserCheck
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { formatRelativeTime } from '@/lib/utils'
@@ -49,6 +51,43 @@ export default function CreatorProfilePage() {
       return response.data
     },
   })
+
+  // Free follow (independent from paid subscriptions)
+  const canFollow = !!creator?.id && creator.role === 'CREATOR' && currentUser?.id !== creator.id
+  const { data: followStatus } = useQuery({
+    queryKey: ['follow-status', creator?.id],
+    queryFn: async () => {
+      const response = await socialApi.getFollowStatus(creator.id)
+      return response.data as { isFollowing: boolean; followersCount: number }
+    },
+    enabled: canFollow,
+  })
+
+  const followMutation = useMutation({
+    mutationFn: async (follow: boolean) => {
+      const response = follow
+        ? await socialApi.followCreator(creator.id)
+        : await socialApi.unfollowCreator(creator.id)
+      return response.data as { isFollowing: boolean; followersCount: number }
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(['follow-status', creator?.id], data)
+      queryClient.invalidateQueries({ queryKey: ['following'] })
+      toast({
+        title: data.isFollowing ? 'Vous suivez ce créateur' : 'Vous ne suivez plus ce créateur',
+      })
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Erreur',
+        description: error?.response?.data?.message || 'Action impossible pour le moment.',
+        variant: 'destructive',
+      })
+    },
+  })
+
+  const isFollowing = followStatus?.isFollowing ?? false
+  const followersCount = followStatus?.followersCount ?? creator?.followersCount ?? 0
 
   // Fetch creator's subscription tiers
   const { data: tiers, isLoading: loadingTiers } = useQuery({
@@ -282,6 +321,12 @@ export default function CreatorProfilePage() {
                 <span className="text-muted-foreground ml-1">Abonnés</span>
               </div>
               <div>
+                <span className="font-bold text-lg">{followersCount}</span>
+                <span className="text-muted-foreground ml-1">
+                  {followersCount > 1 ? 'Followers' : 'Follower'}
+                </span>
+              </div>
+              <div>
                 <span className="font-bold text-lg">
                   {creator.creatorProfile.totalContent || 0}
                 </span>
@@ -299,7 +344,7 @@ export default function CreatorProfilePage() {
           )}
 
           {/* Actions */}
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             {isOwnProfile ? (
               <Button onClick={() => router.push('/settings')}>
                 Modifier le profil
@@ -320,8 +365,28 @@ export default function CreatorProfilePage() {
                     'S\'abonner'
                   )}
                 </Button>
+                {canFollow && (
+                  <Button
+                    variant={isFollowing ? 'secondary' : 'outline'}
+                    size="lg"
+                    onClick={() => followMutation.mutate(!isFollowing)}
+                    disabled={followMutation.isPending}
+                  >
+                    {isFollowing ? (
+                      <>
+                        <UserCheck className="h-4 w-4 mr-2" />
+                        Ne plus suivre
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="h-4 w-4 mr-2" />
+                        Suivre
+                      </>
+                    )}
+                  </Button>
+                )}
                 {creator.creatorProfile?.allowMessages && (
-                  <Button variant="outline" size="lg" onClick={() => router.push(`/messages?user=${creator.id}`)}>
+                  <Button variant="outline" size="lg" onClick={() => router.push(`/messages?user=${encodeURIComponent(creator.username)}`)}>
                     <MessageCircle className="h-4 w-4 mr-2" />
                     Message
                   </Button>

@@ -49,6 +49,8 @@ export class UsersService {
         bio: true,
         avatar: true,
         coverImage: true,
+        location: true,
+        website: true,
         role: true,
         createdAt: true,
         creatorProfile: {
@@ -56,7 +58,11 @@ export class UsersService {
             totalSubscribers: true,
             totalContent: true,
             averageRating: true,
+            allowMessages: true,
           },
+        },
+        _count: {
+          select: { followers: true },
         },
       },
     });
@@ -65,7 +71,16 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    return user;
+    const { _count, creatorProfile, ...profile } = user;
+
+    return {
+      ...profile,
+      creatorProfile: creatorProfile
+        ? { ...creatorProfile, averageRating: Number(creatorProfile.averageRating) }
+        : null,
+      // Free follows (Follow table), distinct from paid subscribers
+      followersCount: _count?.followers ?? 0,
+    };
   }
 
   async updateProfile(userId: string, updateProfileDto: UpdateProfileDto) {
