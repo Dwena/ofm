@@ -198,12 +198,15 @@ jobs:
     name: Notify Deployment
     needs: deploy
     runs-on: ubuntu-latest
-    if: always()
+    # Only report when a deployment actually ran
+    if: always() && needs.deploy.result != 'skipped'
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Send deployment notification
         uses: 8398a7/action-slack@v3
-        if: always()
+        if: env.SLACK_WEBHOOK_URL != ''
         with:
           status: ${{ job.status }}
           text: |
