@@ -13,6 +13,27 @@ Guide complet pour configurer et lancer la plateforme OFM en développement loca
 
 ---
 
+## ⚡ Tout lancer en une commande
+
+```bash
+npm run dev:up        # ou ./scripts/dev-up.sh
+```
+
+Le script démarre PostgreSQL, Redis, MinIO et MailDev (Docker), crée `apps/api/.env` et `apps/web/.env.local` s'ils n'existent pas (secrets JWT et clés VAPID générés), crée le bucket MinIO, applique les migrations, **vide la base puis charge les données de démo**, et lance l'API et le front :
+
+| Service | URL |
+|---|---|
+| Front | http://localhost:3000 |
+| API (Swagger) | http://localhost:3001/api/docs |
+| E-mails reçus (MailDev) | http://localhost:1080 |
+| Stockage (MinIO) | http://localhost:9001 — `minioadmin` / `minioadmin_dev_only` |
+
+Comptes de test (mot de passe `SecurePass123!`) : voir [docs/SEED_ACCOUNTS.md](docs/SEED_ACCOUNTS.md).
+
+- `npm run dev:up -- --keep-db` relance sans toucher aux données.
+- Paiements : renseigner les clés Stripe **de test** dans `apps/api/.env` (`STRIPE_SECRET_KEY`) et `apps/web/.env.local` (`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`).
+- Windows : lancer depuis WSL ou Git Bash.
+
 ## 🔧 Installation rapide
 
 ### 1. Services avec Docker (Recommandé)

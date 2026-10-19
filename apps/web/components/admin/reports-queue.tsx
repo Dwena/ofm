@@ -74,6 +74,7 @@ function describeEntity(report: AdminReport) {
     case 'CONTENT':
       return `${entity.type ?? 'Contenu'} : ${entity.title || 'Sans titre'}${entity.deletedAt ? ' (retiré)' : ''}`
     case 'COMMENT':
+      return `« ${String(entity.text ?? '').slice(0, 140)} »`
     case 'MESSAGE':
       return `« ${String(entity.content ?? '').slice(0, 140)} »`
     default:

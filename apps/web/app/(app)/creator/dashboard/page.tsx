@@ -91,9 +91,9 @@ export default function CreatorDashboard() {
     },
     {
       title: 'Abonnés',
-      value: profile?.subscribersCount || 0,
+      value: profile?.totalSubscribers || 0,
       icon: Users,
-      description: `${profile?.activeSubscriptionsCount || 0} actifs`,
+      description: 'Abonnements actifs',
       color: 'text-purple-600',
     },
     {

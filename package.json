@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev",
+    "dev:up": "bash scripts/dev-up.sh",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
