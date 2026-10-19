@@ -86,7 +86,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   // Send tip mutation
   const sendTipMutation = useMutation({
     mutationFn: async (amount: number) => {
-      await liveApi.sendTip(params.streamId, amount);
+      if (!stream) throw new Error('Stream not loaded');
+      await liveApi.sendTip(stream.creator.id, amount);
     },
     onSuccess: () => {
       setShowTipModal(false);

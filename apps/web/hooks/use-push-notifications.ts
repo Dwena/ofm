@@ -76,7 +76,7 @@ export function usePushNotifications() {
 
       const pushSubscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey) as BufferSource,
       });
 
       setSubscription(pushSubscription);
@@ -129,7 +129,7 @@ export function usePushNotifications() {
       }
 
       const registration = await navigator.serviceWorker.ready;
-      await registration.showNotification(options.title, {
+      await registration.showNotification(options.title, <NotificationOptions & { image?: string; vibrate?: number[] }>{
         body: options.body,
         icon: options.icon || '/icon-192x192.png',
         badge: options.badge || '/icon-72x72.png',

@@ -54,7 +54,7 @@ describe('StoriesService', () => {
   describe('createStory', () => {
     const userId = 'creator-123';
     const dto = {
-      type: 'IMAGE' as any,
+      type: 'PHOTO' as any,
       mediaUrl: 'https://example.com/image.jpg',
       caption: 'Test story',
     };
@@ -88,7 +88,7 @@ describe('StoriesService', () => {
       // Check that expiration is ~24h from now
       const expiresAt = createCall.data.expiresAt;
       const now = new Date();
-      const hoursDiff = (expiresAt - now) / (1000 * 60 * 60);
+      const hoursDiff = (expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60);
       expect(hoursDiff).toBeGreaterThan(23.9);
       expect(hoursDiff).toBeLessThan(24.1);
     });
@@ -115,7 +115,7 @@ describe('StoriesService', () => {
 
     it('should throw BadRequestException if image story has no mediaUrl', async () => {
       const mockUser = { role: 'CREATOR' };
-      const invalidDto = { type: 'IMAGE' as any };
+      const invalidDto = { type: 'PHOTO' as any };
 
       mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
 

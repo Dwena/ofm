@@ -86,7 +86,7 @@ export default function UploadPage() {
       formData.append('file', file)
 
       const response = await mediaApi.upload(formData, {
-        onUploadProgress: (progressEvent) => {
+        onUploadProgress: (progressEvent: { loaded: number; total?: number }) => {
           const progress = progressEvent.total
             ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
             : 0
@@ -163,7 +163,7 @@ export default function UploadPage() {
           type,
           uploading: false,
           progress: 0,
-          validationError,
+          validationError: validationError ?? undefined,
         }
       })
 

@@ -16,10 +16,18 @@ export default function DetailedStatsPage() {
   const [period, setPeriod] = useState('30d');
   const [contentType, setContentType] = useState('all');
 
+  // Map the UI period selector to the analytics API interval/periods params
+  const periodParams = {
+    '7d': { interval: 'day', periods: 7 },
+    '30d': { interval: 'day', periods: 30 },
+    '90d': { interval: 'week', periods: 13 },
+    '1y': { interval: 'month', periods: 12 },
+  }[period] as { interval: 'day' | 'week' | 'month' | 'year'; periods: number } | undefined;
+
   const { data: overview, isLoading } = useQuery({
     queryKey: ['analytics-overview', period],
     queryFn: async () => {
-      const response = await analyticsApi.getOverview(period);
+      const response = await analyticsApi.getOverview();
       return response.data;
     },
   });
@@ -27,7 +35,7 @@ export default function DetailedStatsPage() {
   const { data: engagement } = useQuery({
     queryKey: ['engagement-stats', period],
     queryFn: async () => {
-      const response = await analyticsApi.getEngagementStats(period);
+      const response = await analyticsApi.getEngagementStats(periodParams);
       return response.data;
     },
   });
@@ -35,7 +43,7 @@ export default function DetailedStatsPage() {
   const { data: subscribers } = useQuery({
     queryKey: ['subscriber-growth', period],
     queryFn: async () => {
-      const response = await analyticsApi.getSubscriberGrowth(period);
+      const response = await analyticsApi.getSubscriberGrowth(periodParams);
       return response.data;
     },
   });

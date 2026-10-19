@@ -81,7 +81,7 @@ export function Navigation() {
           <div className="flex items-center space-x-4">
             <Link href="/settings">
               <Avatar>
-                <AvatarImage src={user.creatorProfile?.profilePicture || undefined} />
+                <AvatarImage src={user.avatar || undefined} />
                 <AvatarFallback>
                   {user.username.substring(0, 2).toUpperCase()}
                 </AvatarFallback>

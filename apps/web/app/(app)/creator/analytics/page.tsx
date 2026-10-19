@@ -73,7 +73,7 @@ export default function AnalyticsPage() {
   const { data: paymentHistory, isLoading: paymentsLoading } = useQuery({
     queryKey: ['payment-history'],
     queryFn: async () => {
-      const response = await paymentsApi.getHistory()
+      const response = await paymentsApi.getTransactions(1, 100)
       return response.data
     },
   })

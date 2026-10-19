@@ -81,6 +81,21 @@ export const usersApi = {
   getByUsername: (username: string) => api.get(`/users/${username}`),
   updateProfile: (data: any) => api.put('/users/profile', data),
   getStats: () => api.get('/users/stats'),
+  discover: (params: { search?: string; category?: string; sortBy?: string; page?: number; limit?: number } = {}) => {
+    const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED'> = {
+      popular: 'POPULAR',
+      subscribers: 'POPULAR',
+      recent: 'NEW',
+    }
+    return api.get('/social/discover/creators', {
+      params: {
+        query: params.search || undefined,
+        sortBy: params.sortBy ? sortMap[params.sortBy] ?? 'RECOMMENDED' : undefined,
+        page: params.page,
+        limit: params.limit,
+      },
+    })
+  },
 }
 
 export const mediaApi = {
@@ -89,9 +104,9 @@ export const mediaApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
       ...config,
     }),
-  uploadImage: (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
+  uploadImage: (fileOrFormData: File | FormData) => {
+    const formData = fileOrFormData instanceof FormData ? fileOrFormData : new FormData()
+    if (fileOrFormData instanceof File) formData.append('file', fileOrFormData)
     return api.post('/media/upload/image', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -119,6 +134,8 @@ export const paymentsApi = {
   getTransactions: (page: number = 1, limit: number = 20) =>
     api.get(`/payments/transactions?page=${page}&limit=${limit}`),
   getPayouts: () => api.get('/payments/payouts'),
+  sendTip: (creatorId: string, amount: number, message?: string) =>
+    api.post(`/payments/tip/${creatorId}`, { amount, message }),
   createPaymentIntent: (data: { amount: number; currency?: string }) =>
     api.post('/payments/create-intent', data),
   getFilteredTransactions: (filters: any) =>
@@ -222,7 +239,7 @@ export const socialApi = {
     page?: number
     limit?: number
     sort?: string
-  }) => api.get('/social/discover', { params }),
+  }) => api.get('/social/discover/creators', { params }),
 
   // Search
   searchCreators: (query: string) =>
@@ -269,4 +286,66 @@ export const analyticsApi = {
     startDate?: string
     endDate?: string
   }) => api.get('/analytics/report/detailed', { params }),
+}
+
+export const adminApi = {
+  getStats: (params?: { startDate?: string; endDate?: string }) =>
+    api.get('/admin/stats/platform', { params }),
+  getUsers: (params?: { query?: string; role?: string; status?: string; page?: number; limit?: number }) =>
+    api.get('/admin/users', { params }),
+  getRecentUsers: (limit: number = 5) =>
+    api.get('/admin/users', { params: { page: 1, limit } }),
+  getUserDetails: (userId: string) => api.get(`/admin/users/${userId}`),
+  moderateUser: (data: { userId: string; action: string; reason?: string; durationDays?: number }) =>
+    api.post('/admin/users/moderate', data),
+  getReports: (params?: { status?: string; type?: string; page?: number; limit?: number }) =>
+    api.get('/admin/reports', { params }),
+  getPendingReports: (limit: number = 5) =>
+    api.get('/admin/reports', { params: { status: 'PENDING', page: 1, limit } }),
+  handleReport: (data: { reportId: string; status: string; adminNotes?: string; action?: string }) =>
+    api.post('/admin/reports/handle', data),
+  getActivityLogs: (page: number = 1, limit: number = 20) =>
+    api.get('/admin/activity-logs', { params: { page, limit } }),
+}
+
+export const liveApi = {
+  getLiveStreams: () => api.get('/streaming/live'),
+  getScheduledStreams: () => api.get('/streaming/scheduled'),
+  getCreatorStreams: (creatorId: string) => api.get(`/streaming/creator/${creatorId}`),
+  getStream: (streamId: string) => api.get(`/streaming/${streamId}`),
+  join: (streamId: string) => api.post(`/streaming/${streamId}/join`),
+  leave: (streamId: string) => api.post(`/streaming/${streamId}/leave`),
+  // Tips go to the stream's creator through the payments endpoint
+  sendTip: (creatorId: string, amount: number, message?: string) =>
+    paymentsApi.sendTip(creatorId, amount, message),
+}
+
+export const storiesApi = {
+  getFeed: () => api.get('/stories/feed'),
+  getCreatorStories: (creatorId: string) => api.get(`/stories/creator/${creatorId}`),
+  // Groups a creator's active stories into the shape the stories viewer expects
+  getGroup: async (creatorId: string) => {
+    const response = await api.get(`/stories/creator/${creatorId}`)
+    const payload = response.data?.data ?? response.data
+    const stories: any[] = Array.isArray(payload) ? payload : []
+    const creator = stories[0]?.creator ?? { id: creatorId, username: '' }
+    return {
+      ...response,
+      data: {
+        userId: creatorId,
+        user: creator,
+        stories: stories
+          .map((story) => ({ ...story, user: story.creator, views: story._count?.views ?? 0 }))
+          .reverse(),
+      },
+    }
+  },
+  getStory: (storyId: string) => api.get(`/stories/${storyId}`),
+  markAsViewed: (storyId: string) => api.post(`/stories/${storyId}/view`),
+  getViewers: (storyId: string) => api.get(`/stories/${storyId}/viewers`),
+  // TODO: backend endpoints for story likes and replies don't exist yet
+  like: (storyId: string) => api.post(`/stories/${storyId}/like`),
+  reply: (storyId: string, message: string) =>
+    api.post(`/stories/${storyId}/reply`, { message }),
+  delete: (storyId: string) => api.delete(`/stories/${storyId}`),
 }

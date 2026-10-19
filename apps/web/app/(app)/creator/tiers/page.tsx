@@ -23,7 +23,7 @@ export default function SubscriptionTiersPage() {
   const { data: tiers, isLoading } = useQuery({
     queryKey: ['subscription-tiers'],
     queryFn: async () => {
-      const response = await subscriptionsApi.getCreatorTiers();
+      const response = await subscriptionsApi.getMyTiers();
       return response.data;
     },
   });

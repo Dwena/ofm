@@ -97,7 +97,7 @@ export default function NotificationsPage() {
   // Delete notification mutation
   const deleteNotificationMutation = useMutation({
     mutationFn: async (notificationId: string) => {
-      await notificationsApi.delete(notificationId);
+      await notificationsApi.deleteNotification(notificationId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
