@@ -204,15 +204,14 @@ export class UsersService {
    * as GET /users/me.
    */
   async updateProfile(userId: string, updateProfileDto: UpdateProfileDto) {
+    // Only the fields sent are changed; an empty string (or null) clears the field
     const userData: Record<string, unknown> = {};
     const creatorData: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updateProfileDto)) {
       if (value === undefined) continue;
-      if ((CREATOR_PROFILE_FIELDS as readonly string[]).includes(key)) {
-        creatorData[key] = value;
-      } else {
-        userData[key] = value;
-      }
+      const trimmed = typeof value === 'string' ? value.trim() : value;
+      const target = (CREATOR_PROFILE_FIELDS as readonly string[]).includes(key) ? creatorData : userData;
+      target[key] = trimmed === '' ? null : trimmed;
     }
 
     if (Object.keys(creatorData).length > 0) {

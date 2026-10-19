@@ -1,42 +1,48 @@
 import {
-  IsString,
-  IsOptional,
-  MaxLength,
-  IsUrl,
   IsBoolean,
   IsNumber,
-  Min,
+  IsOptional,
+  IsString,
+  IsUrl,
   Max,
+  MaxLength,
+  Min,
+  ValidateIf,
 } from 'class-validator';
+
+/** Empty strings / null clear the field (see UsersService.updateProfile) */
+const isSet = (value: unknown) => value !== undefined && value !== null && value !== '';
 
 export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  displayName?: string;
+  displayName?: string | null;
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  bio?: string;
+  bio?: string | null;
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  location?: string;
+  location?: string | null;
 
-  // null clears the website
-  @IsOptional()
-  @IsUrl({ protocols: ['http', 'https'] })
+  @ValidateIf((o) => isSet(o.website))
+  @IsUrl({ protocols: ['http', 'https'] }, { message: "L'adresse du site web est invalide (ex. https://exemple.com)" })
+  @MaxLength(200)
   website?: string | null;
 
-  // Profile images: set by POST /users/profile/avatar|cover, null removes them
-  @IsOptional()
+  // Profile images: set by POST /users/profile/avatar|cover; empty / null removes them
+  @ValidateIf((o) => isSet(o.avatar))
   @IsUrl({ protocols: ['http', 'https'], require_tld: false })
+  @MaxLength(2048)
   avatar?: string | null;
 
-  @IsOptional()
+  @ValidateIf((o) => isSet(o.coverImage))
   @IsUrl({ protocols: ['http', 'https'], require_tld: false })
+  @MaxLength(2048)
   coverImage?: string | null;
 
   // Creator settings (CreatorProfile), creators only
@@ -59,9 +65,14 @@ export class UpdateProfileDto {
   @Min(1)
   @Max(10000)
   minimumTip?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  autoAcceptSubscribers?: boolean;
 }
 
 export const CREATOR_PROFILE_FIELDS = [
+  'autoAcceptSubscribers',
   'welcomeMessage',
   'allowMessages',
   'allowTips',

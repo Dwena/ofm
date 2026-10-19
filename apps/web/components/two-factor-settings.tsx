@@ -100,15 +100,15 @@ export function TwoFactorSettings() {
 
   return (
     <div className="p-4 border rounded-lg space-y-4">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
         <div className="flex items-center gap-3">
           {enabled ? (
-            <ShieldCheck className="h-5 w-5 text-green-600" />
+            <ShieldCheck className="h-5 w-5 shrink-0 text-green-600" />
           ) : (
-            <Shield className="h-5 w-5 text-muted-foreground" />
+            <Shield className="h-5 w-5 shrink-0 text-muted-foreground" />
           )}
           <div>
-            <p className="font-medium flex items-center gap-2">
+            <p className="font-medium flex flex-wrap items-center gap-2">
               Authentification à deux facteurs
               <Badge variant={enabled ? 'default' : 'secondary'}>{enabled ? 'Activée' : 'Désactivée'}</Badge>
             </p>

@@ -157,6 +157,9 @@ model User {
   twoFactorEnabled Boolean @default(false)
   twoFactorSecret  String?
 
+  // Per-category notification preferences (see notifications/notification-preferences.ts)
+  notificationPreferences Json?
+
   // Stripe
   stripeCustomerId String? @unique
   stripeAccountId  String? @unique

@@ -113,6 +113,12 @@ export const authApi = {
     api.get<{ registrationOpen: boolean; maintenanceMode: boolean; maintenanceMessage: string | null }>(
       '/settings/public'
     ),
+  // Returns fresh { accessToken, refreshToken } (other sessions are revoked)
+  changePassword: (currentPassword: string, newPassword: string) =>
+    api.put('/auth/password', { currentPassword, newPassword }),
+  logoutAll: () => api.post('/auth/logout-all'),
+  deleteAccount: (data: { password: string; totpCode?: string }) =>
+    api.delete('/auth/account', { data }),
 }
 
 export const pushApi = {
@@ -377,8 +383,19 @@ export const messagesApi = {
 }
 
 export const notificationsApi = {
-  getAll: (unreadOnly: boolean = false) =>
-    api.get('/notifications', { params: { unreadOnly } }),
+  // Paginated: { items, total, unreadCount, page, limit, hasMore }
+  getAll: (params: { unreadOnly?: boolean; category?: string; page?: number; limit?: number } = {}) =>
+    api.get('/notifications', {
+      params: {
+        unreadOnly: params.unreadOnly ? 'true' : undefined,
+        category: params.category || undefined,
+        page: params.page,
+        limit: params.limit,
+      },
+    }),
+  getPreferences: () => api.get('/notifications/preferences'),
+  updatePreferences: (data: Record<string, { inApp?: boolean; push?: boolean }>) =>
+    api.put('/notifications/preferences', data),
   markAsRead: (id: string) => api.put(`/notifications/${id}/read`),
   markAllAsRead: () => api.put('/notifications/read-all'),
   deleteNotification: (id: string) => api.delete(`/notifications/${id}`),

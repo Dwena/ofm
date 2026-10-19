@@ -51,10 +51,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         avatar: true,
         emailVerified: true,
         twoFactorEnabled: true,
+        deletedAt: true,
       },
     });
 
-    if (!user) {
+    if (!user || user.deletedAt) {
       throw new UnauthorizedException('User not found');
     }
 
@@ -62,6 +63,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       throw new UnauthorizedException('Account has been suspended');
     }
 
-    return user;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { deletedAt, ...currentUser } = user;
+    return currentUser;
   }
 }
