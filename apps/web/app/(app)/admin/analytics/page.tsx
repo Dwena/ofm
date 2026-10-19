@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { format, parseISO } from 'date-fns'
 import { fr } from 'date-fns/locale'
@@ -21,7 +22,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { EmptyState, LoadingState } from '@/components/admin/admin-shared'
+import { EmptyState, ErrorState, LoadingState } from '@/components/admin/admin-shared'
 import {
   ChartLegend,
   ChartTooltip,
@@ -111,7 +112,7 @@ export default function AdminAnalyticsPage() {
     return { startDate: start.toISOString(), endDate: end.toISOString() }
   }, [period])
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['admin-analytics', period, interval],
     queryFn: async () => {
       const response = await adminApi.getAnalytics({ ...range, interval })
@@ -171,7 +172,7 @@ export default function AdminAnalyticsPage() {
       {isLoading ? (
         <LoadingState label="Chargement des statistiques..." />
       ) : isError || !data ? (
-        <EmptyState>Impossible de charger les statistiques</EmptyState>
+        <ErrorState error={error} onRetry={() => refetch()} label="Impossible de charger les statistiques" />
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -415,7 +416,9 @@ export default function AdminAnalyticsPage() {
                               <AvatarFallback>{(creator.username || '??').substring(0, 2).toUpperCase()}</AvatarFallback>
                             </Avatar>
                             <div className="min-w-0">
-                              <p className="font-medium truncate">{creator.displayName || creator.username || 'Inconnu'}</p>
+                              <Link href={`/admin/users?user=${creator.id}`} className="font-medium truncate hover:underline block">
+                                {creator.displayName || creator.username || 'Inconnu'}
+                              </Link>
                               {creator.username && <p className="text-xs text-muted-foreground">@{creator.username}</p>}
                             </div>
                           </div>

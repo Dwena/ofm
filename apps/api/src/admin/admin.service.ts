@@ -9,6 +9,8 @@ import {
   GetPlatformStatsDto,
   GetAdminContentDto,
   GetAuditLogsDto,
+  ReviewKycDto,
+  KycDecision,
   AdminContentFilter,
   UserAction,
   ReportStatus,
@@ -54,7 +56,7 @@ export class AdminService {
    * Get all users with filters
    */
   async getUsers(dto: GetUsersDto) {
-    const { query, role, status, page = 1, limit = 20 } = dto;
+    const { query, role, status, kycStatus, page = 1, limit = 20 } = dto;
     const skip = (page - 1) * limit;
 
     const where: any = {
@@ -77,6 +79,10 @@ export class AdminService {
       where.status = status;
     }
 
+    if (kycStatus) {
+      where.kycStatus = kycStatus;
+    }
+
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
@@ -93,6 +99,8 @@ export class AdminService {
           avatar: true,
           emailVerified: true,
           stripeOnboarded: true,
+          kycStatus: true,
+          kycSubmittedAt: true,
           createdAt: true,
           lastLoginAt: true,
           creatorProfile: {
@@ -118,7 +126,36 @@ export class AdminService {
   }
 
   /**
-   * Get user details
+   * Ids of the entities a user is responsible for that can be reported:
+   * the account itself, their contents, and reported comments/messages they wrote.
+   */
+  private async getReportableIds(userId: string): Promise<string[]> {
+    const [contents, commentOrMessageReports] = await Promise.all([
+      this.prisma.content.findMany({ where: { creatorId: userId }, select: { id: true } }),
+      this.prisma.report.findMany({
+        where: { reportedType: { in: ['COMMENT', 'comment', 'MESSAGE', 'message'] } },
+        select: { reportedId: true },
+      }),
+    ]);
+    const candidateIds = [...new Set((commentOrMessageReports ?? []).map((r: any) => r.reportedId))] as string[];
+    const [comments, messages] = candidateIds.length
+      ? await Promise.all([
+          this.prisma.comment.findMany({ where: { id: { in: candidateIds }, userId }, select: { id: true } }),
+          this.prisma.message.findMany({ where: { id: { in: candidateIds }, senderId: userId }, select: { id: true } }),
+        ])
+      : [[], []];
+
+    return [
+      userId,
+      ...(contents ?? []).map((c: any) => c.id),
+      ...(comments ?? []).map((c: any) => c.id),
+      ...(messages ?? []).map((m: any) => m.id),
+    ];
+  }
+
+  /**
+   * Get user details: account, stats and the recent activity the back-office needs
+   * (subscriptions, content, transactions, reports against the user, audit history).
    */
   async getUserDetails(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -133,44 +170,217 @@ export class AdminService {
       throw new NotFoundException('User not found');
     }
 
-    // Get user statistics
-    const [contentCount, subscriptionCount, transactionSum, reportCount] = await Promise.all([
+    const userSelect = { id: true, username: true, displayName: true, avatar: true };
+    const transactionWhere = {
+      OR: [{ fromUserId: userId }, { toUserId: userId }],
+    };
+    const reportWhere = { reportedId: { in: await this.getReportableIds(userId) } };
+
+    const [
+      contentCount,
+      subscriptionCount,
+      subscriberCount,
+      transactionSum,
+      reportCount,
+      subscriptions,
+      contents,
+      transactions,
+      reports,
+      auditLogs,
+    ] = await Promise.all([
       this.prisma.content.count({
         where: { creatorId: userId, deletedAt: null },
       }),
       this.prisma.subscription.count({
         where: { subscriberId: userId },
       }),
+      this.prisma.subscription.count({
+        where: { tier: { creatorId: userId }, status: 'ACTIVE' },
+      }),
       this.prisma.transaction.aggregate({
-        where: {
-          OR: [
-            { fromUserId: userId },
-            { toUserId: userId },
-          ],
-          status: 'COMPLETED',
-        },
+        where: { ...transactionWhere, status: 'COMPLETED' },
         _sum: {
           amount: true,
         },
       }),
-      this.prisma.report.count({
-        where: { reportedId: userId },
+      this.prisma.report.count({ where: reportWhere }),
+      this.prisma.subscription.findMany({
+        where: { subscriberId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          status: true,
+          currentPeriodEnd: true,
+          cancelAtPeriodEnd: true,
+          createdAt: true,
+          tier: {
+            select: { id: true, name: true, price: true, creator: { select: userSelect } },
+          },
+        },
+      }),
+      this.prisma.content.findMany({
+        where: { creatorId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          title: true,
+          type: true,
+          status: true,
+          isPpv: true,
+          viewCount: true,
+          likeCount: true,
+          createdAt: true,
+          deletedAt: true,
+        },
+      }),
+      this.prisma.transaction.findMany({
+        where: transactionWhere,
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          amount: true,
+          platformFee: true,
+          netAmount: true,
+          fromUserId: true,
+          toUserId: true,
+          createdAt: true,
+          fromUser: { select: userSelect },
+          toUser: { select: userSelect },
+        },
+      }),
+      this.prisma.report.findMany({
+        where: reportWhere,
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        include: { reporter: { select: userSelect } },
+      }),
+      this.prisma.auditLog.findMany({
+        where: { resourceId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
       }),
     ]);
 
-    // Never expose credentials to the back-office
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, twoFactorSecret, ...safeUser } = user;
+    const actorIds = [...new Set((auditLogs ?? []).map((l: any) => l.userId).filter(Boolean))] as string[];
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({ where: { id: { in: actorIds } }, select: userSelect })
+      : [];
+    const actorById = new Map((actors ?? []).map((a: any) => [a.id, a]));
+
+    // Never expose credentials or one-time tokens to the back-office
+    const {
+      /* eslint-disable @typescript-eslint/no-unused-vars */
+      password,
+      twoFactorSecret,
+      emailVerificationToken,
+      emailVerificationExpires,
+      passwordResetToken,
+      passwordResetExpires,
+      /* eslint-enable @typescript-eslint/no-unused-vars */
+      ...safeUser
+    } = user as any;
 
     return {
       user: safeUser,
       stats: {
         contentCount,
         subscriptionCount,
-        totalTransactionAmount: Number(transactionSum._sum.amount || 0),
+        subscriberCount,
+        totalTransactionAmount: Number(transactionSum?._sum?.amount || 0),
         reportCount,
       },
+      subscriptions: (subscriptions ?? []).map((s: any) => ({
+        ...s,
+        tier: s.tier ? { ...s.tier, price: Number(s.tier.price) } : null,
+      })),
+      contents: contents ?? [],
+      transactions: (transactions ?? []).map((t: any) => ({
+        ...t,
+        amount: Number(t.amount),
+        platformFee: Number(t.platformFee),
+        netAmount: Number(t.netAmount),
+        direction: t.fromUserId === userId ? 'OUT' : 'IN',
+      })),
+      reports: (reports ?? []).map((r: any) => ({
+        ...r,
+        reportedType: r.reportedType?.toUpperCase(),
+        status: normalizeReportStatus(r.status),
+      })),
+      auditLogs: (auditLogs ?? []).map((log: any) => ({
+        ...log,
+        actor: log.userId ? actorById.get(log.userId) || null : null,
+      })),
     };
+  }
+
+  /**
+   * Approve or reject a creator's identity verification (KYC)
+   */
+  async reviewKyc(adminId: string, userId: string, dto: ReviewKycDto) {
+    const { decision } = dto;
+    const reason = dto.reason?.trim();
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, kycStatus: true, deletedAt: true },
+    });
+
+    if (!user || user.deletedAt) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!['PENDING', 'UNDER_REVIEW', 'RESUBMIT_REQUIRED'].includes(user.kycStatus)) {
+      throw new BadRequestException("Aucune vérification d'identité en attente pour ce compte");
+    }
+
+    if (decision === KycDecision.REJECT && !reason) {
+      throw new BadRequestException('Un motif est requis pour refuser une vérification');
+    }
+
+    const now = new Date();
+    const approved = decision === KycDecision.APPROVE;
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: approved
+        ? { kycStatus: 'VERIFIED', kycVerifiedAt: now, kycRejectedAt: null, kycRejectionReason: null }
+        : { kycStatus: 'REJECTED', kycRejectedAt: now, kycRejectionReason: reason },
+      select: {
+        id: true,
+        username: true,
+        kycStatus: true,
+        kycVerifiedAt: true,
+        kycRejectedAt: true,
+        kycRejectionReason: true,
+      },
+    });
+
+    try {
+      await this.prisma.notification.create({
+        data: {
+          userId,
+          type: 'SYSTEM',
+          title: approved ? 'Identité vérifiée' : "Vérification d'identité refusée",
+          message: approved
+            ? 'Votre identité a été vérifiée. Vous pouvez désormais percevoir vos revenus.'
+            : `Votre vérification d'identité a été refusée. Motif : ${reason}`,
+        },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to notify user ${userId} of KYC decision: ${error.message}`);
+    }
+
+    await this.logAdminAction(adminId, approved ? 'KYC_APPROVED' : 'KYC_REJECTED', 'USER', userId, {
+      reason,
+      previousStatus: user.kycStatus,
+    });
+
+    return { success: true, user: updated };
   }
 
   /**
@@ -242,12 +452,21 @@ export class AdminService {
     });
 
     // Create notification for user
+    const notificationTitles: Record<UserAction, string> = {
+      [UserAction.SUSPEND]: expiresAt
+        ? `Compte suspendu jusqu'au ${expiresAt.toLocaleDateString('fr-FR')}`
+        : 'Compte suspendu',
+      [UserAction.BAN]: 'Compte banni',
+      [UserAction.ACTIVATE]: 'Compte réactivé',
+      [UserAction.WARN]: 'Avertissement de la modération',
+    };
+
     await this.prisma.notification.create({
       data: {
         userId,
         type: 'SYSTEM',
-        title: `Account ${action.toLowerCase()}`,
-        message: reason || `Your account has been ${action.toLowerCase()}`,
+        title: notificationTitles[action],
+        message: reason || notificationTitles[action],
       },
     });
 
@@ -470,6 +689,23 @@ export class AdminService {
       throw new NotFoundException('Report not found');
     }
 
+    const target =
+      status === ReportStatus.RESOLVED
+        ? await this.resolveReportTarget(report.reportedType, report.reportedId)
+        : null;
+
+    // Validate the sanction before touching the report so a refused action
+    // does not leave the report resolved without its sanction
+    if (target && action && target.user) {
+      const sanctioned = await this.prisma.user.findUnique({
+        where: { id: target.user.id },
+        select: { role: true },
+      });
+      if (sanctioned?.role === 'ADMIN') {
+        throw new ForbiddenException('Cannot moderate admin users');
+      }
+    }
+
     // Update report
     const updatedReport = await this.prisma.report.update({
       where: { id: reportId },
@@ -487,9 +723,7 @@ export class AdminService {
       removeContent,
     });
 
-    if (status === ReportStatus.RESOLVED) {
-      const target = await this.resolveReportTarget(report.reportedType, report.reportedId);
-
+    if (target) {
       // Remove the reported content if requested
       if (removeContent && report.reportedType?.toUpperCase() === 'CONTENT' && target.entity) {
         await this.removeContent(adminId, report.reportedId, `Report resolved: ${report.reason}`);

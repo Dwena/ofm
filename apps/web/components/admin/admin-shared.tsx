@@ -13,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Loader2, ShieldAlert } from 'lucide-react'
 import { format, formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
 
@@ -33,6 +33,11 @@ export function getErrorMessage(error: any, fallback = 'Une erreur est survenue'
   const message = error?.response?.data?.message
   if (Array.isArray(message)) return message.join(', ')
   return message || error?.message || fallback
+}
+
+/** True when the API refused the request because of the caller's role */
+export function isForbidden(error: any): boolean {
+  return error?.response?.status === 403
 }
 
 export function timeAgo(date?: string | null) {
@@ -75,6 +80,19 @@ const reportStatusLabels: Record<string, { label: string; className: string }> =
   REJECTED: { label: 'Rejeté', className: 'bg-gray-500 text-white' },
 }
 
+export const REPORT_REASON_LABELS: Record<string, string> = {
+  SPAM: 'Spam',
+  HARASSMENT: 'Harcèlement',
+  HATE_SPEECH: 'Discours haineux',
+  NUDITY: 'Nudité',
+  VIOLENCE: 'Violence',
+  FAKE_NEWS: 'Fausse information',
+  COPYRIGHT: "Droits d'auteur",
+  UNDERAGE: 'Mineur',
+  ILLEGAL_CONTENT: 'Contenu illégal',
+  OTHER: 'Autre',
+}
+
 /** Audit-log actions written by admin & moderation endpoints */
 export const ACTION_LABELS: Record<string, string> = {
   REPORT_RESOLVED: 'Signalement résolu',
@@ -90,8 +108,28 @@ export const ACTION_LABELS: Record<string, string> = {
   USER_DELETED: 'Suppression de compte',
   CONTENT_REMOVED: 'Contenu retiré',
   CONTENT_RESTORED: 'Contenu restauré',
+  KYC_APPROVED: 'Identité vérifiée',
+  KYC_REJECTED: 'Identité refusée',
   SETTINGS_UPDATED: 'Paramètres modifiés',
   SETTINGS_RESET: 'Paramètre réinitialisé',
+}
+
+const kycStatusLabels: Record<string, { label: string; className: string }> = {
+  NOT_STARTED: { label: 'Non commencé', className: 'bg-gray-400 text-white' },
+  PENDING: { label: 'À vérifier', className: 'bg-orange-500 text-white' },
+  UNDER_REVIEW: { label: 'En examen', className: 'bg-blue-500 text-white' },
+  VERIFIED: { label: 'Vérifié', className: 'bg-green-500 text-white' },
+  REJECTED: { label: 'Refusé', className: 'bg-red-600 text-white' },
+  RESUBMIT_REQUIRED: { label: 'À renvoyer', className: 'bg-yellow-500 text-white' },
+}
+
+/** KYC statuses an admin can still approve or reject */
+export const KYC_REVIEWABLE_STATUSES = ['PENDING', 'UNDER_REVIEW', 'RESUBMIT_REQUIRED']
+
+export function KycStatusBadge({ status }: { status?: string | null }) {
+  if (!status) return <span className="text-muted-foreground">—</span>
+  const config = kycStatusLabels[status] || { label: status, className: '' }
+  return <Badge className={config.className}>{config.label}</Badge>
 }
 
 export function ReportStatusBadge({ status }: { status: string }) {
@@ -125,6 +163,40 @@ export function EmptyState({ children }: { children: ReactNode }) {
   return <div className="py-12 text-center text-muted-foreground">{children}</div>
 }
 
+/**
+ * Error state for a failed query: a 403 gets a dedicated « accès refusé » message
+ */
+export function ErrorState({
+  error,
+  onRetry,
+  label = 'Impossible de charger les données',
+}: {
+  error: unknown
+  onRetry?: () => void
+  label?: string
+}) {
+  if (isForbidden(error)) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
+        <ShieldAlert className="h-8 w-8" />
+        <p className="font-medium text-foreground">Accès refusé</p>
+        <p className="text-sm">Votre rôle ne permet pas de consulter cette section.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground">
+      <p>{label}</p>
+      <p className="text-xs">{getErrorMessage(error)}</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Réessayer
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export function PaginationControls({
   pagination,
   onPageChange,
@@ -139,7 +211,7 @@ export function PaginationControls({
   }
 
   return (
-    <div className="flex items-center justify-between pt-4">
+    <div className="flex flex-col gap-2 pt-4 sm:flex-row sm:items-center sm:justify-between">
       <p className="text-sm text-muted-foreground">
         {pagination.total} résultat(s) • page {pagination.page} / {pagination.totalPages}
       </p>
@@ -182,6 +254,9 @@ export function ReasonDialog({
   reasonRequired = true,
   isPending,
   onConfirm,
+  confirmDisabled,
+  reasonLabel = 'Raison',
+  reasonPlaceholder = 'Expliquez la raison de cette décision...',
   children,
 }: {
   open: boolean
@@ -195,6 +270,10 @@ export function ReasonDialog({
   reasonRequired?: boolean
   isPending?: boolean
   onConfirm: () => void
+  /** Extra guard (e.g. typed confirmation) on top of the required reason */
+  confirmDisabled?: boolean
+  reasonLabel?: string
+  reasonPlaceholder?: string
   children?: ReactNode
 }) {
   return (
@@ -209,11 +288,16 @@ export function ReasonDialog({
           {children}
           <div className="space-y-2">
             <Label htmlFor="moderation-reason">
-              Raison {reasonRequired && <span className="text-red-500">*</span>}
+              {reasonLabel}{' '}
+              {reasonRequired ? (
+                <span className="text-red-500">*</span>
+              ) : (
+                <span className="text-xs font-normal text-muted-foreground">(facultatif)</span>
+              )}
             </Label>
             <Textarea
               id="moderation-reason"
-              placeholder="Expliquez la raison de cette décision..."
+              placeholder={reasonPlaceholder}
               value={reason}
               onChange={(e) => onReasonChange(e.target.value)}
               rows={4}
@@ -228,7 +312,7 @@ export function ReasonDialog({
           <Button
             variant={destructive ? 'destructive' : 'default'}
             onClick={onConfirm}
-            disabled={isPending || (reasonRequired && !reason.trim())}
+            disabled={isPending || confirmDisabled || (reasonRequired && !reason.trim())}
           >
             {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
             {confirmLabel}

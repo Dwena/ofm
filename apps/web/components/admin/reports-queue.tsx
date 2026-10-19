@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { adminApi } from '@/lib/api'
 import { useToast } from '@/hooks/use-toast'
+import { useAuth } from '@/contexts/auth-context'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,7 +14,9 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   EmptyState,
+  ErrorState,
   LoadingState,
+  REPORT_REASON_LABELS,
   Paginated,
   PaginationControls,
   ReasonDialog,
@@ -20,7 +24,7 @@ import {
   getErrorMessage,
   timeAgo,
 } from '@/components/admin/admin-shared'
-import { CheckCircle, Eye, XCircle } from 'lucide-react'
+import { CheckCircle, ExternalLink, Eye, UserRound, XCircle } from 'lucide-react'
 
 type ReportStatus = 'PENDING' | 'REVIEWING' | 'RESOLVED' | 'REJECTED'
 type UserAction = 'WARN' | 'SUSPEND' | 'BAN'
@@ -52,19 +56,6 @@ const typeLabels: Record<string, string> = {
   CONTENT: 'Contenu',
   COMMENT: 'Commentaire',
   MESSAGE: 'Message',
-}
-
-const reasonLabels: Record<string, string> = {
-  SPAM: 'Spam',
-  HARASSMENT: 'Harcèlement',
-  HATE_SPEECH: 'Discours haineux',
-  NUDITY: 'Nudité',
-  VIOLENCE: 'Violence',
-  FAKE_NEWS: 'Fausse information',
-  COPYRIGHT: 'Droits d\'auteur',
-  UNDERAGE: 'Mineur',
-  ILLEGAL_CONTENT: 'Contenu illégal',
-  OTHER: 'Autre',
 }
 
 function describeEntity(report: AdminReport) {
@@ -99,9 +90,12 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
   const [removeContent, setRemoveContent] = useState(false)
 
   const { toast } = useToast()
+  const { user } = useAuth()
   const queryClient = useQueryClient()
+  // Moderators triage reports; sanctions and takedowns are admin-only (API answers 403)
+  const isAdmin = user?.role === 'ADMIN'
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['admin-reports', status, type, page],
     queryFn: async () => {
       const response = await adminApi.getReports({
@@ -122,19 +116,31 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
         reportId: selected!.id,
         status: decision,
         adminNotes: notes || undefined,
-        action: decision === 'RESOLVED' && userAction !== 'none' ? userAction : undefined,
+        action: isAdmin && decision === 'RESOLVED' && userAction !== 'none' ? userAction : undefined,
         durationDays:
-          decision === 'RESOLVED' && userAction === 'SUSPEND' ? Number(durationDays) : undefined,
-        removeContent: decision === 'RESOLVED' && selected?.reportedType === 'CONTENT' ? removeContent : undefined,
+          isAdmin && decision === 'RESOLVED' && userAction === 'SUSPEND' ? Number(durationDays) : undefined,
+        removeContent:
+          isAdmin && decision === 'RESOLVED' && selected?.reportedType === 'CONTENT' ? removeContent : undefined,
       }),
     onSuccess: () => {
-      toast({ title: 'Signalement traité' })
+      toast({
+        title:
+          decision === 'REVIEWING'
+            ? 'Signalement mis en examen'
+            : decision === 'REJECTED'
+              ? 'Signalement rejeté'
+              : 'Signalement résolu',
+      })
       queryClient.invalidateQueries({ queryKey: ['admin-reports'] })
       queryClient.invalidateQueries({ queryKey: ['admin-pending-reports'] })
       queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
       queryClient.invalidateQueries({ queryKey: ['admin-content'] })
       queryClient.invalidateQueries({ queryKey: ['moderation-stats'] })
       queryClient.invalidateQueries({ queryKey: ['moderation-statistics'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-user-details'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-audit-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['content-moderation'] })
       setSelected(null)
     },
     onError: (error) => {
@@ -148,7 +154,7 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
     setNotes('')
     setUserAction('none')
     setDurationDays('7')
-    setRemoveContent(report.reportedType === 'CONTENT')
+    setRemoveContent(isAdmin && report.reportedType === 'CONTENT' && !report.reportedEntity?.deletedAt)
   }
 
   const reports = data?.items ?? []
@@ -193,6 +199,8 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
         <CardContent>
           {isLoading ? (
             <LoadingState />
+          ) : error ? (
+            <ErrorState error={error} onRetry={() => refetch()} label="Impossible de charger les signalements" />
           ) : reports.length === 0 ? (
             <EmptyState>Aucun signalement à afficher</EmptyState>
           ) : (
@@ -219,7 +227,7 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
                               {report.reportedUser ? `@${report.reportedUser.username}` : 'Utilisateur inconnu'}
                             </span>
                             <Badge variant="outline">{typeLabels[report.reportedType] || report.reportedType}</Badge>
-                            <Badge variant="secondary">{reasonLabels[report.reason] || report.reason}</Badge>
+                            <Badge variant="secondary">{REPORT_REASON_LABELS[report.reason] || report.reason}</Badge>
                             <ReportStatusBadge status={report.status} />
                           </div>
                           <p className="text-sm break-words">{describeEntity(report)}</p>
@@ -229,6 +237,37 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
                           <p className="text-xs text-muted-foreground">
                             Signalé par @{report.reporter?.username} • {timeAgo(report.createdAt)}
                           </p>
+                          <div className="flex flex-wrap gap-3 text-xs">
+                            {report.reportedType === 'CONTENT' && report.reportedEntity && !report.reportedEntity.deletedAt && (
+                              <Link
+                                href={`/content/${report.reportedEntity.id}`}
+                                target="_blank"
+                                className="inline-flex items-center gap-1 text-primary hover:underline"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                Voir le contenu
+                              </Link>
+                            )}
+                            {report.reportedUser && isAdmin && (
+                              <Link
+                                href={`/admin/users?user=${report.reportedUser.id}`}
+                                className="inline-flex items-center gap-1 text-primary hover:underline"
+                              >
+                                <UserRound className="h-3 w-3" />
+                                Fiche du compte
+                              </Link>
+                            )}
+                            {report.reportedUser && !isAdmin && (
+                              <Link
+                                href={`/${report.reportedUser.username}`}
+                                target="_blank"
+                                className="inline-flex items-center gap-1 text-primary hover:underline"
+                              >
+                                <UserRound className="h-3 w-3" />
+                                Profil public
+                              </Link>
+                            )}
+                          </div>
                           {report.resolution && (
                             <p className="text-xs text-muted-foreground">
                               Décision : {report.resolution}
@@ -278,14 +317,26 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
           }
           description={describeEntity(selected)}
           confirmLabel="Confirmer"
-          destructive={decision === 'RESOLVED' && (userAction === 'BAN' || removeContent)}
+          destructive={decision === 'RESOLVED' && isAdmin && (userAction === 'BAN' || removeContent)}
           reason={notes}
           onReasonChange={setNotes}
+          reasonLabel={decision === 'REVIEWING' ? 'Note interne' : 'Décision'}
+          reasonPlaceholder={
+            decision === 'REJECTED'
+              ? 'Pourquoi ce signalement ne constitue pas une infraction...'
+              : 'Résumez la décision prise...'
+          }
           reasonRequired={decision !== 'REVIEWING'}
           isPending={handleMutation.isPending}
           onConfirm={() => handleMutation.mutate()}
         >
-          {decision === 'RESOLVED' && (
+          {decision === 'RESOLVED' && !isAdmin && (
+            <p className="text-sm text-muted-foreground">
+              Les sanctions et retraits de contenu sont réservés aux administrateurs. Mettez le signalement en examen
+              pour qu&apos;un administrateur applique une sanction.
+            </p>
+          )}
+          {decision === 'RESOLVED' && isAdmin && (
             <div className="space-y-4">
               {selected.reportedUser && (
                 <div className="space-y-2">
@@ -315,6 +366,7 @@ export function ReportsQueue({ initialStatus = 'PENDING' }: { initialStatus?: st
                       <SelectItem value="3">3 jours</SelectItem>
                       <SelectItem value="7">7 jours</SelectItem>
                       <SelectItem value="30">30 jours</SelectItem>
+                      <SelectItem value="90">90 jours</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

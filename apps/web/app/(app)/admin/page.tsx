@@ -1,26 +1,25 @@
 'use client';
 
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '@/lib/api';
+import { formatEuros } from '@/lib/utils';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Users,
   FileText,
-  DollarSign,
+  Euro,
   AlertTriangle,
   TrendingUp,
-  TrendingDown,
   Activity,
   Shield,
-  Ban,
-  CheckCircle,
-  Clock,
   ScrollText,
+  BadgeCheck,
+  ChevronRight,
 } from 'lucide-react';
-import { useAuth } from '@/contexts/auth-context';
-import { useRouter } from 'next/navigation';
 import {
   Table,
   TableBody,
@@ -30,8 +29,14 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { formatDistanceToNow } from 'date-fns';
-import { fr } from 'date-fns/locale';
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  RoleBadge,
+  UserStatusBadge,
+  timeAgo,
+} from '@/components/admin/admin-shared';
 
 // Shape returned by GET /admin/stats/platform (last 30 days by default)
 interface PlatformStats {
@@ -45,21 +50,24 @@ interface PlatformStats {
 interface RecentUser {
   id: string;
   username: string;
+  displayName?: string | null;
   email: string;
   role: string;
-  avatar?: string;
+  avatar?: string | null;
   createdAt: string;
-  status: 'ACTIVE' | 'SUSPENDED' | 'BANNED' | 'PENDING_VERIFICATION';
+  status: string;
+  kycSubmittedAt?: string | null;
 }
 
 interface PendingReport {
   id: string;
   reportedType: string;
   reason: string;
+  description?: string | null;
   status: string;
   reportedUser: {
     username: string;
-    avatar?: string;
+    avatar?: string | null;
   } | null;
   reporter: {
     username: string;
@@ -67,13 +75,25 @@ interface PendingReport {
   createdAt: string;
 }
 
+const typeLabels: Record<string, string> = {
+  USER: 'Utilisateur',
+  CONTENT: 'Contenu',
+  COMMENT: 'Commentaire',
+  MESSAGE: 'Message',
+};
+
+const quickLinks = [
+  { href: '/admin/users', label: 'Utilisateurs', icon: Users },
+  { href: '/admin/content', label: 'Contenus', icon: FileText },
+  { href: '/admin/reports', label: 'Signalements', icon: AlertTriangle },
+  { href: '/admin/logs', label: 'Journaux', icon: ScrollText },
+];
+
 export default function AdminDashboardPage() {
-  // Access is guarded by app/(app)/admin/layout.tsx
-  const { user } = useAuth();
+  // Access is guarded by app/(app)/admin/layout.tsx (ADMIN only for this page)
   const router = useRouter();
 
-  // Fetch dashboard stats
-  const { data: stats } = useQuery({
+  const { data: stats, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ['admin-stats'],
     queryFn: async () => {
       const response = await adminApi.getStats();
@@ -82,8 +102,7 @@ export default function AdminDashboardPage() {
     refetchInterval: 60000,
   });
 
-  // Fetch recent users
-  const { data: recentUsers, isLoading: usersLoading } = useQuery({
+  const { data: recentUsers, isLoading: usersLoading, error: usersError } = useQuery({
     queryKey: ['admin-recent-users'],
     queryFn: async () => {
       const response = await adminApi.getRecentUsers();
@@ -91,8 +110,7 @@ export default function AdminDashboardPage() {
     },
   });
 
-  // Fetch pending reports
-  const { data: pendingReports, isLoading: reportsLoading } = useQuery({
+  const { data: pendingReports, isLoading: reportsLoading, error: reportsError } = useQuery({
     queryKey: ['admin-pending-reports'],
     queryFn: async () => {
       const response = await adminApi.getPendingReports();
@@ -101,9 +119,16 @@ export default function AdminDashboardPage() {
     refetchInterval: 30000,
   });
 
-  if (!user || user.role !== 'ADMIN') {
-    return null;
-  }
+  const { data: pendingKyc } = useQuery({
+    queryKey: ['admin-users', 'kyc-pending'],
+    queryFn: async () => {
+      const response = await adminApi.getUsers({ kycStatus: 'PENDING', page: 1, limit: 5 });
+      return {
+        items: (response.data?.items ?? []) as RecentUser[],
+        total: (response.data?.pagination?.total ?? 0) as number,
+      };
+    },
+  });
 
   const statCards = [
     {
@@ -111,22 +136,26 @@ export default function AdminDashboardPage() {
       value: (stats?.users.total ?? 0).toLocaleString('fr-FR'),
       description: `+${stats?.users.new ?? 0} sur 30 jours`,
       icon: Users,
-      trend: (stats?.users.new ?? 0) > 0 ? 'up' : undefined,
+      trend: (stats?.users.new ?? 0) > 0,
       color: 'text-blue-500',
+      href: '/admin/users',
     },
     {
       title: 'Créateurs',
       value: (stats?.users.creators ?? 0).toLocaleString('fr-FR'),
       description: `+${stats?.users.newCreators ?? 0} sur 30 jours`,
       icon: Shield,
+      trend: (stats?.users.newCreators ?? 0) > 0,
       color: 'text-purple-500',
+      href: '/admin/users?role=CREATOR',
     },
     {
       title: 'Revenus (30 jours)',
-      value: `${(stats?.revenue.total ?? 0).toLocaleString('fr-FR')} €`,
-      description: `${(stats?.revenue.platformFees ?? 0).toLocaleString('fr-FR')} € de commissions`,
-      icon: DollarSign,
+      value: formatEuros(stats?.revenue.total ?? 0),
+      description: `${formatEuros(stats?.revenue.platformFees ?? 0)} de commissions`,
+      icon: Euro,
       color: 'text-green-500',
+      href: '/admin/analytics',
     },
     {
       title: 'Signalements en attente',
@@ -134,31 +163,34 @@ export default function AdminDashboardPage() {
       description: 'Nécessitent une modération',
       icon: AlertTriangle,
       color: 'text-red-500',
+      href: '/admin/reports',
     },
     {
       title: 'Publications',
       value: (stats?.content.total ?? 0).toLocaleString('fr-FR'),
       description: `+${stats?.content.new ?? 0} sur 30 jours`,
       icon: FileText,
+      trend: (stats?.content.new ?? 0) > 0,
       color: 'text-orange-500',
+      href: '/admin/content?filter=ALL',
     },
     {
       title: 'Abonnements actifs',
       value: (stats?.subscriptions.active ?? 0).toLocaleString('fr-FR'),
-      description: `${(stats?.users.active ?? 0).toLocaleString('fr-FR')} utilisateurs actifs`,
+      description: `${(stats?.users.active ?? 0).toLocaleString('fr-FR')} utilisateurs actifs sur 30 jours`,
       icon: Activity,
-      trend: undefined as 'up' | 'down' | undefined,
       color: 'text-pink-500',
+      href: '/admin/analytics',
     },
   ];
 
   return (
-    <div className="container mx-auto py-8 px-4">
+    <div className="space-y-8">
       {/* Header */}
-      <div className="mb-8">
+      <div>
         <h1 className="text-3xl font-bold flex items-center gap-2">
           <Shield className="h-8 w-8" />
-          Panneau d'administration
+          Panneau d&apos;administration
         </h1>
         <p className="text-muted-foreground mt-2">
           Gérez les utilisateurs, le contenu et les paramètres de la plateforme
@@ -166,212 +198,208 @@ export default function AdminDashboardPage() {
       </div>
 
       {/* Quick Navigation */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <Button
-          variant="outline"
-          className="h-auto py-6 flex flex-col items-center gap-2"
-          onClick={() => router.push('/admin/users')}
-        >
-          <Users className="h-6 w-6" />
-          <span>Utilisateurs</span>
-        </Button>
-        <Button
-          variant="outline"
-          className="h-auto py-6 flex flex-col items-center gap-2"
-          onClick={() => router.push('/admin/content')}
-        >
-          <FileText className="h-6 w-6" />
-          <span>Contenu</span>
-        </Button>
-        <Button
-          variant="outline"
-          className="h-auto py-6 flex flex-col items-center gap-2"
-          onClick={() => router.push('/admin/reports')}
-        >
-          <AlertTriangle className="h-6 w-6" />
-          <span>Rapports</span>
-        </Button>
-        <Button
-          variant="outline"
-          className="h-auto py-6 flex flex-col items-center gap-2"
-          onClick={() => router.push('/admin/logs')}
-        >
-          <ScrollText className="h-6 w-6" />
-          <span>Journaux</span>
-        </Button>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {quickLinks.map(({ href, label, icon: Icon }) => (
+          <Button key={href} variant="outline" className="h-auto py-6 flex flex-col items-center gap-2" asChild>
+            <Link href={href}>
+              <Icon className="h-6 w-6" />
+              <span>{label}</span>
+            </Link>
+          </Button>
+        ))}
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-        {statCards.map((stat, index) => (
-          <Card key={index}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {stat.title}
+      {statsError ? (
+        <Card>
+          <CardContent>
+            <ErrorState error={statsError} onRetry={() => refetchStats()} label="Impossible de charger les statistiques" />
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {statCards.map((stat) => (
+            <Link key={stat.title} href={stat.href} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <Card className="h-full transition-colors hover:bg-muted/50">
+                <CardHeader className="flex flex-row items-center justify-between pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">{stat.title}</CardTitle>
+                  <stat.icon className={`h-5 w-5 ${stat.color}`} />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{stats ? stat.value : '…'}</div>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
+                    {stat.trend && <TrendingUp className="h-3 w-3 text-green-500" />}
+                    <span>{stat.description}</span>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {/* Pending identity verifications */}
+      {!!pendingKyc?.total && (
+        <Card className="border-orange-300">
+          <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <BadgeCheck className="h-5 w-5 text-orange-500" />
+                Vérifications d&apos;identité en attente
               </CardTitle>
-              <stat.icon className={`h-5 w-5 ${stat.color}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stat.value}</div>
-              <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
-                {stat.trend && (
-                  <>
-                    {stat.trend === 'up' ? (
-                      <TrendingUp className="h-3 w-3 text-green-500" />
-                    ) : (
-                      <TrendingDown className="h-3 w-3 text-red-500" />
-                    )}
-                  </>
-                )}
-                <span>{stat.description}</span>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+              <CardDescription>
+                {pendingKyc.total} créateur(s) attendent la validation de leur KYC
+              </CardDescription>
+            </div>
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/admin/users?kyc=PENDING">
+                Tout voir
+                <ChevronRight className="h-4 w-4 ml-1" />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {pendingKyc.items.map((u) => (
+              <Link
+                key={u.id}
+                href={`/admin/users?user=${u.id}`}
+                className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50"
+              >
+                <Avatar className="h-8 w-8">
+                  <AvatarImage src={u.avatar || undefined} />
+                  <AvatarFallback>{u.username.substring(0, 2).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium truncate">{u.displayName || `@${u.username}`}</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    @{u.username} • soumis {timeAgo(u.kycSubmittedAt)}
+                  </p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Users */}
         <Card>
-          <CardHeader>
-            <CardTitle>Utilisateurs récents</CardTitle>
-            <CardDescription>
-              Dernières inscriptions sur la plateforme
-            </CardDescription>
+          <CardHeader className="flex flex-row items-start justify-between gap-2">
+            <div>
+              <CardTitle>Utilisateurs récents</CardTitle>
+              <CardDescription>Dernières inscriptions sur la plateforme</CardDescription>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/admin/users">Tout voir</Link>
+            </Button>
           </CardHeader>
           <CardContent>
             {usersLoading ? (
-              <div className="flex justify-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-              </div>
+              <LoadingState />
+            ) : usersError ? (
+              <ErrorState error={usersError} />
             ) : recentUsers && recentUsers.length > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Utilisateur</TableHead>
-                    <TableHead>Rôle</TableHead>
-                    <TableHead>Statut</TableHead>
-                    <TableHead>Inscription</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {recentUsers.slice(0, 5).map((user) => (
-                    <TableRow
-                      key={user.id}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => router.push('/admin/users')}
-                    >
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Avatar className="h-8 w-8">
-                            <AvatarImage src={user.avatar} />
-                            <AvatarFallback>
-                              {user.username.substring(0, 2).toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div>
-                            <p className="font-medium">@{user.username}</p>
-                            <p className="text-xs text-muted-foreground">{user.email}</p>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{user.role}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        {user.status === 'ACTIVE' ? (
-                          <Badge variant="default" className="bg-green-500">
-                            <CheckCircle className="h-3 w-3 mr-1" />
-                            Actif
-                          </Badge>
-                        ) : user.status === 'PENDING_VERIFICATION' ? (
-                          <Badge variant="secondary">Non vérifié</Badge>
-                        ) : user.status === 'SUSPENDED' ? (
-                          <Badge variant="default" className="bg-yellow-500">
-                            <Clock className="h-3 w-3 mr-1" />
-                            Suspendu
-                          </Badge>
-                        ) : (
-                          <Badge variant="destructive">
-                            <Ban className="h-3 w-3 mr-1" />
-                            Banni
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {formatDistanceToNow(new Date(user.createdAt), {
-                          addSuffix: true,
-                          locale: fr,
-                        })}
-                      </TableCell>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Utilisateur</TableHead>
+                      <TableHead>Rôle</TableHead>
+                      <TableHead>Statut</TableHead>
+                      <TableHead>Inscription</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {recentUsers.slice(0, 5).map((u) => (
+                      <TableRow
+                        key={u.id}
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => router.push(`/admin/users?user=${u.id}`)}
+                      >
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Avatar className="h-8 w-8">
+                              <AvatarImage src={u.avatar || undefined} />
+                              <AvatarFallback>{u.username.substring(0, 2).toUpperCase()}</AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0">
+                              <p className="font-medium truncate">@{u.username}</p>
+                              <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <RoleBadge role={u.role} />
+                        </TableCell>
+                        <TableCell>
+                          <UserStatusBadge status={u.status} />
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {timeAgo(u.createdAt)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             ) : (
-              <p className="text-center text-muted-foreground py-8">
-                Aucun utilisateur récent
-              </p>
+              <EmptyState>Aucun utilisateur récent</EmptyState>
             )}
           </CardContent>
         </Card>
 
         {/* Pending Reports */}
         <Card>
-          <CardHeader>
-            <CardTitle>Rapports en attente</CardTitle>
-            <CardDescription>
-              Signalements nécessitant une modération
-            </CardDescription>
+          <CardHeader className="flex flex-row items-start justify-between gap-2">
+            <div>
+              <CardTitle>Signalements en attente</CardTitle>
+              <CardDescription>Signalements nécessitant une modération</CardDescription>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/admin/reports">Traiter</Link>
+            </Button>
           </CardHeader>
           <CardContent>
             {reportsLoading ? (
-              <div className="flex justify-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-              </div>
+              <LoadingState />
+            ) : reportsError ? (
+              <ErrorState error={reportsError} />
             ) : pendingReports && pendingReports.length > 0 ? (
               <div className="space-y-4">
                 {pendingReports.slice(0, 5).map((report) => (
-                  <div
+                  <Link
                     key={report.id}
-                    className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50"
-                    onClick={() => router.push('/admin/reports')}
+                    href="/admin/reports"
+                    className="flex items-start gap-3 p-3 border rounded-lg hover:bg-muted/50"
                   >
                     <Avatar className="h-10 w-10">
-                      <AvatarImage src={report.reportedUser?.avatar} />
+                      <AvatarImage src={report.reportedUser?.avatar || undefined} />
                       <AvatarFallback>
                         {(report.reportedUser?.username ?? '??').substring(0, 2).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-sm">
-                          @{report.reportedUser?.username ?? 'inconnu'}
-                        </p>
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <p className="font-medium text-sm">@{report.reportedUser?.username ?? 'inconnu'}</p>
                         <Badge variant="outline" className="text-xs">
-                          {report.reportedType}
+                          {typeLabels[report.reportedType] || report.reportedType}
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-2">
-                        {report.reason}
+                        {report.description || report.reason}
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Par @{report.reporter.username} •{' '}
-                        {formatDistanceToNow(new Date(report.createdAt), {
-                          addSuffix: true,
-                          locale: fr,
-                        })}
+                        Par @{report.reporter?.username} • {timeAgo(report.createdAt)}
                       </p>
                     </div>
                     <AlertTriangle className="h-5 w-5 text-red-500 flex-shrink-0" />
-                  </div>
+                  </Link>
                 ))}
               </div>
             ) : (
-              <p className="text-center text-muted-foreground py-8">
-                Aucun rapport en attente
-              </p>
+              <EmptyState>Aucun signalement en attente</EmptyState>
             )}
           </CardContent>
         </Card>

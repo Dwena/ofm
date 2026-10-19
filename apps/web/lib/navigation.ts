@@ -161,8 +161,8 @@ export function getHomeRoute(role: string | undefined): string {
   }
 }
 
-/** Moderators only see the reports queue: every other /admin endpoint is ADMIN-only on the API */
-const MODERATOR_ADMIN_PATHS = ['/admin/reports']
+/** Moderators only see the reports queue and moderation pages: other /admin endpoints are ADMIN-only on the API */
+const MODERATOR_ADMIN_PATHS = ['/admin/reports', '/admin/moderation']
 
 function matches(pathname: string, prefix: string) {
   return pathname === prefix || pathname.startsWith(`${prefix}/`)

@@ -446,11 +446,20 @@ export const analyticsApi = {
 export const adminApi = {
   getStats: (params?: { startDate?: string; endDate?: string }) =>
     api.get('/admin/stats/platform', { params }),
-  getUsers: (params?: { query?: string; role?: string; status?: string; page?: number; limit?: number }) =>
-    api.get('/admin/users', { params }),
+  getUsers: (params?: {
+    query?: string
+    role?: string
+    status?: string
+    kycStatus?: string
+    page?: number
+    limit?: number
+  }) => api.get('/admin/users', { params }),
   getRecentUsers: (limit: number = 5) =>
     api.get('/admin/users', { params: { page: 1, limit } }),
   getUserDetails: (userId: string) => api.get(`/admin/users/${userId}`),
+  // Identity verification (KYC) decision; a reason is required to reject
+  reviewKyc: (userId: string, data: { decision: 'APPROVE' | 'REJECT'; reason?: string }) =>
+    api.post(`/admin/users/${userId}/kyc`, data),
   moderateUser: (data: { userId: string; action: string; reason?: string; durationDays?: number }) =>
     api.post('/admin/users/moderate', data),
   getReports: (params?: { status?: string; type?: string; page?: number; limit?: number }) =>

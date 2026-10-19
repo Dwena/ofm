@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, RotateCcw, Save, Settings } from 'lucide-react'
 import { adminApi } from '@/lib/api'
 import { useToast } from '@/hooks/use-toast'
+import { useConfirm } from '@/hooks/use-confirm'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,7 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { EmptyState, LoadingState, formatDateTime, getErrorMessage } from '@/components/admin/admin-shared'
+import { ErrorState, LoadingState, formatDateTime, getErrorMessage } from '@/components/admin/admin-shared'
 
 interface PlatformSettings {
   platformFeePercentage: number
@@ -42,6 +43,14 @@ interface FormState {
   registrationOpen: boolean
   maintenanceMode: boolean
   maintenanceMessage: string
+}
+
+const SETTING_LABELS: Record<SettingKey, string> = {
+  platformFeePercentage: 'Commission de la plateforme',
+  minimumPayoutAmount: 'Versement minimum',
+  registrationOpen: 'Inscriptions ouvertes',
+  maintenanceMode: 'Mode maintenance',
+  maintenanceMessage: 'Message de maintenance',
 }
 
 const SOURCE_LABELS: Record<SettingMeta['source'], string> = {
@@ -76,6 +85,7 @@ function SettingFooter({
   onReset: (key: SettingKey) => void
   resetting: boolean
 }) {
+  const fallback = meta ? formatFallback(meta.fallbackValue) : ''
   if (!meta) return null
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -91,8 +101,9 @@ function SettingFooter({
             disabled={resetting}
             onClick={() => onReset(settingKey)}
           >
-            <RotateCcw className="h-3 w-3 mr-1" />
-            Revenir à {formatFallback(meta.fallbackValue)}
+            {!resetting && <RotateCcw className="h-3 w-3 mr-1" />}
+            {resetting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : null}
+            Revenir à {fallback.length > 40 ? `${fallback.slice(0, 40)}…` : fallback}
           </Button>
         </>
       )}
@@ -142,10 +153,11 @@ function ToggleRow({
 
 export default function AdminSettingsPage() {
   const { toast } = useToast()
+  const { confirm } = useConfirm()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<FormState | null>(null)
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['admin-settings'],
     queryFn: async () => (await adminApi.getSettings()).data as SettingsResponse,
   })
@@ -156,6 +168,7 @@ export default function AdminSettingsPage() {
 
   const onSaved = (response: SettingsResponse & { changes?: Record<string, unknown> }, message: string) => {
     queryClient.setQueryData(['admin-settings'], { settings: response.settings, meta: response.meta })
+    queryClient.invalidateQueries({ queryKey: ['admin-audit-logs'] })
     setForm(toForm(response.settings))
     const count = Object.keys(response.changes ?? {}).length
     toast({ title: message, description: count ? `${count} paramètre(s) modifié(s)` : 'Aucune modification' })
@@ -204,6 +217,43 @@ export default function AdminSettingsPage() {
     return changed
   }, [form, data])
 
+  const resetSetting = async (key: SettingKey) => {
+    if (!data) return
+    const ok = await confirm({
+      title: `Réinitialiser « ${SETTING_LABELS[key]} » ?`,
+      description: `La valeur personnalisée sera supprimée et le paramètre reviendra à « ${formatFallback(
+        data.meta[key]?.fallbackValue,
+      )} ». ${hasChanges ? 'Vos modifications non enregistrées seront perdues.' : ''}`,
+      confirmText: 'Réinitialiser',
+      variant: 'destructive',
+    })
+    if (ok) resetMutation.mutate(key)
+  }
+
+  const save = async () => {
+    if (hasErrors || !hasChanges) return
+    if (payload.maintenanceMode === true) {
+      const ok = await confirm({
+        title: 'Activer le mode maintenance ?',
+        description:
+          'Tous les utilisateurs, sauf les administrateurs, recevront une erreur 503 et ne pourront plus utiliser la plateforme.',
+        confirmText: 'Activer la maintenance',
+        variant: 'destructive',
+      })
+      if (!ok) return
+    }
+    if (payload.registrationOpen === false) {
+      const ok = await confirm({
+        title: 'Fermer les inscriptions ?',
+        description: 'Plus aucun nouveau compte ne pourra être créé tant que les inscriptions resteront fermées.',
+        confirmText: 'Fermer les inscriptions',
+        variant: 'destructive',
+      })
+      if (!ok) return
+    }
+    saveMutation.mutate(payload)
+  }
+
   const hasChanges = Object.keys(payload).length > 0
   const hasErrors = Object.keys(validation).length > 0
   const update = (patch: Partial<FormState>) => setForm((current) => (current ? { ...current, ...patch } : current))
@@ -224,13 +274,13 @@ export default function AdminSettingsPage() {
       {isLoading || (!form && !isError) ? (
         <LoadingState />
       ) : isError || !form || !data ? (
-        <EmptyState>Impossible de charger les paramètres</EmptyState>
+        <ErrorState error={error} onRetry={() => refetch()} label="Impossible de charger les paramètres" />
       ) : (
         <form
           className="space-y-6"
           onSubmit={(event) => {
             event.preventDefault()
-            if (!hasErrors && hasChanges) saveMutation.mutate(payload)
+            void save()
           }}
         >
           {form.maintenanceMode && (
@@ -269,8 +319,8 @@ export default function AdminSettingsPage() {
                 <SettingFooter
                   meta={data.meta.platformFeePercentage}
                   settingKey="platformFeePercentage"
-                  onReset={resetMutation.mutate}
-                  resetting={resetMutation.isPending}
+                  onReset={resetSetting}
+                  resetting={resetMutation.isPending && resetMutation.variables === 'platformFeePercentage'}
                 />
               </div>
               <div className="space-y-2">
@@ -295,8 +345,8 @@ export default function AdminSettingsPage() {
                 <SettingFooter
                   meta={data.meta.minimumPayoutAmount}
                   settingKey="minimumPayoutAmount"
-                  onReset={resetMutation.mutate}
-                  resetting={resetMutation.isPending}
+                  onReset={resetSetting}
+                  resetting={resetMutation.isPending && resetMutation.variables === 'minimumPayoutAmount'}
                 />
               </div>
             </CardContent>
@@ -319,8 +369,8 @@ export default function AdminSettingsPage() {
                 <SettingFooter
                   meta={data.meta.registrationOpen}
                   settingKey="registrationOpen"
-                  onReset={resetMutation.mutate}
-                  resetting={resetMutation.isPending}
+                  onReset={resetSetting}
+                  resetting={resetMutation.isPending && resetMutation.variables === 'registrationOpen'}
                 />
               </div>
               <div className="space-y-2">
@@ -334,8 +384,8 @@ export default function AdminSettingsPage() {
                 <SettingFooter
                   meta={data.meta.maintenanceMode}
                   settingKey="maintenanceMode"
-                  onReset={resetMutation.mutate}
-                  resetting={resetMutation.isPending}
+                  onReset={resetSetting}
+                  resetting={resetMutation.isPending && resetMutation.variables === 'maintenanceMode'}
                 />
               </div>
               <div className="space-y-2">
@@ -354,8 +404,8 @@ export default function AdminSettingsPage() {
                 <SettingFooter
                   meta={data.meta.maintenanceMessage}
                   settingKey="maintenanceMessage"
-                  onReset={resetMutation.mutate}
-                  resetting={resetMutation.isPending}
+                  onReset={resetSetting}
+                  resetting={resetMutation.isPending && resetMutation.variables === 'maintenanceMessage'}
                 />
               </div>
             </CardContent>

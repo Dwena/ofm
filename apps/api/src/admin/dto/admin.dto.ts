@@ -34,6 +34,8 @@ export class ModerateUserDto {
   reason?: string;
 
   @IsNumber()
+  @Min(1)
+  @Max(3650)
   @IsOptional()
   durationDays?: number; // For suspensions
 }
@@ -69,6 +71,8 @@ export class HandleReportDto {
   action?: UserAction; // Action taken if resolved
 
   @IsNumber()
+  @Min(1)
+  @Max(3650)
   @IsOptional()
   durationDays?: number; // Suspension length when action is SUSPEND
 
@@ -105,13 +109,17 @@ export class GetUsersDto {
   @IsOptional()
   query?: string;
 
-  @IsEnum(['CREATOR', 'SUBSCRIBER', 'ADMIN'])
+  @IsEnum(['CREATOR', 'SUBSCRIBER', 'ADMIN', 'MODERATOR'])
   @IsOptional()
   role?: string;
 
   @IsEnum(['ACTIVE', 'SUSPENDED', 'BANNED', 'PENDING_VERIFICATION'])
   @IsOptional()
   status?: string;
+
+  @IsEnum(['NOT_STARTED', 'PENDING', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED', 'RESUBMIT_REQUIRED'])
+  @IsOptional()
+  kycStatus?: string;
 
   @IsNumber()
   @Type(() => Number)
@@ -178,6 +186,20 @@ export class ModerateContentDto {
   @IsString()
   @IsOptional()
   reason?: string;
+}
+
+export enum KycDecision {
+  APPROVE = 'APPROVE',
+  REJECT = 'REJECT',
+}
+
+export class ReviewKycDto {
+  @IsEnum(KycDecision)
+  decision: KycDecision;
+
+  @IsString()
+  @IsOptional()
+  reason?: string; // Required when rejecting
 }
 
 export class DeleteUserDto {
