@@ -18,6 +18,7 @@ import {
   GetAuditLogsDto,
   GetAnalyticsDto,
   GetModerationStatsDto,
+  ReviewKycDto,
 } from './dto/admin.dto';
 
 @Controller('admin')
@@ -56,6 +57,18 @@ export class AdminController {
     @Body() dto: ModerateUserDto,
   ) {
     return this.adminService.moderateUser(adminId, dto);
+  }
+
+  /**
+   * Approve or reject a pending identity verification (KYC)
+   */
+  @Post('users/:id/kyc')
+  async reviewKyc(
+    @CurrentUser('id') adminId: string,
+    @Param('id') userId: string,
+    @Body() dto: ReviewKycDto,
+  ) {
+    return this.adminService.reviewKyc(adminId, userId, dto);
   }
 
   /**

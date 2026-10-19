@@ -1,6 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { adminApi } from '@/lib/api'
 import { useDebounce } from '@/hooks/use-debounce'
@@ -15,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import {
   ContentStatusBadge,
   EmptyState,
+  ErrorState,
   LoadingState,
   Paginated,
   PaginationControls,
@@ -22,7 +25,7 @@ import {
   getErrorMessage,
   timeAgo,
 } from '@/components/admin/admin-shared'
-import { AlertTriangle, FileText, RotateCcw, Search, Trash2 } from 'lucide-react'
+import { AlertTriangle, ExternalLink, FileText, RotateCcw, Search, Trash2 } from 'lucide-react'
 
 type ContentFilter = 'ALL' | 'FLAGGED' | 'REMOVED'
 
@@ -54,9 +57,15 @@ const typeLabels: Record<string, string> = {
   ALBUM: 'Album',
 }
 
-export default function AdminContentPage() {
-  const [filter, setFilter] = useState<ContentFilter>('FLAGGED')
-  const [search, setSearch] = useState('')
+const FILTERS: ContentFilter[] = ['ALL', 'FLAGGED', 'REMOVED']
+
+function AdminContentInner() {
+  const searchParams = useSearchParams()
+  const initialFilter = searchParams.get('filter') as ContentFilter | null
+  const [filter, setFilter] = useState<ContentFilter>(
+    initialFilter && FILTERS.includes(initialFilter) ? initialFilter : 'FLAGGED',
+  )
+  const [search, setSearch] = useState(searchParams.get('q') ?? '')
   const [type, setType] = useState('all')
   const [page, setPage] = useState(1)
   const [target, setTarget] = useState<{ content: AdminContent; action: 'remove' | 'restore' } | null>(null)
@@ -66,12 +75,12 @@ export default function AdminContentPage() {
   const { toast } = useToast()
   const queryClient = useQueryClient()
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['admin-content', filter, debouncedSearch, type, page],
     queryFn: async () => {
       const response = await adminApi.getContent({
         filter,
-        query: debouncedSearch || undefined,
+        query: debouncedSearch.trim() || undefined,
         type: type !== 'all' ? type : undefined,
         page,
         limit: 20,
@@ -89,6 +98,9 @@ export default function AdminContentPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-content'] })
       queryClient.invalidateQueries({ queryKey: ['content-moderation'] })
       queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['moderation-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-audit-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-user-details'] })
       setTarget(null)
       setReason('')
     },
@@ -141,7 +153,11 @@ export default function AdminContentPage() {
               </Select>
             </div>
           </div>
-          <Tabs value={filter} onValueChange={(v) => { setFilter(v as ContentFilter); setPage(1) }}>
+          <Tabs
+            value={filter}
+            onValueChange={(v) => { setFilter(v as ContentFilter); setPage(1) }}
+            className="overflow-x-auto"
+          >
             <TabsList>
               <TabsTrigger value="FLAGGED">
                 <AlertTriangle className="h-4 w-4 mr-1" />
@@ -155,6 +171,8 @@ export default function AdminContentPage() {
         <CardContent>
           {isLoading ? (
             <LoadingState />
+          ) : error ? (
+            <ErrorState error={error} onRetry={() => refetch()} label="Impossible de charger les contenus" />
           ) : items.length === 0 ? (
             <EmptyState>
               {filter === 'FLAGGED' ? 'Aucun contenu signalé — tout est en ordre' : 'Aucun contenu'}
@@ -189,7 +207,15 @@ export default function AdminContentPage() {
                             <p className="text-xs text-muted-foreground truncate">Note : {content.moderationNotes}</p>
                           )}
                         </TableCell>
-                        <TableCell className="text-sm">@{content.creator?.username}</TableCell>
+                        <TableCell className="text-sm whitespace-nowrap">
+                          {content.creator ? (
+                            <Link href={`/admin/users?user=${content.creator.id}`} className="hover:underline">
+                              @{content.creator.username}
+                            </Link>
+                          ) : (
+                            '—'
+                          )}
+                        </TableCell>
                         <TableCell>
                           {removed ? <Badge variant="destructive">Retiré</Badge> : <ContentStatusBadge status={content.status} />}
                         </TableCell>
@@ -208,6 +234,13 @@ export default function AdminContentPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
+                            {!removed && (
+                              <Button size="sm" variant="ghost" asChild>
+                                <Link href={`/content/${content.id}`} target="_blank" aria-label="Voir le contenu">
+                                  <ExternalLink className="h-4 w-4" />
+                                </Link>
+                              </Button>
+                            )}
                             {restorable && (
                               <Button
                                 size="sm"
@@ -252,10 +285,19 @@ export default function AdminContentPage() {
           reason={reason}
           onReasonChange={setReason}
           reasonRequired={target.action === 'remove'}
+          reasonLabel={target.action === 'remove' ? 'Raison (envoyée au créateur)' : 'Note'}
           isPending={mutation.isPending}
           onConfirm={() => mutation.mutate({ id: target.content.id, action: target.action })}
         />
       )}
     </div>
+  )
+}
+
+export default function AdminContentPage() {
+  return (
+    <Suspense fallback={<LoadingState />}>
+      <AdminContentInner />
+    </Suspense>
   )
 }

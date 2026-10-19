@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../common/database/prisma.service';
-import { AdminContentFilter, ReportStatus, UserAction } from './dto/admin.dto';
+import { AdminContentFilter, KycDecision, ReportStatus, UserAction } from './dto/admin.dto';
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -22,9 +22,11 @@ describe('AdminService', () => {
     },
     comment: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
     },
     message: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
     },
     report: {
       findUnique: jest.fn(),
@@ -53,24 +55,142 @@ describe('AdminService', () => {
   });
 
   describe('getUserDetails', () => {
-    it('never returns password or 2FA secret', async () => {
+    beforeEach(() => {
+      mockPrismaService.content.count.mockResolvedValue(3);
+      mockPrismaService.content.findMany.mockResolvedValue([{ id: 'c1' }]);
+      mockPrismaService.report.findMany.mockReset();
+      mockPrismaService.report.findMany
+        .mockResolvedValueOnce([{ reportedId: 'm1' }]) // comment/message reports
+        .mockResolvedValueOnce([{ id: 'r1', reportedType: 'content', status: 'pending', reportedId: 'c1' }]);
+      (mockPrismaService as any).comment.findMany = jest.fn().mockResolvedValue([]);
+      (mockPrismaService as any).message.findMany = jest.fn().mockResolvedValue([{ id: 'm1' }]);
+      (mockPrismaService as any).subscription = {
+        count: jest.fn().mockResolvedValue(1),
+        findMany: jest.fn().mockResolvedValue([{ id: 's1', tier: { id: 't1', name: 'VIP', price: '9.99' } }]),
+      };
+      (mockPrismaService as any).transaction = {
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 12 } }),
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'tx1', amount: '10', platformFee: '2', netAmount: '8', fromUserId: 'u1', toUserId: 'c9' },
+        ]),
+      };
+      mockPrismaService.report.count.mockResolvedValue(1);
+      mockPrismaService.auditLog.findMany.mockResolvedValue([{ id: 'l1', userId: 'admin-1', action: 'USER_WARN' }]);
+      mockPrismaService.user.findMany.mockResolvedValue([{ id: 'admin-1', username: 'admin' }]);
+    });
+
+    afterEach(() => mockPrismaService.report.findMany.mockReset());
+
+    it('never returns password, 2FA secret or one-time tokens', async () => {
       mockPrismaService.user.findUnique.mockResolvedValue({
         id: 'u1',
         username: 'alice',
         password: 'hash',
         twoFactorSecret: 'secret',
+        emailVerificationToken: 'tok',
+        passwordResetToken: 'reset',
       });
-      mockPrismaService.content.count.mockResolvedValue(3);
-      (mockPrismaService as any).subscription = { count: jest.fn().mockResolvedValue(1) };
-      (mockPrismaService as any).transaction = {
-        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 12 } }),
-      };
-      mockPrismaService.report.count.mockResolvedValue(0);
 
       const result = await service.getUserDetails('u1');
 
       expect(result.user).toEqual({ id: 'u1', username: 'alice' });
       expect(result.stats.contentCount).toBe(3);
+    });
+
+    it('returns subscriptions, transactions, reports against the user and audit history', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', username: 'alice' });
+
+      const result = await service.getUserDetails('u1');
+
+      // Reports on the account, its contents and the messages it sent
+      expect(mockPrismaService.report.count).toHaveBeenCalledWith({
+        where: { reportedId: { in: ['u1', 'c1', 'm1'] } },
+      });
+      expect(result.reports[0]).toEqual(expect.objectContaining({ reportedType: 'CONTENT', status: 'PENDING' }));
+      expect(result.subscriptions[0].tier!.price).toBe(9.99);
+      expect(result.transactions[0]).toEqual(
+        expect.objectContaining({ amount: 10, platformFee: 2, netAmount: 8, direction: 'OUT' }),
+      );
+      expect(result.auditLogs[0].actor).toEqual({ id: 'admin-1', username: 'admin' });
+      expect(mockPrismaService.auditLog.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { resourceId: 'u1' } }),
+      );
+    });
+
+    it('throws when the user does not exist', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue(null);
+      await expect(service.getUserDetails('nope')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getUsers', () => {
+    it('filters on KYC status and moderator role', async () => {
+      mockPrismaService.user.findMany.mockResolvedValue([]);
+      mockPrismaService.user.count.mockResolvedValue(0);
+
+      await service.getUsers({ kycStatus: 'PENDING', role: 'MODERATOR', page: 1, limit: 20 });
+
+      expect(mockPrismaService.user.findMany.mock.calls[0][0].where).toEqual(
+        expect.objectContaining({ kycStatus: 'PENDING', role: 'MODERATOR', deletedAt: null }),
+      );
+    });
+  });
+
+  describe('reviewKyc', () => {
+    it('approves a pending verification, notifies and audits', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'PENDING', deletedAt: null });
+      mockPrismaService.user.update.mockResolvedValue({ id: 'u1', kycStatus: 'VERIFIED' });
+
+      const result = await service.reviewKyc('admin-1', 'u1', { decision: KycDecision.APPROVE });
+
+      const data = mockPrismaService.user.update.mock.calls[0][0].data;
+      expect(data.kycStatus).toBe('VERIFIED');
+      expect(data.kycVerifiedAt).toBeInstanceOf(Date);
+      expect(data.kycRejectionReason).toBeNull();
+      expect(result.user.kycStatus).toBe('VERIFIED');
+      expect(mockPrismaService.notification.create).toHaveBeenCalled();
+      expect(mockPrismaService.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'KYC_APPROVED', resource: 'USER', resourceId: 'u1' }),
+      });
+    });
+
+    it('rejects with a reason', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'PENDING', deletedAt: null });
+      mockPrismaService.user.update.mockResolvedValue({ id: 'u1', kycStatus: 'REJECTED' });
+
+      await service.reviewKyc('admin-1', 'u1', { decision: KycDecision.REJECT, reason: ' Document illisible ' });
+
+      expect(mockPrismaService.user.update.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({ kycStatus: 'REJECTED', kycRejectionReason: 'Document illisible' }),
+      );
+      expect(mockPrismaService.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'KYC_REJECTED' }),
+      });
+    });
+
+    it('requires a reason to reject', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'PENDING', deletedAt: null });
+
+      await expect(
+        service.reviewKyc('admin-1', 'u1', { decision: KycDecision.REJECT, reason: '  ' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrismaService.user.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses when no verification is pending', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'VERIFIED', deletedAt: null });
+
+      await expect(
+        service.reviewKyc('admin-1', 'u1', { decision: KycDecision.APPROVE }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws when the user does not exist', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.reviewKyc('admin-1', 'nope', { decision: KycDecision.APPROVE }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -208,6 +328,20 @@ describe('AdminService', () => {
       expect(mockPrismaService.report.update.mock.calls[0][0].data.status).toBe('dismissed');
       expect(mockPrismaService.user.update).not.toHaveBeenCalled();
       expect(result.status).toBe(ReportStatus.REJECTED);
+    });
+
+    it('refuses to sanction an admin without resolving the report', async () => {
+      mockPrismaService.report.findUnique.mockResolvedValue({ id: 'r1', reportedType: 'USER', reportedId: 'a1' });
+      mockPrismaService.user.findUnique
+        // resolveReportTarget
+        .mockResolvedValueOnce({ id: 'a1', username: 'boss' })
+        // sanction check
+        .mockResolvedValueOnce({ role: 'ADMIN' });
+
+      await expect(
+        service.handleReport('admin-1', { reportId: 'r1', status: ReportStatus.RESOLVED, action: UserAction.BAN }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrismaService.report.update).not.toHaveBeenCalled();
     });
 
     it('removes content and moderates its creator when resolved', async () => {
