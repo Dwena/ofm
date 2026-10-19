@@ -63,7 +63,12 @@ api.interceptors.response.use(
         localStorage.removeItem('accessToken')
         localStorage.removeItem('refreshToken')
         localStorage.removeItem('user')
-        window.location.href = '/login'
+        // Come back to the current page after logging in again
+        const { pathname, search } = window.location
+        const onAuthPage = /^\/(login|register|forgot-password|reset-password|verify-email)/.test(pathname)
+        window.location.href = onAuthPage || pathname === '/'
+          ? '/login'
+          : `/login?redirect=${encodeURIComponent(pathname + search)}`
         return Promise.reject(refreshError)
       }
     }
@@ -90,6 +95,8 @@ export const authApi = {
   forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
   resetPassword: (token: string, password: string) =>
     api.post('/auth/reset-password', { token, password }),
+  // Public platform flags (maintenance banner, registration open); no auth needed
+  getPublicSettings: () => api.get('/settings/public'),
 }
 
 export const pushApi = {

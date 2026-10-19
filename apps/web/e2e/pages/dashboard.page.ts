@@ -52,6 +52,8 @@ export class DashboardPage {
   }
 
   async logout() {
+    // "Déconnexion" lives in the avatar menu
+    await this.page.getByTestId('user-menu-trigger').click();
     await this.page.getByTestId('logout-button').click();
   }
 

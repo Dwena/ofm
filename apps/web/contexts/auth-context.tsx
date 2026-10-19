@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { authApi, usersApi } from '@/lib/api'
+import { getHomeRoute, getPathAccess, sanitizeRedirect } from '@/lib/navigation'
 import { User } from '@/types'
 
 interface AuthContextType {
@@ -55,12 +56,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('refreshToken', refreshToken)
     setUser(user)
 
-    // Redirect based on role
-    if (user.role === 'CREATOR') {
-      router.push('/creator/dashboard')
-    } else {
-      router.push('/feed')
-    }
+    // Go back to the page that required the login (?redirect=), if this role may see it,
+    // otherwise to the role's home page
+    const requested = sanitizeRedirect(new URLSearchParams(window.location.search).get('redirect'))
+    const target =
+      requested && getPathAccess(user.role, requested.split('?')[0]) === 'ok'
+        ? requested
+        : getHomeRoute(user.role)
+    router.push(target)
   }
 
   async function register(email: string, username: string, password: string, role: string = 'SUBSCRIBER') {
@@ -77,8 +80,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       localStorage.removeItem('accessToken')
       localStorage.removeItem('refreshToken')
-      setUser(null)
-      router.push('/login')
+      // Full page load: drops every cached query of this account (React Query, sockets)
+      // and avoids the (app) guard adding ?redirect= to the login URL
+      window.location.assign('/login')
     }
   }
 

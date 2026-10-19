@@ -114,6 +114,7 @@ test.describe('Authentification', () => {
     });
 
     test('se déconnecte', async ({ asCreator, page }) => {
+      await page.getByTestId('user-menu-trigger').click();
       await page.getByTestId('logout-button').click();
 
       await expect(page).toHaveURL(/\/login/);

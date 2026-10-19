@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/auth-context'
+import { getHomeRoute, getPathAccess } from '@/lib/navigation'
 import {
   LayoutDashboard,
   Users,
@@ -27,7 +28,8 @@ const adminLinks = [
 ]
 
 /**
- * Client-side guard for every /admin route: only ADMIN users can see the back-office.
+ * Client-side guard for every /admin route: ADMIN users see the whole back-office,
+ * MODERATOR users only the reports queue (the other /admin endpoints are ADMIN-only).
  * The API enforces the same rule with RolesGuard.
  */
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -35,21 +37,22 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const router = useRouter()
   const pathname = usePathname()
 
-  const isAdmin = user?.role === 'ADMIN'
+  const allowed = !!user && getPathAccess(user.role, pathname) === 'ok'
+  const visibleLinks = adminLinks.filter(({ href }) => user && getPathAccess(user.role, href) === 'ok')
 
   useEffect(() => {
-    if (!isLoading && user && !isAdmin) {
-      router.replace('/')
+    if (!isLoading && user && !allowed) {
+      router.replace(getHomeRoute(user.role))
     }
-  }, [isLoading, user, isAdmin, router])
+  }, [isLoading, user, allowed, router])
 
   if (isLoading || !user) return null
 
-  if (!isAdmin) {
+  if (!allowed) {
     return (
       <div className="flex min-h-[40vh] flex-col items-center justify-center text-center">
         <Shield className="h-10 w-10 text-muted-foreground mb-3" />
-        <p className="font-medium">Accès réservé aux administrateurs</p>
+        <p className="font-medium">Accès réservé à l&apos;équipe de modération</p>
         <p className="text-sm text-muted-foreground">Redirection en cours...</p>
       </div>
     )
@@ -58,7 +61,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   return (
     <div className="space-y-6">
       <nav className="flex gap-1 overflow-x-auto border-b pb-2" aria-label="Administration">
-        {adminLinks.map(({ href, label, icon: Icon, exact }) => {
+        {visibleLinks.map(({ href, label, icon: Icon, exact }) => {
           const active = exact ? pathname === href : pathname.startsWith(href)
           return (
             <Link

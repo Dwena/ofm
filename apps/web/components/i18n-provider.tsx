@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Locale, defaultLocale, getTranslations, interpolate } from '@/lib/i18n';
 import { Translations } from '@/lib/i18n/locales/fr';
 
@@ -11,6 +11,8 @@ interface I18nContextValue {
   translate: (key: string, variables?: Record<string, string | number>) => string;
 }
 
+const STORAGE_KEY = 'ofm-locale';
+
 const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 
 interface I18nProviderProps {
@@ -18,55 +20,56 @@ interface I18nProviderProps {
   initialLocale?: Locale;
 }
 
+function readStoredLocale(): Locale | null {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored === 'fr' || stored === 'en' ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mounted in app/layout.tsx. The selected locale is remembered in localStorage
+ * and reflected on <html lang>.
+ */
 export function I18nProvider({ children, initialLocale = defaultLocale }: I18nProviderProps) {
-  const [locale, setLocale] = useState<Locale>(initialLocale);
-  const [translations, setTranslations] = useState<Translations>(getTranslations(initialLocale));
+  const [locale, setLocaleState] = useState<Locale>(initialLocale);
 
   useEffect(() => {
-    // Load locale from localStorage
-    const storedLocale = localStorage.getItem('ofm-locale') as Locale;
-    if (storedLocale && (storedLocale === 'fr' || storedLocale === 'en')) {
-      setLocale(storedLocale);
-      setTranslations(getTranslations(storedLocale));
-    }
+    const stored = readStoredLocale();
+    if (stored) setLocaleState(stored);
   }, []);
 
-  const handleSetLocale = (newLocale: Locale) => {
-    localStorage.setItem('ofm-locale', newLocale);
-    setLocale(newLocale);
-    setTranslations(getTranslations(newLocale));
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
-    // Update HTML lang attribute
-    document.documentElement.lang = newLocale;
-  };
+  const setLocale = useCallback((newLocale: Locale) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, newLocale);
+    } catch {
+      // Private mode / blocked storage: the choice only lasts for this page view
+    }
+    setLocaleState(newLocale);
+  }, []);
 
-  // Helper function to get nested translation
-  const translate = (key: string, variables?: Record<string, string | number>): string => {
-    const keys = key.split('.');
-    let result: any = translations;
+  const value = useMemo<I18nContextValue>(() => {
+    const translations = getTranslations(locale);
 
-    for (const k of keys) {
-      result = result?.[k];
-      if (result === undefined) {
-        console.warn(`Translation key not found: ${key}`);
-        return key;
+    // Resolve a dotted key such as "shell.logout"; falls back to the key itself
+    const translate = (key: string, variables?: Record<string, string | number>): string => {
+      let result: any = translations;
+      for (const k of key.split('.')) {
+        result = result?.[k];
+        if (result === undefined) return key;
       }
-    }
+      if (typeof result !== 'string') return key;
+      return variables ? interpolate(result, variables) : result;
+    };
 
-    if (typeof result !== 'string') {
-      console.warn(`Translation key is not a string: ${key}`);
-      return key;
-    }
-
-    return variables ? interpolate(result, variables) : result;
-  };
-
-  const value: I18nContextValue = {
-    locale,
-    setLocale: handleSetLocale,
-    t: translations,
-    translate,
-  };
+    return { locale, setLocale, t: translations, translate };
+  }, [locale, setLocale]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
