@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
-import { UpdateProfileDto } from './dto/update-profile.dto';
+import { CREATOR_SETTING_FIELDS, UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class UsersService {
@@ -84,12 +84,40 @@ export class UsersService {
   }
 
   async updateProfile(userId: string, updateProfileDto: UpdateProfileDto) {
+    // Only the fields sent are changed; an empty string (or null) clears the field
+    const data: Record<string, unknown> = {};
+    const creatorData: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(updateProfileDto)) {
+      if (value === undefined) continue;
+      const trimmed = typeof value === 'string' ? value.trim() : value;
+      const target = (CREATOR_SETTING_FIELDS as readonly string[]).includes(key) ? creatorData : data;
+      target[key] = trimmed === '' ? null : trimmed;
+    }
+
+    if (Object.keys(creatorData).length > 0) {
+      const creatorProfile = await this.prisma.creatorProfile.findUnique({
+        where: { userId },
+        select: { id: true },
+      });
+      if (!creatorProfile) {
+        throw new BadRequestException('Ces paramètres sont réservés aux créateurs');
+      }
+      data.creatorProfile = { update: creatorData };
+    }
+
     const user = await this.prisma.user.update({
       where: { id: userId },
-      data: {
-        ...updateProfileDto,
-      },
+      data,
       select: {
+        creatorProfile: {
+          select: {
+            allowMessages: true,
+            allowTips: true,
+            autoAcceptSubscribers: true,
+            welcomeMessage: true,
+            minimumTip: true,
+          },
+        },
         id: true,
         email: true,
         username: true,
@@ -102,7 +130,13 @@ export class UsersService {
       },
     });
 
-    return user;
+    const { creatorProfile, ...profile } = user;
+    return {
+      ...profile,
+      creatorProfile: creatorProfile
+        ? { ...creatorProfile, minimumTip: Number(creatorProfile.minimumTip) }
+        : null,
+    };
   }
 
   async updateAvatar(userId: string, avatarUrl: string) {

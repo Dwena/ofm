@@ -18,6 +18,9 @@ describe('PushNotificationsService', () => {
       findMany: jest.fn(),
       delete: jest.fn(),
     },
+    user: {
+      findUnique: jest.fn(),
+    },
     $use: jest.fn(),
   };
 
@@ -223,6 +226,66 @@ describe('PushNotificationsService', () => {
           args: { data: { userId: 'u-1', type: 'SYSTEM', title: 'T', message: 'M', metadata: { kind: 'PAYMENT_SUCCESS' } } },
         }),
       );
+    });
+
+    it('skips the web push of a category muted for push', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ notificationPreferences: { comments: { push: false } } });
+      const gateway = { sendNotificationToUser: jest.fn() };
+      const service = new PushNotificationsService(
+        mockPrismaService as unknown as PrismaService,
+        { get: jest.fn((key: string, defaultValue?: any) => (vapid as any)[key] ?? defaultValue) } as unknown as ConfigService,
+        gateway as unknown as MessagingGateway,
+      );
+      const spy = jest.spyOn(service, 'sendForNotification').mockResolvedValue(undefined);
+      service.onModuleInit();
+      const middleware = mockPrismaService.$use.mock.calls[0][0];
+
+      const data = { userId: 'creator-1', type: 'NEW_COMMENT', title: 'T', message: 'M' };
+      const next = jest.fn().mockResolvedValue({ id: 'n-9', ...data, isRead: false });
+      await middleware({ model: 'Notification', action: 'create', args: { data } }, next);
+
+      expect(mockPrismaService.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'creator-1' },
+        select: { notificationPreferences: true },
+      });
+      expect(spy).not.toHaveBeenCalled();
+      expect(gateway.sendNotificationToUser).toHaveBeenCalledTimes(1);
+      expect(next.mock.calls[0][0].args.data.isRead).toBeUndefined();
+    });
+
+    it('stores a category muted in app as read and does not emit it', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ notificationPreferences: { followers: { inApp: false } } });
+      const gateway = { sendNotificationToUser: jest.fn() };
+      const service = new PushNotificationsService(
+        mockPrismaService as unknown as PrismaService,
+        { get: jest.fn((key: string, defaultValue?: any) => (vapid as any)[key] ?? defaultValue) } as unknown as ConfigService,
+        gateway as unknown as MessagingGateway,
+      );
+      const spy = jest.spyOn(service, 'sendForNotification').mockResolvedValue(undefined);
+      service.onModuleInit();
+      const middleware = mockPrismaService.$use.mock.calls[0][0];
+
+      const data = { userId: 'creator-1', type: 'NEW_FOLLOWER', title: 'T', message: 'M' };
+      const next = jest.fn(async (params) => ({ id: 'n-10', ...params.args.data }));
+      await middleware({ model: 'Notification', action: 'create', args: { data } }, next);
+
+      expect(next.mock.calls[0][0].args.data).toEqual(
+        expect.objectContaining({ isRead: true, readAt: expect.any(Date) }),
+      );
+      expect(gateway.sendNotificationToUser).not.toHaveBeenCalled();
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('never looks up preferences for account notifications', async () => {
+      const service = buildService(vapid);
+      jest.spyOn(service, 'sendForNotification').mockResolvedValue(undefined);
+      service.onModuleInit();
+      const middleware = mockPrismaService.$use.mock.calls[0][0];
+
+      const data = { userId: 'u-1', type: 'CONTENT_REJECTED', title: 'T', message: 'M' };
+      await middleware({ model: 'Notification', action: 'create', args: { data } }, jest.fn().mockResolvedValue({ id: 'n', ...data }));
+
+      expect(mockPrismaService.user.findUnique).not.toHaveBeenCalled();
     });
 
     it('maps a notification to a push payload', async () => {
