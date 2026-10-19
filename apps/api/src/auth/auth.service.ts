@@ -396,7 +396,7 @@ export class AuthService {
     const expiresIn = this.configService.get('JWT_REFRESH_EXPIRES_IN', '7d');
 
     // Parse expiration (e.g., "7d" -> 7 days)
-    let expirationDate = new Date();
+    const expirationDate = new Date();
     const match = expiresIn.match(/^(\d+)([dhms])$/);
     if (match) {
       const value = parseInt(match[1]);
