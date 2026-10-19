@@ -26,7 +26,8 @@ export class ModerationService {
         reporterId,
         reportedType: dto.reportedType,
         reportedId: dto.reportedId,
-        status: { in: ['pending', 'reviewed'] },
+        // Statuses may be stored lowercase (moderation) or uppercase (legacy admin)
+        status: { in: ['pending', 'reviewed', 'PENDING', 'REVIEWING'] },
       },
     });
 

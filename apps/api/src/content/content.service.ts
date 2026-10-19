@@ -33,7 +33,8 @@ export class ContentService {
     _count: {
       select: {
         likes: true,
-        comments: true,
+        // Soft-deleted comments must not be counted
+        comments: { where: { deletedAt: null } },
       },
     },
   };

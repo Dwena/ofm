@@ -1002,7 +1002,10 @@ async function main() {
     { contentId: aliceBali, userId: suspended.id, text: 'Réponds à mes messages !!!', createdAt: daysAgo(12) },
     { contentId: aliceBali, userId: sophie.id, text: 'Commentaire supprimé', createdAt: daysAgo(3), deletedAt: daysAgo(2) },
   );
-  await prisma.comment.createMany({ data: comments });
+  // Not edited: updatedAt must match createdAt (the UI flags edited comments)
+  await prisma.comment.createMany({
+    data: comments.map((comment) => ({ ...comment, updatedAt: comment.updatedAt ?? comment.createdAt })),
+  });
   const spamComment = await prisma.comment.findFirstOrThrow({ where: { userId: banned.id } });
 
   // ---------- Follows ----------
