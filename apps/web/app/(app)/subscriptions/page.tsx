@@ -76,7 +76,7 @@ export default function SubscriptionsPage() {
     queryKey: ['featured-creators', debouncedSearch],
     queryFn: async () => {
       const response = await usersApi.discover({ search: debouncedSearch, limit: 20 })
-      return (response.data?.items ?? []) as Creator[]
+      return response.data as Creator[]
     },
   })
 
