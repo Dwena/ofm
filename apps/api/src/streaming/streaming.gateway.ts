@@ -4,10 +4,11 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
+import { Namespace, Server, Socket } from 'socket.io';
 import { Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { Subscription } from 'rxjs';
 import { JwtService } from '@nestjs/jwt';
@@ -85,7 +86,7 @@ export const streamRoom = (streamId: string) => `stream:${streamId}`;
   namespace: '/streaming',
 })
 export class StreamingGateway
-  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy
 {
   @WebSocketServer()
   server: Server;
@@ -95,6 +96,8 @@ export class StreamingGateway
   private socketStreams = new Map<string, Set<string>>(); // socketId -> streamIds
   private lastChatAt = new Map<string, number>();
   private lastReactionAt = new Map<string, number>();
+  // streamId -> ids of the users the creator muted in the chat (until the stream ends)
+  private mutedUsers = new Map<string, Set<string>>();
   private tipSubscription?: Subscription;
 
   constructor(
@@ -113,14 +116,41 @@ export class StreamingGateway
     this.tipSubscription?.unsubscribe();
   }
 
+  /**
+   * Authenticate in a socket.io middleware so the client's `connect` event
+   * only fires once the user is known. With handleConnection alone, the
+   * events a client sends right after connecting (join-live-stream) could be
+   * handled before the async JWT check finished and were refused with
+   * "Unauthorized".
+   */
+  afterInit(server: Server | Namespace) {
+    if (typeof server?.use !== 'function') return;
+    server.use((socket, next) => {
+      this.authenticate(socket as AuthenticatedStreamSocket)
+        .then((ok) => (ok ? next() : next(new Error('Unauthorized'))))
+        .catch(() => next(new Error('Unauthorized')));
+    });
+  }
+
   async handleConnection(client: AuthenticatedStreamSocket) {
+    // Normally already authenticated by the middleware registered in afterInit
+    if (!client.userId && !(await this.authenticate(client))) {
+      client.disconnect();
+      return;
+    }
+    this.logger.log(`Client connected: ${client.id} (User: ${client.userId})`);
+  }
+
+  /**
+   * Verify the handshake's JWT and attach the user to the socket
+   */
+  private async authenticate(client: AuthenticatedStreamSocket): Promise<boolean> {
     try {
       const token = client.handshake.auth?.token || client.handshake.headers.authorization?.replace('Bearer ', '');
 
       if (!token) {
         this.logger.warn('Client connection rejected - no token');
-        client.disconnect();
-        return;
+        return false;
       }
 
       const payload = await this.jwtService.verifyAsync(token, {
@@ -134,8 +164,7 @@ export class StreamingGateway
 
       if (!user || user.status === 'BANNED' || user.status === 'SUSPENDED') {
         this.logger.warn(`Client connection rejected - user ${payload.sub} not allowed`);
-        client.disconnect();
-        return;
+        return false;
       }
 
       client.userId = user.id;
@@ -145,11 +174,10 @@ export class StreamingGateway
         displayName: user.displayName,
         avatar: user.avatar,
       };
-
-      this.logger.log(`Client connected: ${client.id} (User: ${user.id})`);
+      return true;
     } catch (error) {
       this.logger.error('Connection error:', error.message);
-      client.disconnect();
+      return false;
     }
   }
 
@@ -202,6 +230,7 @@ export class StreamingGateway
         success: true,
         viewerCount,
         broadcasterOnline: !!room.broadcasterSocketId,
+        muted: this.isMuted(streamId, client.userId),
         messages: messages.map((message) => this.toChatMessage(message, stream.creatorId)),
       };
     } catch (error) {
@@ -264,6 +293,7 @@ export class StreamingGateway
       return {
         success: true,
         viewerCount,
+        mutedUserIds: [...(this.mutedUsers.get(streamId) ?? [])],
         messages: messages.map((message) => this.toChatMessage(message, stream.creatorId)),
       };
     } catch (error) {
@@ -387,6 +417,9 @@ export class StreamingGateway
     const room = this.getMemberRoom(client, data?.streamId);
     if (!room) return { error: 'Not in this stream' };
     if (!isNonEmptyString(data.message)) return { error: 'Message cannot be empty' };
+    if (this.isMuted(data.streamId, client.userId)) {
+      return { error: 'You have been muted by the creator', reason: 'MUTED' };
+    }
 
     const now = Date.now();
     if (now - (this.lastChatAt.get(client.id) ?? 0) < CHAT_RATE_LIMIT_MS) {
@@ -403,6 +436,61 @@ export class StreamingGateway
       this.logger.error('Chat message error:', error);
       return { error: error.message || 'Unable to send message' };
     }
+  }
+
+  /**
+   * Creator removes a chat message (deleted from the database)
+   */
+  @SubscribeMessage('delete-chat-message')
+  async handleDeleteChatMessage(
+    @ConnectedSocket() client: AuthenticatedStreamSocket,
+    @MessageBody() data: { streamId: string; messageId: string },
+  ): Promise<Ack> {
+    const room = this.getModeratorRoom(client, data?.streamId);
+    if (!room) return { error: 'Only the creator can moderate this chat', reason: 'NOT_CREATOR' };
+    if (!isNonEmptyString(data.messageId)) return { error: 'Invalid message' };
+
+    try {
+      const deleted = await this.streamingService.deleteChatMessage(data.streamId, data.messageId);
+      if (!deleted) return { error: 'Message not found', reason: 'NOT_FOUND' };
+      this.server.to(streamRoom(data.streamId)).emit('chat-message-deleted', {
+        streamId: data.streamId,
+        messageId: data.messageId,
+      });
+      return { success: true };
+    } catch (error) {
+      this.logger.error('Delete chat message error:', error);
+      return { error: 'Unable to delete message' };
+    }
+  }
+
+  /**
+   * Creator mutes (or unmutes with `muted: false`) a viewer in the chat until the stream ends
+   */
+  @SubscribeMessage('mute-viewer')
+  handleMuteViewer(
+    @ConnectedSocket() client: AuthenticatedStreamSocket,
+    @MessageBody() data: { streamId: string; userId: string; muted?: boolean },
+  ): Ack {
+    const room = this.getModeratorRoom(client, data?.streamId);
+    if (!room) return { error: 'Only the creator can moderate this chat', reason: 'NOT_CREATOR' };
+    if (!isNonEmptyString(data.userId) || data.userId === room.creatorId) return { error: 'Invalid user' };
+
+    const muted = data.muted !== false;
+    const users = this.mutedUsers.get(data.streamId) ?? new Set<string>();
+    if (muted) {
+      users.add(data.userId);
+    } else {
+      users.delete(data.userId);
+    }
+    this.mutedUsers.set(data.streamId, users);
+
+    this.server.to(streamRoom(data.streamId)).emit('viewer-muted', {
+      streamId: data.streamId,
+      userId: data.userId,
+      muted,
+    });
+    return { success: true, muted };
   }
 
   /**
@@ -448,6 +536,7 @@ export class StreamingGateway
       sockets.forEach((socketId) => this.socketStreams.get(socketId)?.delete(streamId));
     }
     this.rooms.delete(streamId);
+    this.mutedUsers.delete(streamId);
   }
 
   /**
@@ -578,6 +667,18 @@ export class StreamingGateway
     if (!client.userId || !isNonEmptyString(streamId)) return undefined;
     const room = this.rooms.get(streamId);
     return room?.broadcasterSocketId === client.id ? room : undefined;
+  }
+
+  /**
+   * Room of the stream when the socket belongs to its creator (broadcasting or watching)
+   */
+  private getModeratorRoom(client: AuthenticatedStreamSocket, streamId: unknown) {
+    const room = this.getMemberRoom(client, streamId);
+    return room && room.creatorId === client.userId ? room : undefined;
+  }
+
+  private isMuted(streamId: string, userId?: string) {
+    return !!userId && !!this.mutedUsers.get(streamId)?.has(userId);
   }
 
   private getMemberRoom(client: AuthenticatedStreamSocket, streamId: unknown) {

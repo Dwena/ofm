@@ -49,8 +49,11 @@ export class StreamingController {
    * Get creator's streams
    */
   @Get('creator/:creatorId')
-  async getCreatorStreams(@Param('creatorId') creatorId: string) {
-    return this.streamingService.getCreatorStreams(creatorId);
+  async getCreatorStreams(
+    @Param('creatorId') creatorId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.streamingService.getCreatorStreams(creatorId, userId);
   }
 
   /**
