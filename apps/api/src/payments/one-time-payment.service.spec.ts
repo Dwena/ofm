@@ -349,6 +349,49 @@ describe('OneTimePaymentService', () => {
     });
   });
 
+  describe('PPV messages', () => {
+    it('marks the message as purchased once paid, and only confirms for that message', async () => {
+      mockPrismaService.message = { updateMany: jest.fn() };
+      mockStripeService.createOneTimePaymentIntent.mockResolvedValue(intent({ amount: 799 }));
+
+      await service.startPayment({
+        payerId: 'fan-1',
+        creatorId: 'creator-1',
+        kind: 'message_unlock',
+        amount: 7.99,
+        metadata: { messageId: 'msg-1' },
+      });
+      expect(row.type).toBe('PPV_UNLOCK');
+      expect(mockStripeService.createOneTimePaymentIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ messageId: 'msg-1', kind: 'message_unlock' }) }),
+      );
+
+      await expect(
+        service.confirmPayment('fan-1', 'pi_1', { kind: 'message_unlock', metadata: { messageId: 'msg-2' } }),
+      ).rejects.toThrow(NotFoundException);
+
+      mockStripeService.retrievePaymentIntent.mockResolvedValue(succeeded({ amount: 799, amount_received: 799 }));
+      const result = await service.confirmPayment('fan-1', 'pi_1', {
+        kind: 'message_unlock',
+        metadata: { messageId: 'msg-1' },
+      });
+
+      expect(result.completed).toBe(true);
+      expect(mockPrismaService.message.updateMany).toHaveBeenCalledWith({
+        where: { id: 'msg-1', receiverId: 'fan-1' },
+        data: { isPurchased: true },
+      });
+      expect(mockPrismaService.contentUnlock.upsert).not.toHaveBeenCalled();
+      expect(mockPrismaService.notification.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 'creator-1',
+          title: 'Message débloqué',
+          linkUrl: '/messages?user=fan',
+        }),
+      });
+    });
+  });
+
   it('leaves other payment intents (subscriptions) to the generic webhook handling', async () => {
     row = { id: 'tx-sub', type: 'SUBSCRIPTION', status: 'PENDING', stripePaymentIntentId: 'pi_1' };
 

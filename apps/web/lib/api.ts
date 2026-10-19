@@ -282,8 +282,19 @@ export const messagesApi = {
   getConversations: () => api.get('/messages/conversations'),
   // Open (or create) the conversation with a user, by id or username
   startConversation: (user: string) => api.post('/messages/conversations', { user }),
-  getMessages: (partnerId: string, params: { page?: number; limit?: number } = {}) =>
+  // `before` (ISO date): load the messages older than the oldest one displayed
+  getMessages: (partnerId: string, params: { page?: number; limit?: number; before?: string } = {}) =>
     api.get(`/messages/${partnerId}`, { params }),
+  // ppvPrice (euros, creators only): the message stays locked until the recipient pays
+  sendMessage: (data: { recipientId: string; content?: string; attachmentUrl?: string; ppvPrice?: number }) =>
+    api.post('/messages', data),
+  markAsRead: (partnerId: string) => api.post(`/messages/${partnerId}/read`),
+  // People the user can start a conversation with
+  searchContacts: (q?: string) => api.get('/messages/contacts', { params: q ? { q } : {} }),
+  unlockMessage: (messageId: string, paymentMethodId?: string) =>
+    api.post(`/messages/${messageId}/unlock`, paymentMethodId ? { paymentMethodId } : {}),
+  confirmUnlockMessage: (messageId: string, paymentIntentId: string) =>
+    api.post(`/messages/${messageId}/unlock/confirm`, { paymentIntentId }),
   deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
 }
 

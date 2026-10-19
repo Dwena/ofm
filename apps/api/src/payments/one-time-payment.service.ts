@@ -13,7 +13,7 @@ import { computeFees, roundMoney, toCents } from '../common/utils/money';
 import { StripeService } from './stripe.service';
 
 /** What a one-off payment pays for (stored in the transaction metadata) */
-export type OneTimePaymentKind = 'content_unlock' | 'stream_access' | 'tip';
+export type OneTimePaymentKind = 'content_unlock' | 'stream_access' | 'tip' | 'message_unlock';
 
 export interface StartPaymentParams {
   payerId: string;
@@ -21,7 +21,7 @@ export interface StartPaymentParams {
   kind: OneTimePaymentKind;
   /** Amount in euros */
   amount: number;
-  /** Content id (PPV content) or stream id (PPV live) */
+  /** Content id (PPV content) or stream id (PPV live); PPV messages use metadata.messageId */
   contentId?: string;
   paymentMethodId?: string;
   description?: string;
@@ -65,10 +65,11 @@ const TRANSACTION_TYPE: Record<OneTimePaymentKind, TransactionType> = {
   content_unlock: 'PPV_UNLOCK',
   stream_access: 'PPV_UNLOCK',
   tip: 'TIP',
+  message_unlock: 'PPV_UNLOCK',
 };
 
 /**
- * One-off payments (PPV content, PPV live streams, tips).
+ * One-off payments (PPV content, PPV live streams, PPV messages, tips).
  *
  * Flow: a PENDING transaction is created with a Stripe PaymentIntent. Access
  * and creator earnings are granted only once Stripe reports the intent as
@@ -159,6 +160,7 @@ export class OneTimePaymentService {
           creatorId: params.creatorId,
           ...(params.contentId && { contentId: params.contentId }),
           ...(typeof metadata.streamId === 'string' && { streamId: metadata.streamId }),
+          ...(typeof metadata.messageId === 'string' && { messageId: metadata.messageId }),
         },
       });
     } catch (error) {
@@ -188,15 +190,23 @@ export class OneTimePaymentService {
   async confirmPayment(
     userId: string,
     paymentIntentId: string,
-    expected: { kind: OneTimePaymentKind; contentId?: string; creatorId?: string },
+    expected: {
+      kind: OneTimePaymentKind;
+      contentId?: string;
+      creatorId?: string;
+      /** Metadata values the transaction must carry (e.g. messageId) */
+      metadata?: Record<string, string>;
+    },
   ): Promise<PaymentFlowResult> {
     const transaction = await this.prisma.transaction.findUnique({
       where: { stripePaymentIntentId: paymentIntentId },
     });
 
-    const kind = (transaction?.metadata as Record<string, unknown> | null)?.kind;
+    const transactionMetadata = (transaction?.metadata as Record<string, unknown> | null) ?? {};
+    const kind = transactionMetadata.kind;
     if (
       !transaction ||
+      Object.entries(expected.metadata ?? {}).some(([key, value]) => transactionMetadata[key] !== value) ||
       transaction.fromUserId !== userId ||
       transaction.type !== TRANSACTION_TYPE[expected.kind] ||
       (kind && kind !== expected.kind) ||
@@ -314,6 +324,13 @@ export class OneTimePaymentService {
         });
       }
 
+      if (kind === 'message_unlock' && typeof metadata.messageId === 'string') {
+        await tx.message.updateMany({
+          where: { id: metadata.messageId, receiverId: transaction.fromUserId },
+          data: { isPurchased: true },
+        });
+      }
+
       if (transaction.toUserId) {
         await tx.creatorProfile.updateMany({
           where: { userId: transaction.toUserId },
@@ -368,6 +385,23 @@ export class OneTimePaymentService {
               amount,
               transactionId: transaction.id,
               ...(streamId && { streamId }),
+            },
+          },
+        });
+      } else if (kind === 'message_unlock') {
+        await this.prisma.notification.create({
+          data: {
+            userId: transaction.toUserId,
+            type: 'SYSTEM',
+            title: 'Message débloqué',
+            message: `${fanName} a débloqué votre message payant pour ${amount.toFixed(2)}€`,
+            linkUrl: fromUser ? `/messages?user=${fromUser.username}` : '/messages',
+            metadata: {
+              kind: 'PPV_PURCHASE',
+              fromUserId: transaction.fromUserId,
+              messageId: typeof metadata.messageId === 'string' ? metadata.messageId : null,
+              amount,
+              transactionId: transaction.id,
             },
           },
         });

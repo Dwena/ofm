@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { io, Socket } from 'socket.io-client'
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
@@ -9,22 +9,26 @@ interface UseSocketOptions {
   autoConnect?: boolean
 }
 
-interface Message {
+/** Message as pushed by the messaging gateway (already shaped for the viewer) */
+export interface SocketMessage {
   id: string
   content: string
-  type: string
   senderId: string
-  recipientId: string
+  receiverId: string
   createdAt: string
+  status?: 'SENT' | 'DELIVERED' | 'READ' | 'DELETED'
   hasAttachment?: boolean
-  attachmentUrl?: string
+  attachmentUrl?: string | null
+  isPpv?: boolean
+  ppvPrice?: number | null
+  isPurchased?: boolean
+  // PPV message not purchased yet by the viewer: no text, no attachment
+  locked?: boolean
   sender?: {
     id: string
     username: string
-    creatorProfile?: {
-      displayName?: string
-      profilePicture?: string
-    }
+    displayName?: string | null
+    avatar?: string | null
   }
 }
 
@@ -131,110 +135,145 @@ export function useSocket(options: UseSocketOptions = {}) {
     }
   }, [autoConnect])
 
-  // Send message
-  const sendMessage = (
-    recipientId: string,
-    content: string,
-    type = 'TEXT',
-    attachmentUrl?: string
-  ) => {
-    return new Promise((resolve, reject) => {
-      if (!socketRef.current?.connected) {
-        reject(new Error('Socket not connected'))
-        return
-      }
-
-      socketRef.current.emit(
-        'message:send',
-        { recipientId, content, type, attachmentUrl },
-        (response: any) => {
-          if (response.error) {
-            reject(new Error(response.error))
-          } else {
-            resolve(response)
-          }
+  // Send message over the socket (the messages page sends through REST: POST /messages)
+  const sendMessage = useCallback(
+    (recipientId: string, content: string, type = 'TEXT', attachmentUrl?: string) => {
+      return new Promise((resolve, reject) => {
+        if (!socketRef.current?.connected) {
+          reject(new Error('Socket not connected'))
+          return
         }
-      )
-    })
-  }
+
+        socketRef.current.emit(
+          'message:send',
+          { recipientId, content, type, attachmentUrl },
+          (response: any) => {
+            if (response?.error) {
+              reject(new Error(response.error))
+            } else {
+              resolve(response)
+            }
+          }
+        )
+      })
+    },
+    []
+  )
 
   // Typing indicator
-  const setTyping = (recipientId: string, isTyping: boolean) => {
+  const setTyping = useCallback((recipientId: string, isTyping: boolean) => {
     if (!socketRef.current?.connected) return
 
     socketRef.current.emit('message:typing', { recipientId, isTyping })
-  }
+  }, [])
 
   // Mark as read
-  const markAsRead = (messageIds: string[]) => {
+  const markAsRead = useCallback((messageIds: string[]) => {
     if (!socketRef.current?.connected) return
 
     socketRef.current.emit('message:read', { messageIds })
-  }
+  }, [])
+
+  // Ask which of these users are connected right now (merged into onlineUsers)
+  const queryPresence = useCallback((userIds: string[]) => {
+    const target = socketRef.current
+    if (!target?.connected || userIds.length === 0) return
+
+    target.emit('presence:query', { userIds }, (response: { online?: string[] } | undefined) => {
+      const online = new Set(response?.online ?? [])
+      setOnlineUsers(prev => {
+        const next = new Set(prev)
+        userIds.forEach(id => (online.has(id) ? next.add(id) : next.delete(id)))
+        return next
+      })
+    })
+  }, [])
 
   // Subscribe to new messages
-  const onNewMessage = (callback: (message: Message) => void) => {
-    if (!socketRef.current) return () => {}
+  const onNewMessage = useCallback((callback: (message: SocketMessage) => void) => {
+    const target = socketRef.current
+    if (!target) return () => {}
 
-    const handler = ({ message }: { message: Message }) => {
+    const handler = ({ message }: { message: SocketMessage }) => {
       callback(message)
     }
 
-    socketRef.current.on('message:new', handler)
+    target.on('message:new', handler)
 
     return () => {
-      socketRef.current?.off('message:new', handler)
+      target.off('message:new', handler)
     }
-  }
+  }, [])
 
-  // Subscribe to message sent
-  const onMessageSent = (callback: (message: Message) => void) => {
-    if (!socketRef.current) return () => {}
+  // Subscribe to messages sent by the current user (from any of their tabs)
+  const onMessageSent = useCallback((callback: (message: SocketMessage) => void) => {
+    const target = socketRef.current
+    if (!target) return () => {}
 
-    const handler = ({ message }: { message: Message }) => {
+    const handler = ({ message }: { message: SocketMessage }) => {
       callback(message)
     }
 
-    socketRef.current.on('message:sent', handler)
+    target.on('message:sent', handler)
 
     return () => {
-      socketRef.current?.off('message:sent', handler)
+      target.off('message:sent', handler)
     }
-  }
+  }, [])
 
   // Subscribe to typing
-  const onTyping = (callback: (data: { userId: string; isTyping: boolean }) => void) => {
-    if (!socketRef.current) return () => {}
+  const onTyping = useCallback((callback: (data: { userId: string; isTyping: boolean }) => void) => {
+    const target = socketRef.current
+    if (!target) return () => {}
 
-    socketRef.current.on('message:typing', callback)
+    target.on('message:typing', callback)
 
     return () => {
-      socketRef.current?.off('message:typing', callback)
+      target.off('message:typing', callback)
     }
-  }
+  }, [])
 
   // Subscribe to read receipts
-  const onMessageRead = (callback: (data: { messageIds: string[]; readBy: string }) => void) => {
-    if (!socketRef.current) return () => {}
+  const onMessageRead = useCallback(
+    (callback: (data: { messageIds: string[]; readBy: string }) => void) => {
+      const target = socketRef.current
+      if (!target) return () => {}
 
-    socketRef.current.on('message:read', callback)
+      target.on('message:read', callback)
 
-    return () => {
-      socketRef.current?.off('message:read', callback)
-    }
-  }
+      return () => {
+        target.off('message:read', callback)
+      }
+    },
+    []
+  )
+
+  // Subscribe to deleted messages (either side of a conversation)
+  const onMessageDeleted = useCallback(
+    (callback: (data: { messageId: string; senderId: string; receiverId: string }) => void) => {
+      const target = socketRef.current
+      if (!target) return () => {}
+
+      target.on('message:deleted', callback)
+
+      return () => {
+        target.off('message:deleted', callback)
+      }
+    },
+    []
+  )
 
   // Subscribe to realtime notifications (emitted for every Notification row created server-side)
-  const onNotification = (callback: (notification: RealtimeNotification) => void) => {
-    if (!socketRef.current) return () => {}
-
+  const onNotification = useCallback((callback: (notification: RealtimeNotification) => void) => {
     const target = socketRef.current
+    if (!target) return () => {}
+
     target.on('notification:new', callback)
 
     return () => {
       target.off('notification:new', callback)
     }
-  }
+  }, [])
 
   return {
     socket,
@@ -243,10 +282,12 @@ export function useSocket(options: UseSocketOptions = {}) {
     sendMessage,
     setTyping,
     markAsRead,
+    queryPresence,
     onNewMessage,
     onMessageSent,
     onTyping,
     onMessageRead,
+    onMessageDeleted,
     onNotification,
   }
 }

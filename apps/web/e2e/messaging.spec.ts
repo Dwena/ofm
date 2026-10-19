@@ -4,8 +4,9 @@ import { pngFile } from './fixtures/files';
 
 /**
  * Real-time messaging between the seeded creator and subscriber.
- * The UI has no « new conversation » picker: tests that need an existing
- * conversation between both accounts are skipped when there is none.
+ * Tests that need an existing conversation between both accounts are
+ * skipped when there is none (they do not create one through the
+ * « Nouveau message » picker, to keep the seeded data unchanged).
  */
 
 const MESSAGE_INPUT = 'Tapez votre message...';
