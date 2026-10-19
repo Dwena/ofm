@@ -3,14 +3,14 @@
 ## 📋 Pages Manquantes à Créer
 
 ### ✅ 1. Settings Page - `/app/(app)/settings/page.tsx`
-**Status**: À créer
+**Status**: Implémenté
 **Complexité**: Moyenne  
 **Temps estimé**: 1h
 
 Voir code complet dans ce document section "Settings Page Code"
 
 ### ✅ 2. Notifications Page - `/app/(app)/notifications/page.tsx`
-**Status**: À créer
+**Status**: Implémenté
 **Complexité**: Moyenne
 **Temps estimé**: 1h
 
@@ -22,7 +22,7 @@ Fonctionnalités :
 - Badge count
 
 ### ✅ 3. Stories Viewer - `/app/(app)/stories/[id]/page.tsx`
-**Status**: À créer
+**Status**: Implémenté
 **Complexité**: Élevée
 **Temps estimé**: 2-3h
 
@@ -35,7 +35,7 @@ Fonctionnalités :
 - Close avec swipe down
 
 ### ✅ 4. Live Streaming Viewer - `/app/(app)/live/[streamId]/page.tsx`
-**Status**: À créer  
+**Status**: Implémenté
 **Complexité**: Très élevée
 **Temps estimé**: 4-5h
 
@@ -48,7 +48,7 @@ Fonctionnalités :
 - Full-screen mode
 
 ### ✅ 5. Creator Search/Discovery - `/app/(app)/discover/page.tsx`
-**Status**: À créer
+**Status**: Implémenté
 **Complexité**: Moyenne
 **Temps estimé**: 2h
 
@@ -60,7 +60,7 @@ Fonctionnalités :
 - Sort options
 
 ### ✅ 6. Admin Panel - `/app/(app)/admin/page.tsx`
-**Status**: À créer
+**Status**: Implémenté
 **Complexité**: Très élevée  
 **Temps estimé**: 6-8h
 
@@ -416,32 +416,36 @@ npx playwright show-report
 
 ## ✅ Checklist Implémentation
 
-### Pages Frontend
-- [ ] Settings page
-- [ ] Notifications page
-- [ ] Stories viewer
-- [ ] Live streaming viewer
-- [ ] Creator search/discovery
-- [ ] Admin panel (dashboard)
-- [ ] Admin users management
-- [ ] Admin content moderation
-- [ ] Admin reports handling
+> État vérifié dans le code du dépôt (les pages listées en haut de ce document existent désormais).
 
-### Tests E2E
-- [ ] Payment flow test
-- [ ] Content upload test (image)
-- [ ] Content upload test (video)
-- [ ] Messaging test
-- [ ] Typing indicator test
-- [ ] Creator dashboard test
-- [ ] Subscription tier management test
-- [ ] Auth flow test (login/register/2FA)
+### Pages Frontend
+- [x] Settings page — `app/(app)/settings/page.tsx`
+- [x] Notifications page — `app/(app)/notifications/page.tsx`
+- [x] Stories viewer — `app/(app)/stories/[id]/page.tsx`
+- [x] Live streaming viewer — `app/(app)/live/[streamId]/page.tsx`
+- [x] Creator search/discovery — `app/(app)/discover/page.tsx`
+- [x] Admin panel (dashboard) — `app/(app)/admin/page.tsx` (accès protégé par `admin/layout.tsx`, rôle `ADMIN`)
+- [x] Admin users management — `app/(app)/admin/users/page.tsx` (recherche, filtres, pagination, fiche détaillée, avertir/suspendre/bannir/réactiver/supprimer avec raison)
+- [x] Admin content moderation — `app/(app)/admin/content/page.tsx` (contenus signalés/en révision/retirés, retrait/restauration) + `GET /admin/content`, `POST /admin/content/:id/remove|restore`
+- [x] Admin reports handling — `app/(app)/admin/reports/page.tsx` (file filtrée, résolution avec sanction et retrait du contenu, rejet)
+- [x] Admin audit / activity logs — `app/(app)/admin/logs/page.tsx` + `GET /admin/audit-logs`
+- [ ] Admin platform analytics (`/admin/analytics`) et system settings (`/admin/settings`)
+
+### Tests E2E (`apps/web/e2e/`)
+- [x] Payment flow test — `payment-flow.spec.ts`
+- [x] Content upload test (image) — `content-upload.spec.ts`
+- [x] Content upload test (video) — `content-upload.spec.ts` (attend les libellés anglais « Processing video » / « Video ready » ; l'UI affiche « Traitement de la vidéo » / « Vidéo prête »)
+- [x] Messaging test — `messaging.spec.ts`
+- [x] Typing indicator test — `messaging.spec.ts`
+- [x] Creator dashboard test — `creator-dashboard.spec.ts`
+- [ ] Subscription tier management test (seul l'affichage des tiers est testé, pas la création/édition)
+- [ ] Auth flow test (login/register/2FA) — login/register/logout couverts dans `auth.spec.ts`, 2FA non testé
 
 ### Intégrations
-- [ ] WebRTC live streaming frontend
-- [ ] Push notifications frontend
-- [ ] Video encoding progress UI
-- [ ] Real-time analytics updates
+- [x] WebRTC live streaming frontend — `app/(app)/live/[streamId]/page.tsx`
+- [x] Push notifications frontend — `hooks/use-push-notifications.ts`, `components/notifications-manager.tsx`, `public/service-worker.js`
+- [x] Video encoding progress UI — les workers Bull publient `job.progress()`, `GET /media/jobs/:jobId/status` (jobId renvoyé par `POST /media/upload`), suivi dans `creator/upload` et carte « Traitements en cours » du dashboard créateur
+- [x] Real-time analytics updates — `hooks/use-live-analytics.ts` : polling React Query (30 s) + invalidation sur les événements socket `notification:new` (NEW_SUBSCRIBER, NEW_TIP, ...) / `analytics:update` du namespace `/messaging`, dashboard et analytics créateur. Reste à brancher l'émission `notification:new` côté API (`MessagingGateway.sendNotificationToUser` n'est pas encore appelé par `NotificationsService`)
 
 ---
 

@@ -19,7 +19,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { Ban, Clock, CheckCircle, Search, AlertTriangle } from 'lucide-react';
-import axios from 'axios';
+import { adminApi, moderationApi } from '@/lib/api';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
@@ -52,17 +52,7 @@ export function UserModeration() {
   const { data: usersData, isLoading } = useQuery({
     queryKey: ['admin-users', searchQuery],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (searchQuery) params.append('search', searchQuery);
-
-      const response = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/admin/users?${params}`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
+      const response = await adminApi.getUsers({ query: searchQuery || undefined });
       return response.data;
     },
   });
@@ -70,15 +60,7 @@ export function UserModeration() {
   // Ban user mutation
   const banUserMutation = useMutation({
     mutationFn: async ({ userId, reason }: any) => {
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/moderation/users/${userId}/ban`,
-        { reason },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
+      const response = await moderationApi.banUser(userId, reason);
       return response.data;
     },
     onSuccess: () => {
@@ -101,15 +83,7 @@ export function UserModeration() {
   // Suspend user mutation
   const suspendUserMutation = useMutation({
     mutationFn: async ({ userId, reason, durationDays }: any) => {
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/moderation/users/${userId}/suspend`,
-        { reason, durationDays },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
+      const response = await moderationApi.suspendUser(userId, reason, durationDays);
       return response.data;
     },
     onSuccess: () => {
@@ -132,15 +106,7 @@ export function UserModeration() {
   // Unsuspend user mutation
   const unsuspendUserMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/moderation/users/${userId}/unsuspend`,
-        {},
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
+      const response = await moderationApi.unsuspendUser(userId);
       return response.data;
     },
     onSuccess: () => {
@@ -251,12 +217,12 @@ export function UserModeration() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {usersData?.users?.length === 0 ? (
+            {!usersData?.items?.length ? (
               <div className="text-center py-8 text-muted-foreground">
                 Aucun utilisateur trouvé
               </div>
             ) : (
-              usersData?.users?.map((user: User) => (
+              usersData?.items?.map((user: User) => (
                 <Card key={user.id}>
                   <CardContent className="pt-6">
                     <div className="flex items-start justify-between">

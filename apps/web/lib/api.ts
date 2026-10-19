@@ -312,10 +312,49 @@ export const adminApi = {
     api.get('/admin/reports', { params }),
   getPendingReports: (limit: number = 5) =>
     api.get('/admin/reports', { params: { status: 'PENDING', page: 1, limit } }),
-  handleReport: (data: { reportId: string; status: string; adminNotes?: string; action?: string }) =>
-    api.post('/admin/reports/handle', data),
+  handleReport: (data: {
+    reportId: string
+    status: 'PENDING' | 'REVIEWING' | 'RESOLVED' | 'REJECTED'
+    adminNotes?: string
+    action?: 'SUSPEND' | 'BAN' | 'ACTIVATE' | 'WARN'
+    durationDays?: number
+    removeContent?: boolean
+  }) => api.post('/admin/reports/handle', data),
+  deleteUser: (userId: string, reason?: string) =>
+    api.delete(`/admin/users/${userId}`, { data: { reason } }),
+  // Content moderation: filter ALL | FLAGGED (under review / reported) | REMOVED
+  getContent: (params?: {
+    query?: string
+    status?: string
+    type?: string
+    filter?: 'ALL' | 'FLAGGED' | 'REMOVED'
+    page?: number
+    limit?: number
+  }) => api.get('/admin/content', { params }),
+  removeContent: (contentId: string, reason?: string) =>
+    api.post(`/admin/content/${contentId}/remove`, { reason }),
+  restoreContent: (contentId: string, reason?: string) =>
+    api.post(`/admin/content/${contentId}/restore`, { reason }),
   getActivityLogs: (page: number = 1, limit: number = 20) =>
     api.get('/admin/activity-logs', { params: { page, limit } }),
+  getAuditLogs: (params?: { action?: string; resource?: string; userId?: string; page?: number; limit?: number }) =>
+    api.get('/admin/audit-logs', { params }),
+}
+
+export const moderationApi = {
+  createReport: (data: { reportedType: string; reportedId: string; reason: string; description?: string }) =>
+    api.post('/moderation/reports', data),
+  // Statuses are lowercase here: pending | reviewed | resolved | dismissed
+  getReportsQueue: (params?: { status?: string; reportedType?: string; page?: number; limit?: number }) =>
+    api.get('/moderation/reports/queue', { params }),
+  handleReport: (reportId: string, decision: 'RESOLVE' | 'DISMISS' | 'ESCALATE', resolution: string) =>
+    api.post(`/moderation/reports/${reportId}/handle`, { decision, resolution }),
+  banUser: (userId: string, reason: string) =>
+    api.post(`/moderation/users/${userId}/ban`, { reason }),
+  suspendUser: (userId: string, reason: string, durationDays: number) =>
+    api.post(`/moderation/users/${userId}/suspend`, { reason, durationDays }),
+  unsuspendUser: (userId: string) =>
+    api.post(`/moderation/users/${userId}/unsuspend`),
 }
 
 export const liveApi = {

@@ -7,15 +7,73 @@ import {
   GetReportsDto,
   GetUsersDto,
   GetPlatformStatsDto,
+  GetAdminContentDto,
+  GetAuditLogsDto,
+  AdminContentFilter,
   UserAction,
   ReportStatus,
 } from './dto/admin.dto';
+
+/**
+ * Reports are stored with lowercase statuses (pending, reviewed, resolved, dismissed)
+ * by the moderation module. The admin API speaks uppercase ReportStatus values,
+ * so map between the two representations.
+ */
+const REPORT_STATUS_TO_DB: Record<ReportStatus, string> = {
+  [ReportStatus.PENDING]: 'pending',
+  [ReportStatus.REVIEWING]: 'reviewed',
+  [ReportStatus.RESOLVED]: 'resolved',
+  [ReportStatus.REJECTED]: 'dismissed',
+};
+
+const REPORT_STATUS_FROM_DB: Record<string, ReportStatus> = {
+  pending: ReportStatus.PENDING,
+  reviewed: ReportStatus.REVIEWING,
+  resolved: ReportStatus.RESOLVED,
+  dismissed: ReportStatus.REJECTED,
+};
 
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
   constructor(private prisma: PrismaService) {}
+
+  /**
+   * DB values matching an API report status (both legacy uppercase and lowercase)
+   */
+  private reportStatusValues(status: ReportStatus): string[] {
+    return [REPORT_STATUS_TO_DB[status], status];
+  }
+
+  private normalizeReportStatus(status: string): ReportStatus {
+    return REPORT_STATUS_FROM_DB[status?.toLowerCase()] ?? (status?.toUpperCase() as ReportStatus);
+  }
+
+  /**
+   * Record an admin action in the audit log. Never fails the calling action.
+   */
+  private async logAdminAction(
+    adminId: string,
+    action: string,
+    resource: string,
+    resourceId: string,
+    metadata?: Record<string, any>,
+  ) {
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          userId: adminId,
+          action,
+          resource,
+          resourceId,
+          metadata,
+        },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to write audit log for ${action}: ${error.message}`);
+    }
+  }
 
   /**
    * Get all users with filters
@@ -125,8 +183,12 @@ export class AdminService {
       }),
     ]);
 
+    // Never expose credentials to the back-office
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, twoFactorSecret, ...safeUser } = user;
+
     return {
-      user,
+      user: safeUser,
       stats: {
         contentCount,
         subscriptionCount,
@@ -154,25 +216,33 @@ export class AdminService {
       throw new ForbiddenException('Cannot moderate admin users');
     }
 
-    let newStatus: string;
     let expiresAt: Date | null = null;
+    const data: Record<string, any> = {};
 
     switch (action) {
       case UserAction.SUSPEND:
-        newStatus = 'SUSPENDED';
+        data.status = 'SUSPENDED';
+        data.suspensionReason = reason || null;
         if (durationDays) {
           expiresAt = new Date();
           expiresAt.setDate(expiresAt.getDate() + durationDays);
         }
+        // suspendedUntil is picked up by the hourly SuspensionSchedulerService
+        data.suspendedUntil = expiresAt;
         break;
       case UserAction.BAN:
-        newStatus = 'BANNED';
+        data.status = 'BANNED';
+        data.bannedAt = new Date();
+        data.banReason = reason || null;
         break;
       case UserAction.ACTIVATE:
-        newStatus = 'ACTIVE';
+        data.status = 'ACTIVE';
+        data.bannedAt = null;
+        data.banReason = null;
+        data.suspendedUntil = null;
+        data.suspensionReason = null;
         break;
       case UserAction.WARN:
-        newStatus = user.status;
         // Just log the warning, don't change status
         break;
       default:
@@ -182,8 +252,17 @@ export class AdminService {
     // Update user status
     const updatedUser = await this.prisma.user.update({
       where: { id: userId },
-      data: {
-        status: newStatus as any,
+      data,
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        role: true,
+        status: true,
+        bannedAt: true,
+        banReason: true,
+        suspendedUntil: true,
+        suspensionReason: true,
       },
     });
 
@@ -195,6 +274,12 @@ export class AdminService {
         title: `Account ${action.toLowerCase()}`,
         message: reason || `Your account has been ${action.toLowerCase()}`,
       },
+    });
+
+    await this.logAdminAction(adminId, `USER_${action}`, 'USER', userId, {
+      reason,
+      durationDays,
+      expiresAt,
     });
 
     this.logger.log(`User ${userId} ${action} by admin ${adminId}. Reason: ${reason}`);
@@ -284,11 +369,11 @@ export class AdminService {
     const where: any = {};
 
     if (status) {
-      where.status = status;
+      where.status = { in: this.reportStatusValues(status) };
     }
 
     if (type) {
-      where.targetType = type;
+      where.reportedType = { in: [type, type.toLowerCase()] };
     }
 
     const [reports, total] = await Promise.all([
@@ -311,8 +396,21 @@ export class AdminService {
       this.prisma.report.count({ where }),
     ]);
 
+    const items = await Promise.all(
+      reports.map(async (report: any) => {
+        const target = await this.resolveReportTarget(report.reportedType, report.reportedId);
+        return {
+          ...report,
+          reportedType: report.reportedType?.toUpperCase(),
+          status: this.normalizeReportStatus(report.status),
+          reportedEntity: target.entity,
+          reportedUser: target.user,
+        };
+      }),
+    );
+
     return {
-      items: reports,
+      items,
       pagination: {
         page,
         limit,
@@ -323,10 +421,66 @@ export class AdminService {
   }
 
   /**
+   * Resolve a report's target entity and the user responsible for it.
+   * reportedId is the id of the reported entity (user, content, comment, message).
+   */
+  private async resolveReportTarget(
+    reportedType: string,
+    reportedId: string,
+  ): Promise<{ entity: any; user: { id: string; username: string; displayName: string | null; avatar: string | null } | null }> {
+    const userSelect = { id: true, username: true, displayName: true, avatar: true };
+    if (!reportedId) return { entity: null, user: null };
+
+    switch (reportedType?.toUpperCase()) {
+      case 'CONTENT': {
+        const content = await this.prisma.content.findUnique({
+          where: { id: reportedId },
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            status: true,
+            deletedAt: true,
+            createdAt: true,
+            creator: { select: userSelect },
+          },
+        });
+        if (content) return { entity: content, user: content.creator };
+        break;
+      }
+      case 'COMMENT': {
+        const comment = await this.prisma.comment.findUnique({
+          where: { id: reportedId },
+          select: { id: true, content: true, createdAt: true, user: { select: userSelect } },
+        });
+        if (comment) return { entity: comment, user: comment.user };
+        break;
+      }
+      case 'MESSAGE': {
+        const message = await this.prisma.message.findUnique({
+          where: { id: reportedId },
+          select: { id: true, content: true, createdAt: true, sender: { select: userSelect } },
+        });
+        if (message) return { entity: message, user: message.sender };
+        break;
+      }
+      default:
+        break;
+    }
+
+    // USER reports, or legacy reports that stored the reported user's id directly
+    const user = await this.prisma.user.findUnique({
+      where: { id: reportedId },
+      select: userSelect,
+    });
+    return { entity: user, user };
+  }
+
+  /**
    * Handle report (resolve, reject)
    */
   async handleReport(adminId: string, dto: HandleReportDto) {
-    const { reportId, status, adminNotes, action } = dto;
+    const { reportId, status, adminNotes, action, durationDays, removeContent } = dto;
 
     const report = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -340,25 +494,295 @@ export class AdminService {
     const updatedReport = await this.prisma.report.update({
       where: { id: reportId },
       data: {
-        status,
+        status: REPORT_STATUS_TO_DB[status] ?? status,
         reviewedBy: adminId,
         reviewedAt: new Date(),
         resolution: adminNotes,
       },
     });
 
-    // If resolved with action, take action on reported user
-    if (status === 'RESOLVED' && action && report.reportedId) {
-      await this.moderateUser(adminId, {
-        userId: report.reportedId,
-        action,
-        reason: `Report resolved: ${report.reason}`,
-      });
+    await this.logAdminAction(adminId, `REPORT_${status}`, 'REPORT', reportId, {
+      notes: adminNotes,
+      action,
+      removeContent,
+    });
+
+    if (status === ReportStatus.RESOLVED) {
+      const target = await this.resolveReportTarget(report.reportedType, report.reportedId);
+
+      // Remove the reported content if requested
+      if (removeContent && report.reportedType?.toUpperCase() === 'CONTENT' && target.entity) {
+        await this.removeContent(adminId, report.reportedId, `Report resolved: ${report.reason}`);
+      }
+
+      // Take action on the responsible user
+      if (action && target.user) {
+        await this.moderateUser(adminId, {
+          userId: target.user.id,
+          action,
+          durationDays,
+          reason: adminNotes || `Report resolved: ${report.reason}`,
+        });
+      }
     }
 
     this.logger.log(`Report ${reportId} handled by admin ${adminId}: ${status}`);
 
-    return updatedReport;
+    return { ...updatedReport, status: this.normalizeReportStatus(updatedReport.status) };
+  }
+
+  // ==================== Content Management ====================
+
+  /**
+   * List content for moderation. FLAGGED = under review or with pending reports,
+   * REMOVED = soft-deleted content.
+   */
+  async getContent(dto: GetAdminContentDto) {
+    const { query, status, type, filter = AdminContentFilter.ALL, page = 1, limit = 20 } = dto;
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+
+    if (filter === AdminContentFilter.REMOVED) {
+      where.deletedAt = { not: null };
+    } else {
+      where.deletedAt = null;
+    }
+
+    if (filter === AdminContentFilter.FLAGGED) {
+      const pendingReports = await this.prisma.report.findMany({
+        where: {
+          reportedType: { in: ['CONTENT', 'content'] },
+          status: { in: this.reportStatusValues(ReportStatus.PENDING) },
+        },
+        select: { reportedId: true },
+      });
+      where.OR = [
+        { status: 'UNDER_REVIEW' },
+        { id: { in: [...new Set(pendingReports.map((r: any) => r.reportedId))] } },
+      ];
+    }
+
+    if (status) where.status = status;
+    if (type) where.type = type;
+
+    if (query) {
+      where.AND = [
+        {
+          OR: [
+            { title: { contains: query, mode: 'insensitive' } },
+            { description: { contains: query, mode: 'insensitive' } },
+            { creator: { username: { contains: query, mode: 'insensitive' } } },
+          ],
+        },
+      ];
+    }
+
+    const [contents, total] = await Promise.all([
+      this.prisma.content.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          type: true,
+          status: true,
+          visibility: true,
+          isPpv: true,
+          ppvPrice: true,
+          viewCount: true,
+          likeCount: true,
+          commentCount: true,
+          isModerated: true,
+          moderatedAt: true,
+          moderationNotes: true,
+          publishedAt: true,
+          createdAt: true,
+          deletedAt: true,
+          creator: {
+            select: { id: true, username: true, displayName: true, avatar: true },
+          },
+          files: {
+            select: { id: true, mimeType: true, thumbnailPath: true },
+            take: 1,
+            orderBy: { order: 'asc' },
+          },
+        },
+      }),
+      this.prisma.content.count({ where }),
+    ]);
+
+    // Count pending reports for the returned page
+    const ids = contents.map((c: any) => c.id);
+    const reportCounts = ids.length
+      ? await this.prisma.report.groupBy({
+          by: ['reportedId'],
+          where: {
+            reportedId: { in: ids },
+            reportedType: { in: ['CONTENT', 'content'] },
+            status: { in: this.reportStatusValues(ReportStatus.PENDING) },
+          },
+          _count: { id: true },
+        })
+      : [];
+    const countById = new Map<string, number>(
+      reportCounts.map((r: any) => [r.reportedId, r._count.id]),
+    );
+
+    return {
+      items: contents.map((c: any) => ({
+        ...c,
+        ppvPrice: c.ppvPrice !== null && c.ppvPrice !== undefined ? Number(c.ppvPrice) : null,
+        pendingReports: countById.get(c.id) || 0,
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Remove content (moderation takedown, soft delete)
+   */
+  async removeContent(adminId: string, contentId: string, reason?: string) {
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: { id: true, creatorId: true, title: true, deletedAt: true },
+    });
+
+    if (!content) {
+      throw new NotFoundException('Content not found');
+    }
+
+    if (content.deletedAt) {
+      throw new BadRequestException('Content already removed');
+    }
+
+    const updated = await this.prisma.content.update({
+      where: { id: contentId },
+      data: {
+        status: 'REJECTED',
+        deletedAt: new Date(),
+        isModerated: true,
+        moderatedAt: new Date(),
+        moderatedBy: adminId,
+        moderationNotes: reason || null,
+      },
+      select: { id: true, status: true, deletedAt: true, moderationNotes: true },
+    });
+
+    await this.prisma.notification.create({
+      data: {
+        userId: content.creatorId,
+        type: 'CONTENT_REJECTED',
+        title: 'Contenu retiré',
+        message: `Votre contenu "${content.title || 'Sans titre'}" a été retiré par la modération.${reason ? ` Raison: ${reason}` : ''}`,
+      },
+    });
+
+    await this.logAdminAction(adminId, 'CONTENT_REMOVED', 'CONTENT', contentId, { reason });
+
+    this.logger.log(`Content ${contentId} removed by admin ${adminId}. Reason: ${reason}`);
+
+    return { success: true, content: updated };
+  }
+
+  /**
+   * Restore previously removed content
+   */
+  async restoreContent(adminId: string, contentId: string, reason?: string) {
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: { id: true, creatorId: true, title: true, deletedAt: true, status: true, publishedAt: true },
+    });
+
+    if (!content) {
+      throw new NotFoundException('Content not found');
+    }
+
+    if (!content.deletedAt && content.status !== 'REJECTED' && content.status !== 'UNDER_REVIEW') {
+      throw new BadRequestException('Content is not removed');
+    }
+
+    const updated = await this.prisma.content.update({
+      where: { id: contentId },
+      data: {
+        status: content.publishedAt ? 'PUBLISHED' : 'DRAFT',
+        deletedAt: null,
+        isModerated: true,
+        moderatedAt: new Date(),
+        moderatedBy: adminId,
+        moderationNotes: reason || null,
+      },
+      select: { id: true, status: true, deletedAt: true, moderationNotes: true },
+    });
+
+    await this.prisma.notification.create({
+      data: {
+        userId: content.creatorId,
+        type: 'CONTENT_APPROVED',
+        title: 'Contenu restauré',
+        message: `Votre contenu "${content.title || 'Sans titre'}" a été restauré.`,
+      },
+    });
+
+    await this.logAdminAction(adminId, 'CONTENT_RESTORED', 'CONTENT', contentId, { reason });
+
+    return { success: true, content: updated };
+  }
+
+  // ==================== Audit Logs ====================
+
+  /**
+   * Get audit logs (admin/moderation actions)
+   */
+  async getAuditLogs(dto: GetAuditLogsDto) {
+    const { action, resource, userId, page = 1, limit = 50 } = dto;
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+    if (action) where.action = { contains: action, mode: 'insensitive' };
+    if (resource) where.resource = resource;
+    if (userId) where.userId = userId;
+
+    const [logs, total] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.auditLog.count({ where }),
+    ]);
+
+    // AuditLog has no relation to User: load actors separately
+    const actorIds = [...new Set(logs.map((l: any) => l.userId).filter(Boolean))] as string[];
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, username: true, displayName: true, avatar: true },
+        })
+      : [];
+    const actorById = new Map(actors.map((a: any) => [a.id, a]));
+
+    return {
+      items: logs.map((log: any) => ({
+        ...log,
+        actor: log.userId ? actorById.get(log.userId) || null : null,
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   /**
@@ -494,7 +918,7 @@ export class AdminService {
 
       // Pending reports
       this.prisma.report.count({
-        where: { status: 'PENDING' },
+        where: { status: { in: this.reportStatusValues(ReportStatus.PENDING) } },
       }),
     ]);
 
@@ -729,7 +1153,7 @@ export class AdminService {
   /**
    * Delete user (admin only, permanent)
    */
-  async deleteUser(adminId: string, userId: string, reason: string) {
+  async deleteUser(adminId: string, userId: string, reason?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -750,6 +1174,8 @@ export class AdminService {
         status: 'BANNED',
       },
     });
+
+    await this.logAdminAction(adminId, 'USER_DELETED', 'USER', userId, { reason });
 
     this.logger.warn(`User ${userId} deleted by admin ${adminId}. Reason: ${reason}`);
 

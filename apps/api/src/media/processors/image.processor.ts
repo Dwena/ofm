@@ -44,6 +44,7 @@ export class ImageProcessor {
 
       // Get image metadata
       const metadata = await sharp(originalBuffer).metadata();
+      await job.progress(20).catch(() => undefined);
 
       // Generate thumbnail (300x300)
       const thumbnailBuffer = await this.generateThumbnail(originalBuffer);
@@ -58,6 +59,8 @@ export class ImageProcessor {
         path.dirname(key),
       );
 
+      await job.progress(40).catch(() => undefined);
+
       // Apply watermark if enabled
       let processedBuffer = originalBuffer;
       if (this.watermarkEnabled) {
@@ -70,6 +73,8 @@ export class ImageProcessor {
           path.dirname(key),
         );
       }
+
+      await job.progress(60).catch(() => undefined);
 
       // Optimize image
       const optimizedBuffer = await this.optimizeImage(processedBuffer, mimeType);
@@ -99,6 +104,7 @@ export class ImageProcessor {
         });
       }
 
+      await job.progress(100).catch(() => undefined);
       this.logger.log(`Image processed successfully: ${key}`);
 
       return {

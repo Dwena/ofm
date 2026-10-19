@@ -23,6 +23,15 @@ interface VideoProcessingJob {
   size: number;
 }
 
+// Progress milestones (percent of the whole job)
+const TRANSCODE_START = 15;
+const WATERMARK_START = 70;
+const UPLOAD_START = 90;
+
+/** Map a 0-100 sub-step percentage onto the [from, to] range of the whole job */
+const scale = (percent: number, from: number, to: number) =>
+  from + (Math.max(0, Math.min(100, percent)) / 100) * (to - from);
+
 @Processor('video-processing')
 export class VideoProcessor {
   private readonly logger = new Logger(VideoProcessor.name);
@@ -51,11 +60,14 @@ export class VideoProcessor {
 
     try {
       // Download video from S3
+      await this.reportProgress(job, 1);
       const videoBuffer = await this.storageService.getFile(key);
       await writeFile(inputPath, videoBuffer);
+      await this.reportProgress(job, 5);
 
       // Get video metadata
       const metadata = await this.getVideoMetadata(inputPath);
+      await this.reportProgress(job, 8);
 
       // Generate thumbnail
       await this.generateThumbnail(inputPath, thumbnailPath);
@@ -67,14 +79,22 @@ export class VideoProcessor {
         'image/jpeg',
         path.dirname(key),
       );
+      await this.reportProgress(job, TRANSCODE_START);
 
       // Transcode video (H.264, 1080p max)
-      await this.transcodeVideo(inputPath, outputPath);
+      const transcodeEnd = this.watermarkEnabled ? WATERMARK_START : UPLOAD_START;
+      await this.transcodeVideo(inputPath, outputPath, (percent) =>
+        this.reportProgress(job, scale(percent, TRANSCODE_START, transcodeEnd)),
+      );
+      await this.reportProgress(job, transcodeEnd);
 
       // Apply watermark if enabled
       if (this.watermarkEnabled) {
         const watermarkedPath = path.join(tempDir, `watermarked-${Date.now()}.mp4`);
-        await this.applyWatermark(outputPath, watermarkedPath);
+        await this.applyWatermark(outputPath, watermarkedPath, (percent) =>
+          this.reportProgress(job, scale(percent, WATERMARK_START, UPLOAD_START)),
+        );
+        await this.reportProgress(job, UPLOAD_START);
         // Replace output with watermarked version
         await unlink(outputPath);
         await fs.promises.rename(watermarkedPath, outputPath);
@@ -88,6 +108,7 @@ export class VideoProcessor {
         mimeType,
         path.dirname(key),
       );
+      await this.reportProgress(job, 95);
 
       // Save to database if contentId provided
       if (contentId) {
@@ -109,6 +130,7 @@ export class VideoProcessor {
         });
       }
 
+      await this.reportProgress(job, 100);
       this.logger.log(`Video processed successfully: ${key}`);
 
       return {
@@ -127,6 +149,22 @@ export class VideoProcessor {
         unlink(outputPath).catch(() => {}),
         unlink(thumbnailPath).catch(() => {}),
       ]);
+    }
+  }
+
+  /**
+   * Report job progress (0-100) so clients can poll GET /media/jobs/:id/status.
+   * Only forwards increases, and never fails the job.
+   */
+  private async reportProgress(job: Job<VideoProcessingJob>, value: number) {
+    try {
+      const current = Number(job.progress()) || 0;
+      const next = Math.max(0, Math.min(100, Math.round(value)));
+      if (next > current) {
+        await job.progress(next);
+      }
+    } catch (error) {
+      this.logger.debug(`Unable to report progress for job ${job.id}: ${error.message}`);
     }
   }
 
@@ -183,7 +221,11 @@ export class VideoProcessor {
   /**
    * Transcode video to H.264, 1080p max
    */
-  private transcodeVideo(inputPath: string, outputPath: string): Promise<void> {
+  private transcodeVideo(
+    inputPath: string,
+    outputPath: string,
+    onProgress?: (percent: number) => void,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
@@ -202,6 +244,9 @@ export class VideoProcessor {
         .on('error', reject)
         .on('progress', (progress: any) => {
           this.logger.debug(`Transcoding progress: ${progress.percent?.toFixed(2)}%`);
+          if (onProgress && typeof progress.percent === 'number') {
+            onProgress(progress.percent);
+          }
         })
         .run();
     });
@@ -210,7 +255,11 @@ export class VideoProcessor {
   /**
    * Apply watermark to video
    */
-  private applyWatermark(inputPath: string, outputPath: string): Promise<void> {
+  private applyWatermark(
+    inputPath: string,
+    outputPath: string,
+    onProgress?: (percent: number) => void,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
@@ -221,6 +270,11 @@ export class VideoProcessor {
         .output(outputPath)
         .on('end', () => resolve())
         .on('error', reject)
+        .on('progress', (progress: any) => {
+          if (onProgress && typeof progress.percent === 'number') {
+            onProgress(progress.percent);
+          }
+        })
         .run();
     });
   }

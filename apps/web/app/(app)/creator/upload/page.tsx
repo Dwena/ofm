@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Upload, X, Image as ImageIcon, Video, FileText, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
+import { MediaJobProgress } from '@/components/media/media-job-progress'
+import { MediaJobState, isFinalJobState, trackMediaJobs } from '@/hooks/use-media-jobs'
 
 interface UploadedFile {
   file: File
@@ -18,6 +20,9 @@ interface UploadedFile {
   uploading: boolean
   progress: number
   mediaId?: string
+  // Server-side processing job (encoding, thumbnail, watermark) returned by /media/upload
+  jobId?: string
+  processing?: MediaJobState
   error?: string
   validationError?: string
 }
@@ -128,6 +133,17 @@ export default function UploadPage() {
       return response.data
     },
     onSuccess: () => {
+      // Keep following unfinished processing jobs from the creator dashboard
+      trackMediaJobs(
+        files
+          .filter(f => f.jobId && !isFinalJobState(f.processing) && f.type !== 'FILE')
+          .map(f => ({
+            jobId: f.jobId!,
+            fileName: f.file.name,
+            title,
+            type: f.type as 'IMAGE' | 'VIDEO',
+          }))
+      )
       queryClient.invalidateQueries({ queryKey: ['creator-content'] })
       router.push('/creator/dashboard')
     },
@@ -182,7 +198,14 @@ export default function UploadPage() {
 
         setFiles(prev => prev.map(f =>
           f.file === uploadFile.file
-            ? { ...f, uploading: false, mediaId: result.id, progress: 100 }
+            ? {
+                ...f,
+                uploading: false,
+                mediaId: result.id,
+                progress: 100,
+                jobId: result.jobId ?? undefined,
+                processing: result.jobId ? 'queued' : undefined,
+              }
             : f
         ))
       } catch (error: any) {
@@ -282,6 +305,11 @@ export default function UploadPage() {
   const uploadedCount = files.filter(f => f.mediaId).length
   const errorCount = files.filter(f => f.error || f.validationError).length
   const uploadingCount = files.filter(f => f.uploading).length
+  const processingCount = files.filter(f => f.jobId && !isFinalJobState(f.processing)).length
+
+  const setProcessingState = (file: File, processing: MediaJobState) => {
+    setFiles(prev => prev.map(f => (f.file === file ? { ...f, processing } : f)))
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -350,6 +378,12 @@ export default function UploadPage() {
                   <Badge variant="default">
                     <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                     {uploadingCount} en cours
+                  </Badge>
+                )}
+                {processingCount > 0 && (
+                  <Badge variant="secondary">
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    {processingCount} en traitement
                   </Badge>
                 )}
                 {uploadedCount > 0 && (
@@ -425,6 +459,15 @@ export default function UploadPage() {
                         </div>
                       )}
 
+                      {/* Server-side processing (encoding / optimisation) */}
+                      {!file.uploading && file.jobId && file.type !== 'FILE' && (
+                        <MediaJobProgress
+                          jobId={file.jobId}
+                          type={file.type}
+                          onStatusChange={(status) => setProcessingState(file.file, status.status)}
+                        />
+                      )}
+
                       {/* Errors */}
                       {file.validationError && (
                         <div className="flex items-center mt-2 text-xs text-red-600 dark:text-red-400">
@@ -443,7 +486,13 @@ export default function UploadPage() {
                     {/* Status & Actions */}
                     <div className="flex items-center space-x-2 flex-shrink-0">
                       {file.uploading && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
-                      {file.mediaId && <CheckCircle className="h-5 w-5 text-green-600" />}
+                      {file.mediaId && file.jobId && !isFinalJobState(file.processing) && (
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      )}
+                      {file.mediaId && (!file.jobId || file.processing === 'completed') && (
+                        <CheckCircle className="h-5 w-5 text-green-600" />
+                      )}
+                      {file.processing === 'failed' && <AlertCircle className="h-5 w-5 text-red-600" />}
                       {hasError && <AlertCircle className="h-5 w-5 text-red-600" />}
 
                       <Button
@@ -570,6 +619,11 @@ export default function UploadPage() {
               {!title.trim() && 'Ajoutez un titre • '}
               {uploadingCount > 0 && `${uploadingCount} fichier(s) en cours d'upload • `}
               {!files.some(f => f.mediaId) && 'Attendez la fin des uploads'}
+            </p>
+          )}
+          {canPublish && processingCount > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {processingCount} fichier(s) encore en traitement : vous pouvez publier, le suivi continue sur votre dashboard
             </p>
           )}
 

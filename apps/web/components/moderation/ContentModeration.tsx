@@ -1,11 +1,13 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
+import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { AlertTriangle, Image as ImageIcon, Video, FileText } from 'lucide-react';
-import axios from 'axios';
+import { adminApi } from '@/lib/api';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
@@ -16,7 +18,8 @@ interface Content {
   type: string;
   status: string;
   createdAt: string;
-  user: {
+  pendingReports?: number;
+  creator: {
     username: string;
     displayName: string;
     avatar: string;
@@ -25,18 +28,31 @@ interface Content {
 }
 
 export function ContentModeration() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const decisionMutation = useMutation({
+    mutationFn: ({ id, approve }: { id: string; approve: boolean }) =>
+      approve ? adminApi.restoreContent(id, 'Approuvé par la modération') : adminApi.removeContent(id),
+    onSuccess: (_data, { approve }) => {
+      queryClient.invalidateQueries({ queryKey: ['content-moderation'] });
+      queryClient.invalidateQueries({ queryKey: ['admin-content'] });
+      toast({ title: approve ? 'Contenu approuvé' : 'Contenu retiré' });
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Erreur',
+        description: error?.response?.data?.message || 'Action impossible',
+        variant: 'destructive',
+      });
+    },
+  });
+
   const { data, isLoading } = useQuery({
     queryKey: ['content-moderation'],
     queryFn: async () => {
-      const response = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/content/moderation/queue`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
-      return response.data;
+      const response = await adminApi.getContent({ filter: 'FLAGGED', limit: 50 });
+      return { content: response.data?.items ?? [], total: response.data?.pagination?.total ?? 0 };
     },
   });
 
@@ -60,12 +76,12 @@ export function ContentModeration() {
       <CardHeader>
         <CardTitle>Contenus en révision</CardTitle>
         <CardDescription>
-          {data?.content?.length || 0} contenus en attente de modération
+          {data?.total || 0} contenus en attente de modération
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
-          {data?.content?.length === 0 ? (
+          {!data?.content?.length ? (
             <div className="text-center py-8 text-muted-foreground">
               Aucun contenu en attente de révision
             </div>
@@ -96,7 +112,10 @@ export function ContentModeration() {
                         )}
 
                         <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                          <span>Par @{content.user.username}</span>
+                          <span>Par @{content.creator?.username}</span>
+                          {!!content.pendingReports && (
+                            <span>{content.pendingReports} signalement(s) en attente</span>
+                          )}
                           <span>
                             {formatDistanceToNow(new Date(content.createdAt), {
                               addSuffix: true,
@@ -112,14 +131,26 @@ export function ContentModeration() {
                         )}
 
                         <div className="flex gap-2 pt-2">
-                          <Button size="sm" variant="default">
-                            Approuver
+                          {content.status === 'UNDER_REVIEW' && (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              disabled={decisionMutation.isPending}
+                              onClick={() => decisionMutation.mutate({ id: content.id, approve: true })}
+                            >
+                              Approuver
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={decisionMutation.isPending}
+                            onClick={() => decisionMutation.mutate({ id: content.id, approve: false })}
+                          >
+                            Retirer
                           </Button>
-                          <Button size="sm" variant="destructive">
-                            Rejeter
-                          </Button>
-                          <Button size="sm" variant="outline">
-                            Voir le détail
+                          <Button size="sm" variant="outline" asChild>
+                            <Link href="/admin/content">Voir le détail</Link>
                           </Button>
                         </div>
                       </div>

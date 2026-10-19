@@ -13,7 +13,8 @@ import {
   Settings,
   LogOut,
   MessageSquare,
-  BarChart3
+  BarChart3,
+  Shield
 } from 'lucide-react'
 
 export function Navigation() {
@@ -47,14 +48,17 @@ export function Navigation() {
     { href: '/settings', label: 'Paramètres', icon: Settings },
   ]
 
-  const links = isCreator ? creatorLinks : subscriberLinks
+  const isAdmin = user.role === 'ADMIN'
+  const adminLinks = [{ href: '/admin', label: 'Admin', icon: Shield }]
+
+  const links = [...(isAdmin ? adminLinks : []), ...(isCreator ? creatorLinks : subscriberLinks)]
 
   return (
     <nav className="border-b bg-background">
       <div className="container mx-auto px-4">
         <div className="flex h-16 items-center justify-between">
           <div className="flex items-center space-x-8">
-            <Link href={isCreator ? '/creator/dashboard' : '/feed'} className="text-2xl font-bold">
+            <Link href={isAdmin ? '/admin' : isCreator ? '/creator/dashboard' : '/feed'} className="text-2xl font-bold">
               OFM
             </Link>
             <div className="hidden md:flex space-x-4">
