@@ -33,6 +33,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       }
     }
 
+    // Reject access tokens issued before a password reset
+    if (await this.authService.isTokenIssuedBeforePasswordChange(payload.sub, payload.iat)) {
+      throw new UnauthorizedException('Token has been revoked');
+    }
+
     // Get user from database
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },

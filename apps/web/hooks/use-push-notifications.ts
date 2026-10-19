@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { pushApi } from '@/lib/api';
 
 export interface PushNotificationOptions {
   title: string;
@@ -34,13 +35,17 @@ export function usePushNotifications() {
   const registerServiceWorker = async () => {
     try {
       const registration = await navigator.serviceWorker.register('/service-worker.js');
-      console.log('Service Worker registered:', registration);
 
       // Check for existing subscription
       const existingSubscription = await registration.pushManager.getSubscription();
       if (existingSubscription) {
         setSubscription(existingSubscription);
         setIsSubscribed(true);
+
+        // Re-sync with the backend (e.g. after logging in with another account)
+        if (localStorage.getItem('accessToken')) {
+          sendSubscriptionToServer(existingSubscription).catch(() => undefined);
+        }
       }
     } catch (error) {
       console.error('Service Worker registration failed:', error);
@@ -70,20 +75,24 @@ export function usePushNotifications() {
       // Get service worker registration
       const registration = await navigator.serviceWorker.ready;
 
-      // Subscribe to push notifications
-      // Note: You need to generate VAPID keys and replace the publicKey
-      const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
+      // Subscribe to push notifications with the server's VAPID public key
+      const vapidPublicKey = await getVapidPublicKey();
 
       const pushSubscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidPublicKey) as BufferSource,
       });
 
+      // Send subscription to server (roll back the browser subscription on failure)
+      try {
+        await sendSubscriptionToServer(pushSubscription);
+      } catch (error) {
+        await pushSubscription.unsubscribe().catch(() => undefined);
+        throw error;
+      }
+
       setSubscription(pushSubscription);
       setIsSubscribed(true);
-
-      // Send subscription to server
-      await sendSubscriptionToServer(pushSubscription);
 
       return pushSubscription;
     } catch (error) {
@@ -99,10 +108,11 @@ export function usePushNotifications() {
 
     try {
       if (subscription) {
+        // Remove subscription from server first (best effort), then from the browser
+        await removeSubscriptionFromServer(subscription).catch((error) =>
+          console.error('Failed to remove subscription from server:', error)
+        );
         await subscription.unsubscribe();
-
-        // Remove subscription from server
-        await removeSubscriptionFromServer(subscription);
 
         setSubscription(null);
         setIsSubscribed(false);
@@ -172,42 +182,29 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return outputArray;
 }
 
-// Send subscription to your backend
-async function sendSubscriptionToServer(subscription: PushSubscription): Promise<void> {
+async function getVapidPublicKey(): Promise<string> {
   try {
-    const response = await fetch('/api/push/subscribe', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(subscription),
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to save subscription');
+    const response = await pushApi.getVapidPublicKey();
+    if (response.data?.enabled && response.data.publicKey) {
+      return response.data.publicKey;
     }
   } catch (error) {
-    console.error('Error sending subscription to server:', error);
-    throw error;
+    console.error('Failed to fetch VAPID public key:', error);
   }
+
+  const fallback = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  if (!fallback) {
+    throw new Error('Push notifications are not configured on the server');
+  }
+  return fallback;
 }
 
-// Remove subscription from your backend
-async function removeSubscriptionFromServer(subscription: PushSubscription): Promise<void> {
-  try {
-    const response = await fetch('/api/push/unsubscribe', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(subscription),
-    });
+// Send subscription to the backend
+async function sendSubscriptionToServer(subscription: PushSubscription): Promise<void> {
+  await pushApi.subscribe(subscription.toJSON());
+}
 
-    if (!response.ok) {
-      throw new Error('Failed to remove subscription');
-    }
-  } catch (error) {
-    console.error('Error removing subscription from server:', error);
-    throw error;
-  }
+// Remove subscription from the backend
+async function removeSubscriptionFromServer(subscription: PushSubscription): Promise<void> {
+  await pushApi.unsubscribe(subscription.endpoint);
 }
