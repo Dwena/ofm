@@ -1,4 +1,5 @@
-import { IsString, IsEnum, IsOptional, IsBoolean, IsNumber, Min, IsArray, IsUUID } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsBoolean, IsNumber, Min, IsArray, IsUUID, IsDate, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export enum ContentType {
   PHOTO = 'PHOTO',
@@ -25,10 +26,12 @@ export class CreateContentDto {
   visibility?: ContentVisibility;
 
   @IsString()
+  @MaxLength(200)
   @IsOptional()
   title?: string;
 
   @IsString()
+  @MaxLength(5000)
   @IsOptional()
   description?: string;
 
@@ -50,6 +53,14 @@ export class CreateContentDto {
   @IsOptional()
   fileIds?: string[];
 
+  /** Publication date in the future: the content stays a draft until then */
+  @IsDate()
+  @Type(() => Date)
   @IsOptional()
   scheduledFor?: Date;
+
+  /** Publish right away (ignored when scheduledFor is set) */
+  @IsBoolean()
+  @IsOptional()
+  publish?: boolean;
 }

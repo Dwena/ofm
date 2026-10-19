@@ -253,10 +253,17 @@ export const contentApi = {
     api.get('/content/feed/subscriptions', { params }),
   getCreatorContent: (creatorId: string) =>
     api.get(`/content/creator/${creatorId}`),
-  getMyContent: (params: { page?: number; limit?: number } = {}) =>
-    api.get('/content/my-content', { params }),
+  // Creator's own content, every status, with stats: { items, total, page, limit, totalPages, counts }
+  getMyContent: (
+    params: {
+      status?: 'ALL' | 'PUBLISHED' | 'DRAFT' | 'SCHEDULED' | 'ARCHIVED' | 'REVIEW'
+      search?: string
+      page?: number
+      limit?: number
+    } = {},
+  ) => api.get('/content/my-content', { params }),
   getById: (id: string) => api.get(`/content/${id}`),
-  // Created as a draft; call publish() to make it visible
+  // Created as a draft unless `publish: true`; publish() makes a draft visible
   create: (data: {
     type: 'PHOTO' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'ALBUM'
     visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
@@ -266,9 +273,23 @@ export const contentApi = {
     fileIds?: string[]
     isPpv?: boolean
     ppvPrice?: number // euros
+    scheduledFor?: string // ISO date in the future: stays a draft until then
+    publish?: boolean // publish right away (ignored when scheduledFor is set)
   }) => api.post('/content', data),
   publish: (id: string) => api.post(`/content/${id}/publish`),
-  update: (id: string, data: any) => api.put(`/content/${id}`, data),
+  update: (
+    id: string,
+    data: {
+      title?: string
+      description?: string
+      visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
+      isPpv?: boolean
+      ppvPrice?: number | null // euros
+      scheduledFor?: string | null // drafts only; null removes the schedule
+    },
+  ) => api.put(`/content/${id}`, data),
+  archive: (id: string) => api.post(`/content/${id}/archive`),
+  unarchive: (id: string) => api.post(`/content/${id}/unarchive`),
   delete: (id: string) => api.delete(`/content/${id}`),
   likeContent: (id: string) => api.post(`/content/${id}/like`),
   // PPV access is granted once the payment is confirmed (saved card or Stripe Elements)

@@ -1,5 +1,7 @@
 import { test, expect } from './fixtures/auth.fixture';
+import type { Page } from '@playwright/test';
 import { pngFile, textFile, videoPath } from './fixtures/files';
+import { UploadPage } from './pages/upload.page';
 
 test.describe('Publication de contenu', () => {
   test.beforeEach(async ({ asCreator, uploadPage }) => {
@@ -14,7 +16,7 @@ test.describe('Publication de contenu', () => {
 
     const title = `Contenu E2E ${Date.now()}`;
     await uploadPage.fillContentDetails(title, 'Publication créée par les tests E2E');
-    await uploadPage.selectTier('Basic');
+    await uploadPage.selectVisibility('Abonnés');
     await uploadPage.waitForUploads();
     await uploadPage.publish();
 
@@ -81,7 +83,7 @@ test.describe('Publication de contenu', () => {
   test('exige un titre avant publication', async ({ uploadPage, page }) => {
     await uploadPage.uploadFiles(pngFile());
 
-    await expect(page.getByText(/Ajoutez un titre •/)).toBeVisible();
+    await expect(page.getByTestId('publish-blockers')).toContainText('Ajoutez un titre');
     await expect(uploadPage.publishButton).toBeDisabled();
   });
 
@@ -93,7 +95,151 @@ test.describe('Publication de contenu', () => {
     await expect(page).toHaveURL(/\/creator\/dashboard/);
   });
 
-  // No creator content-management screen (edit / delete) exists yet in the web app
-  test.fixme('modifier un contenu publié', async () => {});
-  test.fixme('supprimer un contenu publié', async () => {});
+  test('demande confirmation avant d’abandonner un contenu commencé', async ({ uploadPage, page }) => {
+    await page.goto('/creator/dashboard');
+    await uploadPage.goto();
+    await uploadPage.fillContentDetails('Brouillon abandonné');
+    await uploadPage.cancelButton.click();
+
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('Abandonner ce contenu ?');
+    await dialog.getByRole('button', { name: 'Continuer l’édition' }).click();
+    await expect(uploadPage.heading).toBeVisible();
+
+    await uploadPage.cancelButton.click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Abandonner' }).click();
+    await expect(page).toHaveURL(/\/creator\/dashboard/);
+  });
+
+  test('exige un prix valide pour un contenu PPV', async ({ uploadPage, page }) => {
+    await uploadPage.fillContentDetails(`PPV sans prix ${Date.now()}`, 'Texte');
+    await uploadPage.enablePpv('0.10');
+    await uploadPage.ppvPriceInput.blur();
+
+    await expect(page.getByText('Prix minimum : 0,50 €')).toBeVisible();
+    await expect(uploadPage.publishButton).toBeDisabled();
+  });
+
+  test('enregistre un brouillon', async ({ uploadPage, page }) => {
+    const title = `Brouillon E2E ${Date.now()}`;
+    await uploadPage.fillContentDetails(title, 'Brouillon créé par les tests E2E');
+    await uploadPage.saveDraft();
+
+    await expect(page).toHaveURL(/\/creator\/content\?status=draft/, { timeout: 15000 });
+    await expect(page.getByTestId('creator-content-item').filter({ hasText: title })).toBeVisible();
+  });
+
+  test('programme une publication', async ({ uploadPage, page }) => {
+    const title = `Programmé E2E ${Date.now()}`;
+    await uploadPage.fillContentDetails(title, 'Publication programmée par les tests E2E');
+    await uploadPage.schedule();
+    await uploadPage.publish();
+
+    await expect(page).toHaveURL(/\/creator\/content\?status=scheduled/, { timeout: 15000 });
+    await expect(page.getByTestId('creator-content-item').filter({ hasText: title })).toContainText('Programmé');
+  });
+});
+
+test.describe('Gestion des contenus', () => {
+  test.beforeEach(async ({ asCreator }) => {});
+
+  /** Publish a public text post from the upload page, then find it in « Mes contenus » */
+  async function publishAndFind(uploadPage: UploadPage, page: Page, title: string) {
+    await uploadPage.goto();
+    await uploadPage.fillContentDetails(title, 'Contenu créé par les tests E2E');
+    await uploadPage.selectVisibility('Public');
+    await uploadPage.publish();
+    await uploadPage.expectUploadSuccess();
+
+    await page.goto('/creator/content');
+    await page.getByRole('textbox', { name: 'Rechercher un contenu' }).fill(title);
+    const item = page.getByTestId('creator-content-item').filter({ hasText: title });
+    await expect(item).toBeVisible({ timeout: 10000 });
+    return item;
+  }
+
+  test('affiche les contenus avec filtres et statistiques', async ({ page }) => {
+    await page.goto('/creator/content');
+
+    await expect(page.getByRole('heading', { level: 1, name: 'Mes contenus' })).toBeVisible();
+    for (const label of ['Tous', 'Publiés', 'Brouillons', 'Programmés', 'Archivés']) {
+      await expect(page.getByRole('tab', { name: new RegExp(`^${label}`) })).toBeVisible();
+    }
+    await expect(page.getByTestId('creator-content-stats').first()).toBeVisible();
+
+    await page.getByTestId('content-filter-draft').click();
+    await expect(page).toHaveURL(/status=draft/);
+    await expect(page.getByTestId('creator-content-item').first()).toContainText('Brouillon');
+  });
+
+  test('modifier un contenu publié', async ({ uploadPage, page }) => {
+    const title = `À modifier E2E ${Date.now()}`;
+    const item = await publishAndFind(uploadPage, page, title);
+
+    await item.getByTestId('content-edit').click();
+    const form = page.getByTestId('edit-content-form');
+    await expect(form).toBeVisible();
+
+    const newTitle = `${title} (modifié)`;
+    await form.getByTestId('edit-content-title').fill(newTitle);
+    await form.getByTestId('edit-content-description').fill('Description mise à jour');
+    await form.getByTestId('edit-content-visibility').click();
+    await page.getByRole('option', { name: /^Pay-Per-View/ }).click();
+    await form.getByTestId('edit-content-price').fill('3.50');
+    await form.getByTestId('edit-content-submit').click();
+
+    await expect(form).toBeHidden();
+    await page.getByRole('textbox', { name: 'Rechercher un contenu' }).fill(newTitle);
+    const updated = page.getByTestId('creator-content-item').filter({ hasText: newTitle });
+    await expect(updated).toBeVisible();
+    await expect(updated).toContainText('Description mise à jour');
+    await expect(updated).toContainText('PPV');
+  });
+
+  test('archiver puis désarchiver un contenu', async ({ uploadPage, page }) => {
+    const title = `À archiver E2E ${Date.now()}`;
+    const item = await publishAndFind(uploadPage, page, title);
+
+    await item.getByTestId('content-archive').click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Archiver' }).click();
+    await expect(item).toContainText('Archivé');
+
+    await item.getByTestId('content-unarchive').click();
+    await expect(item).toContainText('Publié');
+  });
+
+  test('supprimer un contenu publié', async ({ uploadPage, page }) => {
+    const title = `À supprimer E2E ${Date.now()}`;
+    const item = await publishAndFind(uploadPage, page, title);
+
+    // Cancelling keeps the content
+    await item.getByTestId('content-delete').click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Annuler' }).click();
+    await expect(item).toBeVisible();
+
+    await item.getByTestId('content-delete').click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('Supprimer ce contenu ?');
+    await dialog.getByRole('button', { name: 'Supprimer' }).click();
+
+    await expect(item).toHaveCount(0);
+    await expect(page.getByText(`Aucun contenu ne correspond à « ${title} »`)).toBeVisible();
+  });
+
+  test('publier un brouillon', async ({ uploadPage, page }) => {
+    const title = `Brouillon à publier E2E ${Date.now()}`;
+    await uploadPage.goto();
+    await uploadPage.fillContentDetails(title);
+    await uploadPage.saveDraft();
+    await expect(page).toHaveURL(/\/creator\/content\?status=draft/, { timeout: 15000 });
+
+    const item = page.getByTestId('creator-content-item').filter({ hasText: title });
+    await item.getByTestId('content-publish').click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Publier' }).click();
+
+    // Leaves the « Brouillons » filter once published
+    await expect(item).toHaveCount(0);
+    await page.getByTestId('content-filter-published').click();
+    await expect(page.getByTestId('creator-content-item').filter({ hasText: title })).toContainText('Publié');
+  });
 });
