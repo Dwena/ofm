@@ -176,7 +176,7 @@ export default function ContentDetailPage() {
       ? `/checkout?${new URLSearchParams({
           type: 'ppv',
           itemId: content.id,
-          amount: String(Math.round(content.ppvPrice * 100)),
+          amount: String(content.ppvPrice),
           description: content.title || `Contenu de @${content.creator.username}`,
           returnUrl: `/content/${content.id}`,
         }).toString()}`

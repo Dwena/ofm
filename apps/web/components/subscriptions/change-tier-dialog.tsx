@@ -142,7 +142,7 @@ export default function ChangeTierDialog({
       const params = new URLSearchParams({
         type: 'subscription',
         itemId: tier.id,
-        amount: String(Math.round(Number(tier.price) * 100)),
+        amount: String(Number(tier.price)),
         description: `${tier.name} - @${creatorUsername}`,
         returnUrl,
         changeFrom: subscription.id,
