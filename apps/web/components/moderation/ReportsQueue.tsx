@@ -24,7 +24,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { CheckCircle, XCircle, AlertTriangle, Clock } from 'lucide-react';
-import axios from 'axios';
+import { moderationApi } from '@/lib/api';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
@@ -61,18 +61,10 @@ export function ReportsQueue() {
   const { data, isLoading } = useQuery({
     queryKey: ['reports', statusFilter, typeFilter],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (statusFilter !== 'all') params.append('status', statusFilter);
-      if (typeFilter !== 'all') params.append('reportedType', typeFilter);
-
-      const response = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/moderation/reports/queue?${params}`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
+      const response = await moderationApi.getReportsQueue({
+        status: statusFilter !== 'all' ? statusFilter : undefined,
+        reportedType: typeFilter !== 'all' ? typeFilter : undefined,
+      });
       return response.data;
     },
   });
@@ -80,15 +72,7 @@ export function ReportsQueue() {
   // Handle report mutation
   const handleReportMutation = useMutation({
     mutationFn: async ({ reportId, decision, resolution }: any) => {
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/moderation/reports/${reportId}/handle`,
-        { decision, resolution },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
+      const response = await moderationApi.handleReport(reportId, decision, resolution);
       return response.data;
     },
     onSuccess: () => {
@@ -177,7 +161,7 @@ export function ReportsQueue() {
             <div>
               <CardTitle>File d'attente des signalements</CardTitle>
               <CardDescription>
-                {data?.pagination.total || 0} signalements au total
+                {data?.pagination?.total || 0} signalements au total
               </CardDescription>
             </div>
             <div className="flex gap-2">
@@ -211,12 +195,12 @@ export function ReportsQueue() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {data?.reports.length === 0 ? (
+            {!data?.reports?.length ? (
               <div className="text-center py-8 text-muted-foreground">
                 Aucun signalement à afficher
               </div>
             ) : (
-              data?.reports.map((report: Report) => (
+              data?.reports?.map((report: Report) => (
                 <Card key={report.id} className="border-l-4 border-l-orange-500">
                   <CardContent className="pt-6">
                     <div className="flex items-start justify-between">

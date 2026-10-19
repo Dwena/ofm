@@ -16,21 +16,21 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import axios from 'axios';
+import { adminApi } from '@/lib/api';
 
 export function ModerationStats() {
   const { data: stats, isLoading } = useQuery({
     queryKey: ['moderation-statistics'],
     queryFn: async () => {
-      const response = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/admin/stats/platform`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-          },
-        }
-      );
-      return response.data;
+      const response = await adminApi.getStats();
+      const platform = response.data;
+      const total = platform?.reports?.total || 0;
+      const pending = platform?.reports?.pending || 0;
+      return {
+        totalReports: total,
+        resolutionRate: total > 0 ? Math.round(((total - pending) / total) * 100) : 0,
+        avgProcessingTime: 0,
+      };
     },
   });
 

@@ -1,21 +1,36 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { paymentsApi, usersApi, contentApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { DollarSign, Users, FileText, TrendingUp, Clock } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
+import { LIVE_REFETCH_INTERVAL, useLiveAnalytics } from '@/hooks/use-live-analytics'
+import { LiveIndicator } from '@/components/live-indicator'
+import { ProcessingJobsCard } from '@/components/media/media-job-progress'
+
+// Metrics refreshed live (socket events + polling)
+const LIVE_QUERY_KEYS = [['creator-earnings'], ['creator-profile'], ['creator-content']]
 
 export default function CreatorDashboard() {
+  const queryClient = useQueryClient()
+  const { connected } = useLiveAnalytics(LIVE_QUERY_KEYS)
+
   // Fetch earnings data
-  const { data: earnings, isLoading: earningsLoading } = useQuery({
+  const {
+    data: earnings,
+    isLoading: earningsLoading,
+    isFetching: earningsFetching,
+    dataUpdatedAt,
+  } = useQuery({
     queryKey: ['creator-earnings'],
     queryFn: async () => {
       const response = await paymentsApi.getCreatorEarnings()
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch profile data
@@ -25,6 +40,7 @@ export default function CreatorDashboard() {
       const response = await usersApi.getProfile()
       return response.data.creatorProfile
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch recent content
@@ -34,6 +50,7 @@ export default function CreatorDashboard() {
       const response = await contentApi.getMyContent({ page: 1, limit: 5 })
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   const isLoading = earningsLoading || profileLoading || contentLoading
@@ -89,11 +106,21 @@ export default function CreatorDashboard() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Dashboard Créateur</h1>
-        <p className="text-muted-foreground mt-2">
-          Bienvenue sur votre espace créateur
-        </p>
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Dashboard Créateur</h1>
+          <p className="text-muted-foreground mt-2">
+            Bienvenue sur votre espace créateur
+          </p>
+        </div>
+        <LiveIndicator
+          connected={connected}
+          updatedAt={dataUpdatedAt}
+          isFetching={earningsFetching}
+          onRefresh={() =>
+            LIVE_QUERY_KEYS.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }))
+          }
+        />
       </div>
 
       {/* Stats Cards */}
@@ -118,6 +145,9 @@ export default function CreatorDashboard() {
           )
         })}
       </div>
+
+      {/* Media still being processed after upload */}
+      <ProcessingJobsCard />
 
       {/* Recent Content */}
       <Card>

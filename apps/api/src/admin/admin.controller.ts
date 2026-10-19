@@ -11,6 +11,10 @@ import {
   GetReportsDto,
   GetUsersDto,
   GetPlatformStatsDto,
+  GetAdminContentDto,
+  ModerateContentDto,
+  DeleteUserDto,
+  GetAuditLogsDto,
 } from './dto/admin.dto';
 
 @Controller('admin')
@@ -55,9 +59,43 @@ export class AdminController {
   async deleteUser(
     @CurrentUser('id') adminId: string,
     @Param('id') userId: string,
-    @Body() body: { reason: string },
+    @Body() body: DeleteUserDto,
   ) {
-    return this.adminService.deleteUser(adminId, userId, body.reason);
+    return this.adminService.deleteUser(adminId, userId, body?.reason);
+  }
+
+  // ==================== Content Management ====================
+
+  /**
+   * List content (all, flagged or removed) for moderation
+   */
+  @Get('content')
+  async getContent(@Query() dto: GetAdminContentDto) {
+    return this.adminService.getContent(dto);
+  }
+
+  /**
+   * Remove content (moderation takedown)
+   */
+  @Post('content/:id/remove')
+  async removeContent(
+    @CurrentUser('id') adminId: string,
+    @Param('id') contentId: string,
+    @Body() dto: ModerateContentDto,
+  ) {
+    return this.adminService.removeContent(adminId, contentId, dto.reason);
+  }
+
+  /**
+   * Restore removed content
+   */
+  @Post('content/:id/restore')
+  async restoreContent(
+    @CurrentUser('id') adminId: string,
+    @Param('id') contentId: string,
+    @Body() dto: ModerateContentDto,
+  ) {
+    return this.adminService.restoreContent(adminId, contentId, dto.reason);
   }
 
   // ==================== Reports Management ====================
@@ -103,5 +141,13 @@ export class AdminController {
       page ? parseInt(page) : 1,
       limit ? parseInt(limit) : 50,
     );
+  }
+
+  /**
+   * Get audit logs (admin & moderation actions)
+   */
+  @Get('audit-logs')
+  async getAuditLogs(@Query() dto: GetAuditLogsDto) {
+    return this.adminService.getAuditLogs(dto);
   }
 }

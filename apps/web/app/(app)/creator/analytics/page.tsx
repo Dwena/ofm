@@ -1,6 +1,8 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { LIVE_REFETCH_INTERVAL, useLiveAnalytics } from '@/hooks/use-live-analytics'
+import { LiveIndicator } from '@/components/live-indicator'
 import { analyticsApi, paymentsApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -29,17 +31,33 @@ const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8']
 
 type Interval = 'day' | 'week' | 'month' | 'year'
 
+// Metrics refreshed live on new subscriber / tip / purchase events (prefix match)
+const LIVE_QUERY_KEYS = [
+  ['analytics-overview'],
+  ['analytics-subscriber-growth'],
+  ['analytics-engagement'],
+  ['payment-history'],
+]
+
 export default function AnalyticsPage() {
   const [interval, setInterval] = useState<Interval>('day')
   const [periods, setPeriods] = useState(30)
+  const queryClient = useQueryClient()
+  const { connected } = useLiveAnalytics(LIVE_QUERY_KEYS)
 
   // Fetch overview analytics
-  const { data: overview, isLoading: overviewLoading } = useQuery({
+  const {
+    data: overview,
+    isLoading: overviewLoading,
+    isFetching: overviewFetching,
+    dataUpdatedAt,
+  } = useQuery({
     queryKey: ['analytics-overview'],
     queryFn: async () => {
       const response = await analyticsApi.getOverview()
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch subscriber growth
@@ -49,6 +67,7 @@ export default function AnalyticsPage() {
       const response = await analyticsApi.getSubscriberGrowth({ interval, periods })
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch engagement stats
@@ -76,6 +95,7 @@ export default function AnalyticsPage() {
       const response = await paymentsApi.getTransactions(1, 100)
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   const isLoading = overviewLoading || subscriberLoading || engagementLoading || contentLoading
@@ -174,6 +194,16 @@ export default function AnalyticsPage() {
           <p className="text-muted-foreground mt-2">
             Suivez vos performances et optimisez votre contenu
           </p>
+          <div className="mt-2">
+            <LiveIndicator
+              connected={connected}
+              updatedAt={dataUpdatedAt}
+              isFetching={overviewFetching}
+              onRefresh={() =>
+                LIVE_QUERY_KEYS.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }))
+              }
+            />
+          </div>
         </div>
         <div className="flex gap-2">
           <Select value={interval} onValueChange={(v) => setInterval(v as Interval)}>

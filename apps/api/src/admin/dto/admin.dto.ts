@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEnum, IsNumber, Min, Max, IsDateString } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsNumber, Min, Max, IsDateString, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum UserAction {
@@ -67,6 +67,14 @@ export class HandleReportDto {
   @IsEnum(UserAction)
   @IsOptional()
   action?: UserAction; // Action taken if resolved
+
+  @IsNumber()
+  @IsOptional()
+  durationDays?: number; // Suspension length when action is SUSPEND
+
+  @IsBoolean()
+  @IsOptional()
+  removeContent?: boolean; // Remove the reported content when resolving a CONTENT report
 }
 
 export class GetReportsDto {
@@ -127,4 +135,80 @@ export class GetPlatformStatsDto {
   @IsDateString()
   @IsOptional()
   endDate?: string;
+}
+
+export enum AdminContentFilter {
+  ALL = 'ALL',
+  FLAGGED = 'FLAGGED',
+  REMOVED = 'REMOVED',
+}
+
+export class GetAdminContentDto {
+  @IsString()
+  @IsOptional()
+  query?: string;
+
+  @IsEnum(['DRAFT', 'PUBLISHED', 'ARCHIVED', 'UNDER_REVIEW', 'REJECTED'])
+  @IsOptional()
+  status?: string;
+
+  @IsEnum(['PHOTO', 'VIDEO', 'AUDIO', 'TEXT', 'ALBUM'])
+  @IsOptional()
+  type?: string;
+
+  @IsEnum(AdminContentFilter)
+  @IsOptional()
+  filter?: AdminContentFilter = AdminContentFilter.ALL;
+
+  @IsNumber()
+  @Type(() => Number)
+  @Min(1)
+  @IsOptional()
+  page?: number = 1;
+
+  @IsNumber()
+  @Type(() => Number)
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  limit?: number = 20;
+}
+
+export class ModerateContentDto {
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}
+
+export class DeleteUserDto {
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}
+
+export class GetAuditLogsDto {
+  @IsString()
+  @IsOptional()
+  action?: string;
+
+  @IsString()
+  @IsOptional()
+  resource?: string;
+
+  @IsString()
+  @IsOptional()
+  userId?: string;
+
+  @IsNumber()
+  @Type(() => Number)
+  @Min(1)
+  @IsOptional()
+  page?: number = 1;
+
+  @IsNumber()
+  @Type(() => Number)
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  limit?: number = 50;
 }
