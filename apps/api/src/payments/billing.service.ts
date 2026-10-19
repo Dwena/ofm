@@ -22,10 +22,12 @@ export class BillingService {
 
     const now = new Date();
 
-    // Find subscriptions that need renewal (current period ends today or before)
+    // Find subscriptions that need renewal (current period ends today or before).
+    // Stripe-billed subscriptions renew on Stripe and are synced by webhooks.
     const subscriptionsToRenew = await this.prisma.subscription.findMany({
       where: {
         status: 'ACTIVE',
+        stripeSubscriptionId: null,
         currentPeriodEnd: {
           lte: now,
         },
@@ -73,61 +75,29 @@ export class BillingService {
 
     const { tier, subscriber } = subscription;
 
-    if (!subscriber.stripeCustomerId) {
-      throw new Error('Subscriber has no Stripe customer ID');
-    }
-
     try {
-      // Stripe subscriptions are handled automatically by Stripe
-      // This is mainly for tracking and notification purposes
+      // Paid tiers are billed through Stripe subscriptions; a paid subscription
+      // without one cannot be charged here
+      if (Number(tier.price) > 0) {
+        throw new Error('Paid subscription has no Stripe subscription to bill');
+      }
 
-      // Calculate new period
+      // Free tier: just roll the period over
       const currentPeriodStart = new Date();
       const currentPeriodEnd = new Date();
 
-      switch (tier.billingPeriod) {
-        case 'MONTHLY':
-          currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
-          break;
-        case 'YEARLY':
-          currentPeriodEnd.setFullYear(currentPeriodEnd.getFullYear() + 1);
-          break;
-        default:
-          currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
+      if (tier.interval === 'year') {
+        currentPeriodEnd.setFullYear(currentPeriodEnd.getFullYear() + 1);
+      } else {
+        currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
       }
 
-      // Update subscription
       await this.prisma.subscription.update({
         where: { id: subscription.id },
         data: {
           currentPeriodStart,
           currentPeriodEnd,
-          updatedAt: new Date(),
         },
-      });
-
-      // Create transaction record
-      await this.prisma.transaction.create({
-        data: {
-          fromUserId: subscriber.id,
-          toUserId: tier.creatorId,
-          type: 'SUBSCRIPTION',
-          status: 'COMPLETED',
-          amount: tier.price,
-          currency: 'EUR',
-          platformFee: Math.floor(Number(tier.price) * 0.1), // 10% platform fee
-          netAmount: Math.floor(Number(tier.price) * 0.9),
-          subscriptionId: subscription.id,
-          processedAt: new Date(),
-        },
-      });
-
-      // Notify creator
-      await this.createNotification({
-        userId: tier.creatorId,
-        type: 'SUBSCRIPTION_RENEWAL',
-        title: 'Renouvellement d\'abonnement',
-        message: `L'abonnement de ${subscriber.username} a été renouvelé`,
       });
 
       this.logger.log(`Subscription ${subscription.id} renewed successfully`);

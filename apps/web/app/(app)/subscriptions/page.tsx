@@ -3,50 +3,62 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { subscriptionsApi, usersApi } from '@/lib/api'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Search, Check, X } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { useRouter } from 'next/navigation'
+import { useDebounce } from '@/hooks/use-debounce'
+import { toast } from '@/hooks/use-toast'
 
 interface Creator {
   id: string
   username: string
   displayName?: string
-  profilePicture?: string
+  avatar?: string
   bio?: string
-  subscribersCount: number
-  contentCount: number
-  tiers: SubscriptionTier[]
-}
-
-interface SubscriptionTier {
-  id: string
-  tier: string
-  name: string
-  description: string
-  price: number
-  benefits: string[]
+  isFollowing?: boolean
+  creatorProfile?: {
+    totalSubscribers: number
+    totalContent: number
+  }
 }
 
 interface Subscription {
   id: string
-  tier: string
-  status: string
+  tierId: string
+  status: 'ACTIVE' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE' | 'PAUSED'
   currentPeriodEnd: string
-  creator: {
+  cancelAtPeriodEnd: boolean
+  stripeSubscriptionId?: string | null
+  tier: {
     id: string
-    username: string
-    displayName?: string
-    profilePicture?: string
+    name: string
+    price: string | number
+    interval: string
+    creator: {
+      id: string
+      username: string
+      displayName?: string
+      avatar?: string
+    }
   }
+}
+
+const statusLabels: Record<Subscription['status'], string> = {
+  ACTIVE: 'Actif',
+  CANCELLED: 'Annulé',
+  EXPIRED: 'Expiré',
+  PAST_DUE: 'Paiement en échec',
+  PAUSED: 'En pause',
 }
 
 export default function SubscriptionsPage() {
   const [searchQuery, setSearchQuery] = useState('')
+  const debouncedSearch = useDebounce(searchQuery, 300)
   const queryClient = useQueryClient()
   const router = useRouter()
 
@@ -59,88 +71,78 @@ export default function SubscriptionsPage() {
     },
   })
 
-  // Fetch featured creators (mock - replace with actual API)
+  // Discover creators (subscription happens on their profile, where tiers are listed)
   const { data: featuredCreators, isLoading: creatorsLoading } = useQuery({
-    queryKey: ['featured-creators', searchQuery],
+    queryKey: ['featured-creators', debouncedSearch],
     queryFn: async () => {
-      // Mock data - replace with actual API call
-      return [
-        {
-          id: '1',
-          username: 'creator1',
-          displayName: 'Amazing Creator',
-          profilePicture: undefined,
-          bio: 'Creating awesome content daily',
-          subscribersCount: 1250,
-          contentCount: 450,
-          tiers: [
-            {
-              id: '1',
-              tier: 'BASIC',
-              name: 'Basic',
-              description: 'Access to basic content',
-              price: 999,
-              benefits: ['Exclusive content', 'Priority messages'],
-            },
-            {
-              id: '2',
-              tier: 'PREMIUM',
-              name: 'Premium',
-              description: 'Full access',
-              price: 1999,
-              benefits: ['All BASIC benefits', 'Premium content', 'Early access'],
-            },
-          ],
-        },
-        {
-          id: '2',
-          username: 'creator2',
-          displayName: 'Top Creator',
-          profilePicture: undefined,
-          bio: 'Premium content creator',
-          subscribersCount: 2400,
-          contentCount: 890,
-          tiers: [
-            {
-              id: '3',
-              tier: 'BASIC',
-              name: 'Supporter',
-              description: 'Support my work',
-              price: 499,
-              benefits: ['Behind the scenes', 'Exclusive updates'],
-            },
-          ],
-        },
-      ] as Creator[]
+      const response = await usersApi.discover({ search: debouncedSearch, limit: 20 })
+      return (response.data?.items ?? []) as Creator[]
     },
   })
 
-  const subscribeMutation = useMutation({
-    mutationFn: async ({ creatorId, tierId }: { creatorId: string; tierId: string }) => {
-      // Replace with actual API call
-      return { success: true }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
-    },
-  })
-
-  const unsubscribeMutation = useMutation({
-    mutationFn: async (subscriptionId: string) => {
-      // Replace with actual API call
-      return { success: true }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
-    },
-  })
-
-  const tierColors = {
-    FREE: 'bg-gray-500',
-    BASIC: 'bg-blue-500',
-    PREMIUM: 'bg-purple-500',
-    VIP: 'bg-amber-500',
+  const onError = (error: any) => {
+    toast({
+      title: 'Erreur',
+      description: error.response?.data?.message || 'Une erreur est survenue',
+      variant: 'destructive',
+    })
   }
+
+  const cancelMutation = useMutation({
+    mutationFn: (subscriptionId: string) => subscriptionsApi.cancel(subscriptionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
+      toast({ title: 'Abonnement annulé' })
+    },
+    onError,
+  })
+
+  const resumeMutation = useMutation({
+    mutationFn: (subscriptionId: string) => subscriptionsApi.resume(subscriptionId),
+    onSuccess: (response, subscriptionId) => {
+      queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
+      const result = response.data as { requiresPayment: boolean }
+      if (result.requiresPayment) {
+        // Ended paid subscription: pay again through checkout
+        const sub = mySubscriptions?.find((s) => s.id === subscriptionId)
+        if (sub) goToCheckout(sub)
+        return
+      }
+      toast({ title: 'Abonnement repris' })
+    },
+    onError,
+  })
+
+  const goToCheckout = (sub: Subscription) => {
+    const params = new URLSearchParams({
+      type: 'subscription',
+      itemId: sub.tierId,
+      amount: String(Math.round(Number(sub.tier.price) * 100)),
+      description: `${sub.tier.name} - @${sub.tier.creator.username}`,
+      returnUrl: '/subscriptions',
+    })
+    router.push(`/checkout?${params.toString()}`)
+  }
+
+  const handleCancel = (sub: Subscription) => {
+    const message = sub.stripeSubscriptionId
+      ? `Votre abonnement restera actif jusqu'au ${new Date(sub.currentPeriodEnd).toLocaleDateString('fr-FR')}. Confirmer l'annulation ?`
+      : 'Confirmer l\'annulation de votre abonnement ?'
+    if (window.confirm(message)) {
+      cancelMutation.mutate(sub.id)
+    }
+  }
+
+  const handleResume = (sub: Subscription) => {
+    // An ended paid subscription needs a new payment
+    if (sub.status !== 'ACTIVE' && Number(sub.tier.price) > 0) {
+      goToCheckout(sub)
+      return
+    }
+    resumeMutation.mutate(sub.id)
+  }
+
+  const activeCount = mySubscriptions?.filter((sub) => sub.status === 'ACTIVE').length ?? 0
 
   return (
     <div className="space-y-6">
@@ -156,9 +158,9 @@ export default function SubscriptionsPage() {
           <TabsTrigger value="discover">Découvrir</TabsTrigger>
           <TabsTrigger value="my-subscriptions">
             Mes Abonnements
-            {mySubscriptions && mySubscriptions.length > 0 && (
+            {activeCount > 0 && (
               <Badge className="ml-2" variant="secondary">
-                {mySubscriptions.length}
+                {activeCount}
               </Badge>
             )}
           </TabsTrigger>
@@ -185,86 +187,52 @@ export default function SubscriptionsPage() {
             <div className="flex justify-center py-12">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
             </div>
-          ) : (
+          ) : featuredCreators && featuredCreators.length > 0 ? (
             <div className="grid md:grid-cols-2 gap-6">
-              {featuredCreators?.map((creator) => (
+              {featuredCreators.map((creator) => (
                 <Card key={creator.id}>
                   <CardHeader>
                     <div className="flex items-start space-x-4">
                       <Avatar className="h-16 w-16">
-                        <AvatarImage src={creator.profilePicture} />
+                        <AvatarImage src={creator.avatar} />
                         <AvatarFallback>
-                          {creator.displayName?.substring(0, 2).toUpperCase() || creator.username.substring(0, 2).toUpperCase()}
+                          {(creator.displayName || creator.username).substring(0, 2).toUpperCase()}
                         </AvatarFallback>
                       </Avatar>
                       <div className="flex-1">
-                        <CardTitle>{creator.displayName || creator.username}</CardTitle>
+                        <div className="flex items-center gap-2">
+                          <CardTitle>{creator.displayName || creator.username}</CardTitle>
+                          {creator.isFollowing && <Badge variant="success">Abonné</Badge>}
+                        </div>
                         <p className="text-sm text-muted-foreground">@{creator.username}</p>
                         {creator.bio && (
                           <p className="text-sm mt-2">{creator.bio}</p>
                         )}
                         <div className="flex items-center space-x-4 mt-2 text-sm text-muted-foreground">
-                          <span>{creator.subscribersCount} abonnés</span>
-                          <span>{creator.contentCount} contenus</span>
+                          <span>{creator.creatorProfile?.totalSubscribers ?? 0} abonnés</span>
+                          <span>{creator.creatorProfile?.totalContent ?? 0} contenus</span>
                         </div>
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-3">
-                    <p className="text-sm font-medium">Tiers d'abonnement:</p>
-                    {creator.tiers.map((tier) => (
-                      <div
-                        key={tier.id}
-                        className="flex items-center justify-between p-3 border rounded-lg"
-                      >
-                        <div className="flex-1">
-                          <div className="flex items-center space-x-2">
-                            <div className={`h-2 w-2 rounded-full ${tierColors[tier.tier as keyof typeof tierColors]}`} />
-                            <span className="font-medium">{tier.name}</span>
-                            <Badge variant="outline" className="text-xs">
-                              {tier.tier}
-                            </Badge>
-                          </div>
-                          <p className="text-sm text-muted-foreground mt-1">
-                            {tier.description}
-                          </p>
-                          <div className="mt-2 space-y-1">
-                            {tier.benefits.slice(0, 2).map((benefit, index) => (
-                              <p key={index} className="text-xs flex items-center">
-                                <Check className="h-3 w-3 text-green-500 mr-1" />
-                                {benefit}
-                              </p>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="ml-4 text-right">
-                          <p className="text-lg font-bold">
-                            {(tier.price / 100).toFixed(2)}€
-                          </p>
-                          <p className="text-xs text-muted-foreground">/ mois</p>
-                          <Button
-                            size="sm"
-                            className="mt-2"
-                            onClick={() => subscribeMutation.mutate({ creatorId: creator.id, tierId: tier.id })}
-                          >
-                            S'abonner
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </CardContent>
                   <CardFooter>
                     <Button
-                      variant="outline"
+                      variant={creator.isFollowing ? 'outline' : 'default'}
                       className="w-full"
-                      onClick={() => router.push(`/creator/${creator.username}`)}
+                      onClick={() => router.push(`/${creator.username}`)}
                     >
-                      Voir le profil
+                      {creator.isFollowing ? 'Voir le profil' : 'Voir les offres'}
                     </Button>
                   </CardFooter>
                 </Card>
               ))}
             </div>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <p className="text-muted-foreground">Aucun créateur trouvé</p>
+              </CardContent>
+            </Card>
           )}
         </TabsContent>
 
@@ -275,60 +243,93 @@ export default function SubscriptionsPage() {
             </div>
           ) : mySubscriptions && mySubscriptions.length > 0 ? (
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {mySubscriptions.map((sub) => (
-                <Card key={sub.id}>
-                  <CardHeader>
-                    <div className="flex items-start space-x-3">
-                      <Avatar>
-                        <AvatarImage src={sub.creator.profilePicture} />
-                        <AvatarFallback>
-                          {sub.creator.displayName?.substring(0, 2).toUpperCase() || sub.creator.username.substring(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1">
-                        <CardTitle className="text-base">
-                          {sub.creator.displayName || sub.creator.username}
-                        </CardTitle>
-                        <p className="text-sm text-muted-foreground">@{sub.creator.username}</p>
+              {mySubscriptions.map((sub) => {
+                const creator = sub.tier.creator
+                const isLive = sub.status === 'ACTIVE' || sub.status === 'PAST_DUE'
+                const price = Number(sub.tier.price)
+
+                return (
+                  <Card key={sub.id}>
+                    <CardHeader>
+                      <div className="flex items-start space-x-3">
+                        <Avatar>
+                          <AvatarImage src={creator.avatar} />
+                          <AvatarFallback>
+                            {(creator.displayName || creator.username).substring(0, 2).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1">
+                          <CardTitle className="text-base">
+                            {creator.displayName || creator.username}
+                          </CardTitle>
+                          <p className="text-sm text-muted-foreground">@{creator.username}</p>
+                        </div>
                       </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Tier:</span>
-                      <Badge variant="outline">{sub.tier}</Badge>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Status:</span>
-                      <Badge variant={sub.status === 'ACTIVE' ? 'success' : 'secondary'}>
-                        {sub.status}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Renouvellement:</span>
-                      <span className="text-sm">
-                        {new Date(sub.currentPeriodEnd).toLocaleDateString('fr-FR')}
-                      </span>
-                    </div>
-                  </CardContent>
-                  <CardFooter className="flex space-x-2">
-                    <Button
-                      variant="outline"
-                      className="flex-1"
-                      onClick={() => router.push(`/creator/${sub.creator.username}`)}
-                    >
-                      Voir
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => unsubscribeMutation.mutate(sub.id)}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </CardFooter>
-                </Card>
-              ))}
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-muted-foreground">Offre :</span>
+                        <Badge variant="outline">
+                          {sub.tier.name} · {price === 0 ? 'Gratuit' : `${price.toFixed(2)}€/${sub.tier.interval === 'year' ? 'an' : 'mois'}`}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-muted-foreground">Statut :</span>
+                        <Badge
+                          variant={
+                            sub.status === 'ACTIVE'
+                              ? 'success'
+                              : sub.status === 'PAST_DUE'
+                                ? 'destructive'
+                                : 'secondary'
+                          }
+                        >
+                          {sub.status === 'ACTIVE' && sub.cancelAtPeriodEnd
+                            ? 'Annulation programmée'
+                            : statusLabels[sub.status]}
+                        </Badge>
+                      </div>
+                      {isLive && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">
+                            {sub.cancelAtPeriodEnd ? 'Se termine le :' : 'Renouvellement :'}
+                          </span>
+                          <span className="text-sm">
+                            {new Date(sub.currentPeriodEnd).toLocaleDateString('fr-FR')}
+                          </span>
+                        </div>
+                      )}
+                    </CardContent>
+                    <CardFooter className="flex space-x-2">
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => router.push(`/${creator.username}`)}
+                      >
+                        Voir
+                      </Button>
+                      {isLive && !sub.cancelAtPeriodEnd ? (
+                        <Button
+                          variant="ghost"
+                          className="flex-1"
+                          disabled={cancelMutation.isPending}
+                          onClick={() => handleCancel(sub)}
+                        >
+                          Se désabonner
+                        </Button>
+                      ) : sub.status !== 'PAST_DUE' ? (
+                        <Button
+                          className="flex-1"
+                          disabled={resumeMutation.isPending}
+                          onClick={() => handleResume(sub)}
+                        >
+                          {sub.status === 'ACTIVE' ? 'Reprendre' : 'Se réabonner'}
+                        </Button>
+                      ) : null}
+                    </CardFooter>
+                  </Card>
+                )
+              })}
             </div>
           ) : (
             <Card>

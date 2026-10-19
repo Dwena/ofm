@@ -176,6 +176,13 @@ export const paymentsApi = {
     api.get(`/payments/refunds?page=${page}&limit=${limit}`),
   getRevenueStats: (filters: any) =>
     api.get('/payments/stats/revenue', { params: filters }),
+  // Saved payment methods (cards)
+  getPaymentMethods: () => api.get('/payments/methods'),
+  createSetupIntent: () => api.post('/payments/methods/setup-intent'),
+  setDefaultPaymentMethod: (paymentMethodId: string) =>
+    api.post(`/payments/methods/${paymentMethodId}/default`),
+  deletePaymentMethod: (paymentMethodId: string) =>
+    api.delete(`/payments/methods/${paymentMethodId}`),
 }
 
 export const subscriptionsApi = {
@@ -204,6 +211,16 @@ export const subscriptionsApi = {
     isActive?: boolean
   }) => api.put(`/subscriptions/tiers/${tierId}`, data),
   deleteTier: (tierId: string) => api.delete(`/subscriptions/tiers/${tierId}`),
+  // Subscription lifecycle
+  getStatusForCreator: (creatorId: string) =>
+    api.get(`/subscriptions/creator/${creatorId}/status`),
+  // Returns { requiresPayment, subscription?, clientSecret?, stripeSubscriptionId? }
+  subscribe: (data: { tierId: string; paymentMethodId?: string }) =>
+    api.post('/subscriptions/subscribe', data),
+  confirm: (stripeSubscriptionId: string) =>
+    api.post('/subscriptions/confirm', { stripeSubscriptionId }),
+  cancel: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/cancel`),
+  resume: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/resume`),
 }
 
 export const contentApi = {

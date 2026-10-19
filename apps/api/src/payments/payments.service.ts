@@ -4,6 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
+import { StripeWebhookService } from './stripe-webhook.service';
 import { FilterTransactionsDto, GetStatsDto, StatsInterval } from './dto/payments.dto';
 
 @Injectable()
@@ -14,6 +15,7 @@ export class PaymentsService {
     private prisma: PrismaService,
     private stripeService: StripeService,
     private configService: ConfigService,
+    private stripeWebhookService: StripeWebhookService,
   ) {}
 
   /**
@@ -397,16 +399,7 @@ export class PaymentsService {
     }
 
     // Create or get Stripe customer
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await this.stripeService.createCustomer(user.email, user.username);
-      customerId = customer.id;
-
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { stripeCustomerId: customerId },
-      });
-    }
+    const customerId = await this.getOrCreateCustomerId(user);
 
     // Create payment intent
     const paymentIntent = await this.stripeService.createPaymentIntent(
@@ -422,10 +415,146 @@ export class PaymentsService {
   }
 
   /**
+   * Get the user's Stripe customer ID, creating the customer on first use
+   */
+  async getOrCreateCustomerId(user: {
+    id: string;
+    email: string;
+    username: string;
+    stripeCustomerId: string | null;
+  }) {
+    if (user.stripeCustomerId) {
+      return user.stripeCustomerId;
+    }
+
+    const customer = await this.stripeService.createCustomer(user.email, user.username);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { stripeCustomerId: customer.id },
+    });
+
+    return customer.id;
+  }
+
+  /**
+   * List the user's saved cards
+   */
+  async listPaymentMethods(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { stripeCustomerId: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.stripeCustomerId) {
+      return [];
+    }
+
+    const [methods, customer] = await Promise.all([
+      this.stripeService.listPaymentMethods(user.stripeCustomerId),
+      this.stripeService.getCustomer(user.stripeCustomerId),
+    ]);
+
+    const defaultPaymentMethod = customer.deleted
+      ? null
+      : customer.invoice_settings?.default_payment_method;
+    const defaultId =
+      typeof defaultPaymentMethod === 'string'
+        ? defaultPaymentMethod
+        : defaultPaymentMethod?.id;
+
+    return methods.data.map((method) => ({
+      id: method.id,
+      type: 'card' as const,
+      brand: method.card?.brand,
+      last4: method.card?.last4,
+      expMonth: method.card?.exp_month,
+      expYear: method.card?.exp_year,
+      isDefault: method.id === defaultId,
+      createdAt: new Date(method.created * 1000).toISOString(),
+    }));
+  }
+
+  /**
+   * Create a setup intent so the client can save a new card with Stripe Elements
+   */
+  async createSetupIntent(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const customerId = await this.getOrCreateCustomerId(user);
+    const setupIntent = await this.stripeService.createSetupIntent(customerId);
+
+    return {
+      clientSecret: setupIntent.client_secret,
+      setupIntentId: setupIntent.id,
+    };
+  }
+
+  /**
+   * Set a saved card as the default one
+   */
+  async setDefaultPaymentMethod(userId: string, paymentMethodId: string) {
+    const customerId = await this.assertPaymentMethodOwnership(userId, paymentMethodId);
+
+    await this.stripeService.setDefaultPaymentMethod(customerId, paymentMethodId);
+
+    return { message: 'Default payment method updated' };
+  }
+
+  /**
+   * Remove a saved card
+   */
+  async deletePaymentMethod(userId: string, paymentMethodId: string) {
+    await this.assertPaymentMethodOwnership(userId, paymentMethodId);
+
+    await this.stripeService.detachPaymentMethod(paymentMethodId);
+
+    this.logger.log(`Payment method ${paymentMethodId} removed by user ${userId}`);
+
+    return { message: 'Payment method removed' };
+  }
+
+  /**
+   * Ensure the payment method belongs to the user's Stripe customer
+   */
+  async assertPaymentMethodOwnership(userId: string, paymentMethodId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { stripeCustomerId: true },
+    });
+
+    if (!user?.stripeCustomerId) {
+      throw new NotFoundException('Payment method not found');
+    }
+
+    const method = await this.stripeService
+      .retrievePaymentMethod(paymentMethodId)
+      .catch(() => null);
+    const owner = typeof method?.customer === 'string' ? method.customer : method?.customer?.id;
+
+    if (!method || owner !== user.stripeCustomerId) {
+      throw new NotFoundException('Payment method not found');
+    }
+
+    return user.stripeCustomerId;
+  }
+
+  /**
    * Handle webhook
    */
   async handleWebhook(signature: string, payload: Buffer) {
-    return this.stripeService.handleWebhook(signature, payload);
+    // Same handling as /webhooks/stripe so both endpoints keep data consistent
+    return this.stripeWebhookService.handleWebhook(payload, signature);
   }
 
   /**

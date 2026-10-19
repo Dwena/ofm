@@ -10,12 +10,13 @@ import {
   CreditCard,
   Plus,
   Trash2,
-  CheckCircle,
   AlertCircle,
   Shield,
   Loader2
 } from 'lucide-react'
-import { useAuth } from '@/contexts/auth-context'
+import { paymentsApi } from '@/lib/api'
+import { toast } from '@/hooks/use-toast'
+import StripePaymentElement from '@/components/checkout/stripe-payment-element'
 
 interface PaymentMethod {
   id: string
@@ -29,29 +30,73 @@ interface PaymentMethod {
 }
 
 export default function PaymentMethodsPage() {
-  const { user } = useAuth()
   const [showAddForm, setShowAddForm] = useState(false)
   const queryClient = useQueryClient()
 
-  // Mock data - Replace with actual API call
   const { data: paymentMethods, isLoading } = useQuery({
     queryKey: ['payment-methods'],
     queryFn: async () => {
-      // TODO: Implement actual API call
-      return [
-        {
-          id: '1',
-          type: 'card' as const,
-          brand: 'Visa',
-          last4: '4242',
-          expMonth: 12,
-          expYear: 2025,
-          isDefault: true,
-          createdAt: new Date().toISOString(),
-        },
-      ] as PaymentMethod[]
+      const response = await paymentsApi.getPaymentMethods()
+      return response.data as PaymentMethod[]
     },
   })
+
+  const onError = (error: any) => {
+    toast({
+      title: 'Erreur',
+      description: error.response?.data?.message || 'Une erreur est survenue',
+      variant: 'destructive',
+    })
+  }
+
+  // Setup intent backing the Stripe Elements form
+  const setupIntentMutation = useMutation({
+    mutationFn: async () => {
+      const response = await paymentsApi.createSetupIntent()
+      return response.data as { clientSecret: string }
+    },
+    onError,
+  })
+
+  const setDefaultMutation = useMutation({
+    mutationFn: (paymentMethodId: string) => paymentsApi.setDefaultPaymentMethod(paymentMethodId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['payment-methods'] })
+      toast({ title: 'Carte par défaut mise à jour' })
+    },
+    onError,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (paymentMethodId: string) => paymentsApi.deletePaymentMethod(paymentMethodId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['payment-methods'] })
+      toast({ title: 'Moyen de paiement supprimé' })
+    },
+    onError,
+  })
+
+  const openAddForm = () => {
+    setShowAddForm(true)
+    setupIntentMutation.mutate()
+  }
+
+  const closeAddForm = () => {
+    setShowAddForm(false)
+    setupIntentMutation.reset()
+  }
+
+  const handleCardSaved = () => {
+    closeAddForm()
+    queryClient.invalidateQueries({ queryKey: ['payment-methods'] })
+    toast({ title: 'Carte ajoutée', description: 'Votre carte a été enregistrée avec succès.' })
+  }
+
+  const handleDelete = (paymentMethodId: string) => {
+    if (window.confirm('Supprimer ce moyen de paiement ?')) {
+      deleteMutation.mutate(paymentMethodId)
+    }
+  }
 
   const getCardIcon = (brand?: string) => {
     switch (brand?.toLowerCase()) {
@@ -141,11 +186,21 @@ export default function PaymentMethodsPage() {
 
                   <div className="flex gap-2">
                     {!method.isDefault && (
-                      <Button variant="outline" size="sm">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDefaultMutation.mutate(method.id)}
+                        disabled={setDefaultMutation.isPending}
+                      >
                         Définir par défaut
                       </Button>
                     )}
-                    <Button variant="ghost" size="sm">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDelete(method.id)}
+                      disabled={deleteMutation.isPending}
+                    >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -160,7 +215,7 @@ export default function PaymentMethodsPage() {
               <p className="text-muted-foreground mb-4">
                 Aucun moyen de paiement enregistré
               </p>
-              <Button onClick={() => setShowAddForm(true)}>
+              <Button onClick={openAddForm}>
                 <Plus className="h-4 w-4 mr-2" />
                 Ajouter un moyen de paiement
               </Button>
@@ -169,7 +224,7 @@ export default function PaymentMethodsPage() {
         )}
 
         {paymentMethods && paymentMethods.length > 0 && (
-          <Button onClick={() => setShowAddForm(true)} className="w-full">
+          <Button onClick={openAddForm} className="w-full">
             <Plus className="h-4 w-4 mr-2" />
             Ajouter un Nouveau Moyen de Paiement
           </Button>
@@ -186,33 +241,37 @@ export default function PaymentMethodsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Alert>
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>
-                <p className="font-medium mb-2">Intégration Stripe requise</p>
-                <p className="text-sm">
-                  Cette fonctionnalité nécessite l'intégration complète de Stripe Elements.
-                  Pour l'instant, cette page affiche l'interface utilisateur.
-                </p>
-                <div className="mt-4 p-4 border rounded-lg bg-muted/50">
-                  <p className="text-sm font-mono">
-                    {`<StripeElements>`}<br />
-                    {`  <CardElement />`}<br />
-                    {`</StripeElements>`}
-                  </p>
-                </div>
-              </AlertDescription>
-            </Alert>
+            {setupIntentMutation.data?.clientSecret ? (
+              <StripePaymentElement
+                clientSecret={setupIntentMutation.data.clientSecret}
+                mode="setup"
+                submitLabel="Ajouter la Carte"
+                onSuccess={handleCardSaved}
+                onCancel={closeAddForm}
+              />
+            ) : setupIntentMutation.isError ? (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  Impossible d'initialiser le formulaire de paiement. Veuillez réessayer.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <div className="flex justify-center py-6">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            )}
           </CardContent>
-          <CardFooter className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setShowAddForm(false)}>
-              Annuler
-            </Button>
-            <Button disabled>
-              <CheckCircle className="h-4 w-4 mr-2" />
-              Ajouter la Carte
-            </Button>
-          </CardFooter>
+          {setupIntentMutation.isError && (
+            <CardFooter className="flex justify-end gap-2">
+              <Button variant="outline" onClick={closeAddForm}>
+                Annuler
+              </Button>
+              <Button onClick={() => setupIntentMutation.mutate()}>
+                Réessayer
+              </Button>
+            </CardFooter>
+          )}
         </Card>
       )}
 

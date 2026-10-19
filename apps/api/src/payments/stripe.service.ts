@@ -141,6 +141,121 @@ export class StripeService {
   }
 
   /**
+   * Create a fan subscription to a creator tier.
+   * Uses destination charges like one-off payments: the subscription lives on
+   * the platform account and each invoice is transferred to the creator minus
+   * the platform fee. The first invoice is left incomplete until the fan
+   * confirms the payment client-side, unless a saved card is provided.
+   */
+  async createTierSubscription(params: {
+    customerId: string;
+    priceId: string;
+    connectedAccountId: string;
+    paymentMethodId?: string;
+    metadata: Record<string, string>;
+  }) {
+    return this.stripe.subscriptions.create({
+      customer: params.customerId,
+      items: [{ price: params.priceId }],
+      application_fee_percent: this.platformFeePercentage,
+      transfer_data: {
+        destination: params.connectedAccountId,
+      },
+      ...(params.paymentMethodId
+        ? {
+            default_payment_method: params.paymentMethodId,
+            payment_behavior: 'allow_incomplete' as const,
+          }
+        : {
+            payment_behavior: 'default_incomplete' as const,
+          }),
+      payment_settings: {
+        payment_method_types: ['card'],
+        save_default_payment_method: 'on_subscription',
+      },
+      expand: ['latest_invoice.payment_intent'],
+      metadata: {
+        ...params.metadata,
+        platform: 'ofm',
+      },
+    });
+  }
+
+  /**
+   * Retrieve subscription (with latest invoice payment intent)
+   */
+  async retrieveSubscription(subscriptionId: string) {
+    return this.stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ['latest_invoice.payment_intent'],
+    });
+  }
+
+  /**
+   * Schedule (or unschedule) cancellation at the end of the current period
+   */
+  async setCancelAtPeriodEnd(subscriptionId: string, cancelAtPeriodEnd: boolean) {
+    return this.stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: cancelAtPeriodEnd,
+    });
+  }
+
+  /**
+   * Retrieve customer
+   */
+  async getCustomer(customerId: string) {
+    return this.stripe.customers.retrieve(customerId);
+  }
+
+  /**
+   * List saved cards of a customer
+   */
+  async listPaymentMethods(customerId: string) {
+    return this.stripe.paymentMethods.list({
+      customer: customerId,
+      type: 'card',
+    });
+  }
+
+  /**
+   * Retrieve a payment method
+   */
+  async retrievePaymentMethod(paymentMethodId: string) {
+    return this.stripe.paymentMethods.retrieve(paymentMethodId);
+  }
+
+  /**
+   * Create setup intent to save a card for future payments
+   */
+  async createSetupIntent(customerId: string) {
+    return this.stripe.setupIntents.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      usage: 'off_session',
+      metadata: {
+        platform: 'ofm',
+      },
+    });
+  }
+
+  /**
+   * Set customer's default payment method for invoices
+   */
+  async setDefaultPaymentMethod(customerId: string, paymentMethodId: string) {
+    return this.stripe.customers.update(customerId, {
+      invoice_settings: {
+        default_payment_method: paymentMethodId,
+      },
+    });
+  }
+
+  /**
+   * Detach payment method from its customer
+   */
+  async detachPaymentMethod(paymentMethodId: string) {
+    return this.stripe.paymentMethods.detach(paymentMethodId);
+  }
+
+  /**
    * Cancel subscription
    */
   async cancelSubscription(subscriptionId: string) {

@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Query,
   Headers,
@@ -131,6 +132,48 @@ export class PaymentsController {
       body.amount,
       body.currency,
     );
+  }
+
+  /**
+   * List saved payment methods (cards)
+   */
+  @Get('methods')
+  @UseGuards(JwtAuthGuard)
+  async listPaymentMethods(@CurrentUser('id') userId: string) {
+    return this.paymentsService.listPaymentMethods(userId);
+  }
+
+  /**
+   * Create setup intent to add a payment method with Stripe Elements
+   */
+  @Post('methods/setup-intent')
+  @UseGuards(JwtAuthGuard)
+  async createSetupIntent(@CurrentUser('id') userId: string) {
+    return this.paymentsService.createSetupIntent(userId);
+  }
+
+  /**
+   * Set default payment method
+   */
+  @Post('methods/:paymentMethodId/default')
+  @UseGuards(JwtAuthGuard)
+  async setDefaultPaymentMethod(
+    @CurrentUser('id') userId: string,
+    @Param('paymentMethodId') paymentMethodId: string,
+  ) {
+    return this.paymentsService.setDefaultPaymentMethod(userId, paymentMethodId);
+  }
+
+  /**
+   * Remove a payment method
+   */
+  @Delete('methods/:paymentMethodId')
+  @UseGuards(JwtAuthGuard)
+  async deletePaymentMethod(
+    @CurrentUser('id') userId: string,
+    @Param('paymentMethodId') paymentMethodId: string,
+  ) {
+    return this.paymentsService.deletePaymentMethod(userId, paymentMethodId);
   }
 
   /**
