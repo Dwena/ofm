@@ -135,16 +135,30 @@ export const usersApi = {
   updateProfile: (data: any) => api.put('/users/profile', data),
   getStats: () => api.get('/users/stats'),
   // Maps the /social/discover/creators response to the discover page's creator shape
-  discover: async (params: { search?: string; category?: string; sortBy?: string; page?: number; limit?: number } = {}) => {
-    const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED'> = {
+  // `pagination` is { page, limit, total, totalPages }; prices filter/sort on the cheapest active tier
+  discover: async (params: {
+    search?: string
+    category?: string
+    sortBy?: string
+    minPrice?: number
+    maxPrice?: number
+    page?: number
+    limit?: number
+  } = {}) => {
+    const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED' | 'PRICE_ASC' | 'PRICE_DESC'> = {
       popular: 'POPULAR',
       subscribers: 'POPULAR',
       recent: 'NEW',
+      new: 'NEW',
+      'price-low': 'PRICE_ASC',
+      'price-high': 'PRICE_DESC',
     }
     const response = await api.get('/social/discover/creators', {
       params: {
         query: params.search || undefined,
         sortBy: params.sortBy ? sortMap[params.sortBy] ?? 'RECOMMENDED' : undefined,
+        minPrice: params.minPrice,
+        maxPrice: params.maxPrice,
         page: params.page,
         limit: params.limit,
       },
@@ -152,6 +166,9 @@ export const usersApi = {
     const items: any[] = Array.isArray(response.data?.items) ? response.data.items : []
     return {
       ...response,
+      pagination: response.data?.pagination as
+        | { page: number; limit: number; total: number; totalPages: number }
+        | undefined,
       data: items.map((creator) => ({
         ...creator,
         subscriberCount: creator.creatorProfile?.totalSubscribers ?? 0,

@@ -98,6 +98,64 @@ describe('SocialService', () => {
       ]);
       expect(result.pagination).toEqual({ page: 1, limit: 20, total: 2, totalPages: 1 });
     });
+
+    it('excludes the requesting user and maps NEW to the most recent accounts', async () => {
+      mockPrismaService.user.findMany.mockResolvedValue([]);
+      mockPrismaService.user.count.mockResolvedValue(0);
+      mockPrismaService.subscription.findMany.mockResolvedValue([]);
+      mockPrismaService.follow.findMany.mockResolvedValue([]);
+
+      await service.discoverCreators('user-1', { sortBy: 'NEW', query: ' ali ', page: 2, limit: 10 });
+
+      expect(mockPrismaService.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            role: 'CREATOR',
+            id: { not: 'user-1' },
+            OR: [
+              { username: { contains: 'ali', mode: 'insensitive' } },
+              { displayName: { contains: 'ali', mode: 'insensitive' } },
+            ],
+          }),
+          orderBy: [{ createdAt: 'desc' }],
+          skip: 10,
+          take: 10,
+        }),
+      );
+    });
+
+    it('sorts by cheapest tier price and applies the price range', async () => {
+      const candidates = [
+        { id: 'c-cheap', createdAt: '2026-01-01', creatorProfile: { totalSubscribers: 1 }, subscriptionTiers: [{ price: '4.99' }] },
+        { id: 'c-none', createdAt: '2026-01-01', creatorProfile: { totalSubscribers: 50 }, subscriptionTiers: [] },
+        { id: 'c-mid', createdAt: '2026-01-01', creatorProfile: { totalSubscribers: 5 }, subscriptionTiers: [{ price: '9.99' }] },
+        { id: 'c-high', createdAt: '2026-01-01', creatorProfile: { totalSubscribers: 9 }, subscriptionTiers: [{ price: '29.99' }] },
+      ];
+      mockPrismaService.user.findMany.mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where.id?.in
+            ? where.id.in.map((id: string) => ({
+                id,
+                username: id,
+                subscriptionTiers: candidates.find((c) => c.id === id)!.subscriptionTiers,
+              }))
+            : candidates,
+        ),
+      );
+      mockPrismaService.subscription.findMany.mockResolvedValue([]);
+      mockPrismaService.follow.findMany.mockResolvedValue([]);
+
+      const desc = await service.discoverCreators('user-1', { sortBy: 'PRICE_DESC', minPrice: 5, maxPrice: 30 });
+      expect(desc.items.map((c: any) => c.id)).toEqual(['c-high', 'c-mid']);
+      expect(desc.items.map((c: any) => c.subscriptionPrice)).toEqual([29.99, 9.99]);
+      expect(desc.pagination.total).toBe(2);
+
+      const asc = await service.discoverCreators('user-1', { sortBy: 'PRICE_ASC', limit: 3 });
+      // Creators without an active tier come last
+      expect(asc.items.map((c: any) => c.id)).toEqual(['c-cheap', 'c-mid', 'c-high']);
+      expect(asc.pagination).toEqual({ page: 1, limit: 3, total: 4, totalPages: 2 });
+      expect(mockPrismaService.user.count).not.toHaveBeenCalled();
+    });
   });
 
   describe('follow', () => {

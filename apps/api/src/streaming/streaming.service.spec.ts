@@ -16,6 +16,7 @@ describe('StreamingService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
+      findMany: jest.fn(),
     },
     streamViewer: {
       findUnique: jest.fn(),
@@ -293,6 +294,48 @@ describe('StreamingService', () => {
       expect(result.streamKey).toBeUndefined();
       expect(result.hasAccess).toBe(false);
       expect(result.accessDeniedReason).toBe('PRIVATE');
+    });
+  });
+
+  describe('stream listings', () => {
+    const listed = [
+      { ...baseStream, status: 'LIVE', streamKey: 'secret-1', creator: { id: 'creator-1' } },
+      { ...baseStream, id: 'stream-2', status: 'LIVE', streamKey: 'secret-2', creator: { id: 'creator-1' } },
+    ];
+
+    it('lists live streams without stream keys and hides other creators\' private streams', async () => {
+      mockPrismaService.liveStream.findMany.mockResolvedValue(listed);
+
+      const result = await service.getLiveStreams('user-1');
+
+      expect(result.map((s: any) => s.id)).toEqual(['stream-1', 'stream-2']);
+      result.forEach((s: any) => expect(s).not.toHaveProperty('streamKey'));
+      expect(mockPrismaService.liveStream.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            status: 'LIVE',
+            OR: [{ visibility: { not: 'PRIVATE' } }, { creatorId: 'user-1' }],
+          },
+        }),
+      );
+    });
+
+    it('lists upcoming scheduled streams without stream keys', async () => {
+      mockPrismaService.liveStream.findMany.mockResolvedValue([{ ...listed[0], status: 'SCHEDULED' }]);
+
+      const result = await service.getScheduledStreams();
+
+      expect(result[0]).not.toHaveProperty('streamKey');
+      expect(mockPrismaService.liveStream.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: 'SCHEDULED',
+            scheduledFor: { gte: expect.any(Date) },
+            visibility: { not: 'PRIVATE' },
+          }),
+          orderBy: { scheduledFor: 'asc' },
+        }),
+      );
     });
   });
 
