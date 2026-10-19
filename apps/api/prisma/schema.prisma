@@ -281,7 +281,8 @@ model SubscriptionTier {
   updatedAt   DateTime @updatedAt
 
   // Relations
-  subscriptions Subscription[]
+  subscriptions        Subscription[] @relation("SubscriptionTier")
+  pendingSubscriptions Subscription[] @relation("PendingSubscriptionTier")
 
   @@index([creatorId])
   @@index([isActive])
@@ -292,7 +293,12 @@ model Subscription {
   subscriberId          String
   subscriber            User               @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
   tierId                String
-  tier                  SubscriptionTier   @relation(fields: [tierId], references: [id])
+  tier                  SubscriptionTier   @relation("SubscriptionTier", fields: [tierId], references: [id])
+
+  // Downgrade scheduled for the end of the current period (mirrors the Stripe
+  // subscription metadata, see SubscriptionSyncService)
+  pendingTierId         String?
+  pendingTier           SubscriptionTier?  @relation("PendingSubscriptionTier", fields: [pendingTierId], references: [id], onDelete: SetNull)
 
   status                SubscriptionStatus @default(ACTIVE)
 

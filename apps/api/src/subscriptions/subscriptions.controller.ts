@@ -5,7 +5,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateTierDto, UpdateTierDto } from './dto/subscription-tier.dto';
-import { SubscribeDto, ConfirmSubscriptionDto } from './dto/subscribe.dto';
+import { SubscribeDto, ConfirmSubscriptionDto, ChangeTierDto } from './dto/subscribe.dto';
 
 @Controller('subscriptions')
 @UseGuards(JwtAuthGuard)
@@ -68,6 +68,16 @@ export class SubscriptionsController {
     @Param('subscriptionId') subscriptionId: string,
   ) {
     return this.subscriptionsService.resumeSubscription(userId, subscriptionId);
+  }
+
+  // Upgrade / downgrade to another tier of the same creator
+  @Post(':subscriptionId/change-tier')
+  async changeTier(
+    @CurrentUser('id') userId: string,
+    @Param('subscriptionId') subscriptionId: string,
+    @Body() dto: ChangeTierDto,
+  ) {
+    return this.subscriptionsService.changeTier(userId, subscriptionId, dto);
   }
 
   // Tier Management Routes

@@ -17,6 +17,8 @@ export default function CheckoutPage() {
   const type = (searchParams.get('type') || 'tip') as 'subscription' | 'ppv' | 'tip'
   const itemId = searchParams.get('itemId') || undefined
   const returnUrl = searchParams.get('returnUrl') || '/feed'
+  // Subscription upgraded from a free tier (subscriptions only)
+  const changeFrom = searchParams.get('changeFrom') || undefined
 
   if (!amount || amount <= 0) {
     return (
@@ -59,6 +61,7 @@ export default function CheckoutPage() {
           tierId={itemId}
           amount={amount}
           description={description}
+          changeFromSubscriptionId={changeFrom}
           onSuccess={() => {
             router.push(returnUrl)
           }}

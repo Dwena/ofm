@@ -8,12 +8,16 @@ describe('SubscriptionSyncService', () => {
   const mockPrismaService = {
     subscription: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       upsert: jest.fn(),
+      delete: jest.fn(),
     },
     subscriptionTier: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
     },
     creatorProfile: {
       updateMany: jest.fn(),
@@ -111,5 +115,187 @@ describe('SubscriptionSyncService', () => {
       }),
     );
     expect(mockPrismaService.notification.create).toHaveBeenCalled();
+  });
+
+  describe('tier changes', () => {
+    const periodStart = 1700000000;
+    const periodEnd = 1702592000;
+
+    const withItem = (priceId: string, productId: string, overrides: any = {}) =>
+      stripeSubscription({
+        items: { data: [{ id: 'si_1', price: { id: priceId, product: productId } }] },
+        ...overrides,
+      });
+
+    const existingRow = (overrides: any = {}) => ({
+      id: 'sub-1',
+      subscriberId: 'fan-1',
+      tierId: 'tier-basic',
+      status: 'ACTIVE',
+      tier: { creatorId: 'creator-1' },
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      // Tier lookup by the subscription item's price / product
+      mockPrismaService.subscriptionTier.findFirst.mockImplementation(({ where }: any) => {
+        const ids = where.OR.map((c: any) => c.stripePriceId || c.stripeProductId);
+        if (ids.includes('prod_premium')) return Promise.resolve({ id: 'tier-premium' });
+        if (ids.includes('prod_basic')) return Promise.resolve({ id: 'tier-basic' });
+        return Promise.resolve(null);
+      });
+      mockPrismaService.subscription.update.mockImplementation(({ data }: any) =>
+        Promise.resolve({ id: 'sub-1', ...data }),
+      );
+    });
+
+    it('should move the row to the tier billed by Stripe after an upgrade', async () => {
+      mockPrismaService.subscription.findUnique
+        .mockResolvedValueOnce(existingRow())
+        // (subscriberId, tierId) slot of the target tier
+        .mockResolvedValueOnce(null);
+
+      await service.syncFromStripe(withItem('price_premium', 'prod_premium'));
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: expect.objectContaining({ tierId: 'tier-premium', pendingTierId: null }),
+      });
+    });
+
+    it('should drop an ended row holding the target tier before moving', async () => {
+      mockPrismaService.subscription.findUnique
+        .mockResolvedValueOnce(existingRow())
+        .mockResolvedValueOnce({ id: 'sub-old', status: 'CANCELLED' });
+
+      await service.syncFromStripe(withItem('price_premium', 'prod_premium'));
+
+      expect(mockPrismaService.subscription.delete).toHaveBeenCalledWith({ where: { id: 'sub-old' } });
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: expect.objectContaining({ tierId: 'tier-premium' }),
+      });
+    });
+
+    it('should keep the paid tier and expose the pending one during a scheduled downgrade', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValueOnce(
+        existingRow({ tierId: 'tier-premium' }),
+      );
+
+      await service.syncFromStripe(
+        withItem('price_basic', 'prod_basic', {
+          current_period_start: periodStart,
+          current_period_end: periodEnd,
+          metadata: {
+            subscriberId: 'fan-1',
+            tierId: 'tier-premium',
+            downgradeTierId: 'tier-basic',
+            downgradeFromTierId: 'tier-premium',
+            downgradeAt: String(periodEnd),
+          },
+        }),
+      );
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: expect.objectContaining({ tierId: 'tier-premium', pendingTierId: 'tier-basic' }),
+      });
+      expect(mockPrismaService.subscription.delete).not.toHaveBeenCalled();
+    });
+
+    it('should apply the downgrade once the new period started', async () => {
+      mockPrismaService.subscription.findUnique
+        .mockResolvedValueOnce(existingRow({ tierId: 'tier-premium', pendingTierId: 'tier-basic' }))
+        .mockResolvedValueOnce(null);
+
+      await service.syncFromStripe(
+        withItem('price_basic', 'prod_basic', {
+          current_period_start: periodEnd,
+          current_period_end: periodEnd + 2592000,
+          metadata: {
+            subscriberId: 'fan-1',
+            downgradeTierId: 'tier-basic',
+            downgradeFromTierId: 'tier-premium',
+            downgradeAt: String(periodEnd),
+          },
+        }),
+      );
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: expect.objectContaining({ tierId: 'tier-basic', pendingTierId: null }),
+      });
+    });
+
+    it('should activate the free tier when a paid → free downgrade ends', async () => {
+      const freeTier = {
+        id: 'tier-free',
+        creatorId: 'creator-1',
+        name: 'Free',
+        price: 0,
+        interval: 'month',
+        isActive: true,
+      };
+      mockPrismaService.subscription.findUnique.mockResolvedValueOnce(existingRow());
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(freeTier);
+      mockPrismaService.subscription.findFirst.mockResolvedValue(null);
+      mockPrismaService.subscription.upsert.mockResolvedValue({ id: 'sub-free' });
+
+      await service.syncFromStripe(
+        withItem('price_basic', 'prod_basic', {
+          status: 'canceled',
+          canceled_at: periodEnd,
+          current_period_start: periodStart,
+          current_period_end: periodEnd,
+          metadata: {
+            subscriberId: 'fan-1',
+            downgradeTierId: 'tier-free',
+            downgradeFromTierId: 'tier-basic',
+            downgradeAt: String(periodEnd),
+          },
+        }),
+      );
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: expect.objectContaining({ status: 'CANCELLED', pendingTierId: null }),
+      });
+      expect(mockPrismaService.subscription.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { subscriberId_tierId: { subscriberId: 'fan-1', tierId: 'tier-free' } },
+          create: expect.objectContaining({ status: 'ACTIVE', stripeSubscriptionId: null }),
+        }),
+      );
+    });
+
+    it('should end the free subscription replaced by a new paid one', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValueOnce(null);
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
+        id: 'tier-premium',
+        creatorId: 'creator-1',
+        name: 'Premium',
+      });
+      mockPrismaService.subscription.upsert.mockResolvedValue({ id: 'sub-paid' });
+
+      await service.syncFromStripe(
+        withItem('price_premium', 'prod_premium', {
+          metadata: {
+            subscriberId: 'fan-1',
+            tierId: 'tier-premium',
+            replacesSubscriptionId: 'sub-free',
+          },
+        }),
+      );
+
+      expect(mockPrismaService.subscription.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'sub-free',
+          subscriberId: 'fan-1',
+          stripeSubscriptionId: null,
+          status: 'ACTIVE',
+        },
+        data: expect.objectContaining({ status: 'CANCELLED' }),
+      });
+    });
   });
 });

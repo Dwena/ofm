@@ -234,6 +234,10 @@ export const subscriptionsApi = {
     api.post('/subscriptions/confirm', { stripeSubscriptionId }),
   cancel: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/cancel`),
   resume: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/resume`),
+  // Upgrade / downgrade within the same creator; same result shape as subscribe.
+  // paymentMethodId only applies to free → paid (new Stripe subscription).
+  changeTier: (subscriptionId: string, data: { tierId: string; paymentMethodId?: string }) =>
+    api.post(`/subscriptions/${subscriptionId}/change-tier`, data),
 }
 
 export const contentApi = {

@@ -200,6 +200,32 @@ export class StripeService {
   }
 
   /**
+   * Update a fan subscription (tier change, metadata), returning it with the
+   * latest invoice payment intent so a payment needing action can be confirmed
+   */
+  async updateTierSubscription(subscriptionId: string, params: Stripe.SubscriptionUpdateParams) {
+    return this.stripe.subscriptions.update(subscriptionId, {
+      ...params,
+      expand: ['latest_invoice.payment_intent'],
+    });
+  }
+
+  /**
+   * List `incomplete` subscriptions (first payment never completed), for a
+   * customer and/or created before a date (unix seconds)
+   */
+  async listIncompleteSubscriptions(params: { customerId?: string; createdBefore?: number }) {
+    return this.stripe.subscriptions
+      .list({
+        status: 'incomplete',
+        limit: 100,
+        ...(params.customerId && { customer: params.customerId }),
+        ...(params.createdBefore && { created: { lt: params.createdBefore } }),
+      })
+      .autoPagingToArray({ limit: 1000 });
+  }
+
+  /**
    * Retrieve customer
    */
   async getCustomer(customerId: string) {

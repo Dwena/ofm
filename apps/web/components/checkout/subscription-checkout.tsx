@@ -21,6 +21,8 @@ interface SubscriptionCheckoutProps {
   // Amount in cents, for display
   amount: number
   description: string
+  // Free subscription being upgraded to this paid tier: it ends once the paid one is active
+  changeFromSubscriptionId?: string
   onSuccess?: () => void
   onCancel?: () => void
 }
@@ -34,6 +36,7 @@ export default function SubscriptionCheckout({
   tierId,
   amount,
   description,
+  changeFromSubscriptionId,
   onSuccess,
   onCancel,
 }: SubscriptionCheckoutProps) {
@@ -84,10 +87,13 @@ export default function SubscriptionCheckout({
     setError(null)
 
     try {
-      const response = await subscriptionsApi.subscribe({
+      const data = {
         tierId,
         paymentMethodId: method === NEW_CARD ? undefined : method,
-      })
+      }
+      const response = changeFromSubscriptionId
+        ? await subscriptionsApi.changeTier(changeFromSubscriptionId, data)
+        : await subscriptionsApi.subscribe(data)
       const result = response.data as SubscribeResult
 
       if (!result.requiresPayment) {

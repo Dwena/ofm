@@ -25,6 +25,10 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { formatRelativeTime } from '@/lib/utils'
 import { toast } from '@/hooks/use-toast'
+import ChangeTierDialog, {
+  getPendingChangeLabel,
+  getTierChangeLabel,
+} from '@/components/subscriptions/change-tier-dialog'
 
 export default function CreatorProfilePage() {
   const params = useParams()
@@ -34,6 +38,8 @@ export default function CreatorProfilePage() {
   const queryClient = useQueryClient()
 
   const [selectedTier, setSelectedTier] = useState<string | null>(null)
+  // Tier picked for an upgrade / downgrade (confirmation dialog)
+  const [changeTarget, setChangeTarget] = useState<any | null>(null)
 
   // Fetch creator profile
   const { data: creator, isLoading: loadingCreator, error: creatorError } = useQuery({
@@ -380,11 +386,22 @@ export default function CreatorProfilePage() {
                       <p className="text-xs text-muted-foreground text-center">
                         {currentSubscription.status === 'PAST_DUE'
                           ? 'Paiement en échec : mettez à jour votre moyen de paiement'
-                          : currentSubscription.cancelAtPeriodEnd
-                            ? `Se termine le ${new Date(currentSubscription.currentPeriodEnd).toLocaleDateString('fr-FR')}`
-                            : 'Vous êtes abonné'}
+                          : getPendingChangeLabel(currentSubscription) ||
+                            (currentSubscription.cancelAtPeriodEnd
+                              ? `Se termine le ${new Date(currentSubscription.currentPeriodEnd).toLocaleDateString('fr-FR')}`
+                              : 'Vous êtes abonné')}
                       </p>
-                      {currentSubscription.cancelAtPeriodEnd ? (
+                      {currentSubscription.pendingTierId ? (
+                        <Button
+                          className="w-full"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setChangeTarget(tier)
+                          }}
+                        >
+                          Conserver cette offre
+                        </Button>
+                      ) : currentSubscription.cancelAtPeriodEnd ? (
                         <Button
                           className="w-full"
                           disabled={resumeMutation.isPending}
@@ -409,6 +426,25 @@ export default function CreatorProfilePage() {
                         </Button>
                       )}
                     </>
+                  ) : currentSubscription?.status === 'ACTIVE' ? (
+                    <>
+                      {currentSubscription.pendingTierId === tier.id && (
+                        <p className="text-xs text-muted-foreground text-center">
+                          Prévu à partir du {new Date(currentSubscription.currentPeriodEnd).toLocaleDateString('fr-FR')}
+                        </p>
+                      )}
+                      <Button
+                        className="w-full"
+                        variant={selectedTier === tier.id ? 'default' : 'outline'}
+                        disabled={currentSubscription.pendingTierId === tier.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setChangeTarget(tier)
+                        }}
+                      >
+                        {getTierChangeLabel(currentSubscription, tier)}
+                      </Button>
+                    </>
                   ) : (
                     <Button
                       className="w-full"
@@ -428,6 +464,14 @@ export default function CreatorProfilePage() {
               </Card>
             ))}
           </div>
+          <ChangeTierDialog
+            subscription={currentSubscription}
+            tier={changeTarget}
+            creatorUsername={username}
+            returnUrl={`/${username}`}
+            onOpenChange={(open) => !open && setChangeTarget(null)}
+            onChanged={refreshSubscription}
+          />
         </div>
       )}
 

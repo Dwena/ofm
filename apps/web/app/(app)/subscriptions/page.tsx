@@ -13,6 +13,12 @@ import { Search } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useDebounce } from '@/hooks/use-debounce'
 import { toast } from '@/hooks/use-toast'
+import ChangeTierDialog, {
+  type TierSummary,
+  formatTierPrice,
+  getPendingChangeLabel,
+  getTierChangeLabel,
+} from '@/components/subscriptions/change-tier-dialog'
 
 interface Creator {
   id: string
@@ -34,6 +40,9 @@ interface Subscription {
   currentPeriodEnd: string
   cancelAtPeriodEnd: boolean
   stripeSubscriptionId?: string | null
+  // Downgrade scheduled for currentPeriodEnd
+  pendingTierId?: string | null
+  pendingTier?: TierSummary | null
   tier: {
     id: string
     name: string
@@ -61,6 +70,8 @@ export default function SubscriptionsPage() {
   const debouncedSearch = useDebounce(searchQuery, 300)
   const queryClient = useQueryClient()
   const router = useRouter()
+  // Upgrade / downgrade being confirmed
+  const [tierChange, setTierChange] = useState<{ subscription: Subscription; tier: TierSummary } | null>(null)
 
   // Fetch my subscriptions
   const { data: mySubscriptions, isLoading: subsLoading } = useQuery({
@@ -284,9 +295,11 @@ export default function SubscriptionsPage() {
                                 : 'secondary'
                           }
                         >
-                          {sub.status === 'ACTIVE' && sub.cancelAtPeriodEnd
-                            ? 'Annulation programmée'
-                            : statusLabels[sub.status]}
+                          {sub.status === 'ACTIVE' && sub.pendingTierId
+                            ? 'Changement programmé'
+                            : sub.status === 'ACTIVE' && sub.cancelAtPeriodEnd
+                              ? 'Annulation programmée'
+                              : statusLabels[sub.status]}
                         </Badge>
                       </div>
                       {isLive && (
@@ -298,6 +311,24 @@ export default function SubscriptionsPage() {
                             {new Date(sub.currentPeriodEnd).toLocaleDateString('fr-FR')}
                           </span>
                         </div>
+                      )}
+                      {sub.status === 'ACTIVE' && sub.pendingTierId && (
+                        <div className="flex items-center justify-between gap-2 rounded-md bg-muted/50 p-2">
+                          <span className="text-sm">{getPendingChangeLabel(sub)}</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setTierChange({ subscription: sub, tier: sub.tier })}
+                          >
+                            Conserver {sub.tier.name}
+                          </Button>
+                        </div>
+                      )}
+                      {sub.status === 'ACTIVE' && (
+                        <OtherTiers
+                          subscription={sub}
+                          onSelect={(tier) => setTierChange({ subscription: sub, tier })}
+                        />
                       )}
                     </CardContent>
                     <CardFooter className="flex space-x-2">
@@ -345,6 +376,71 @@ export default function SubscriptionsPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      <ChangeTierDialog
+        subscription={tierChange?.subscription ?? null}
+        tier={tierChange?.tier ?? null}
+        creatorUsername={tierChange?.subscription.tier.creator.username ?? ''}
+        returnUrl="/subscriptions"
+        onOpenChange={(open) => !open && setTierChange(null)}
+        onChanged={() => {
+          queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
+          if (tierChange) {
+            queryClient.invalidateQueries({
+              queryKey: ['subscription-status', tierChange.subscription.tier.creator.id],
+            })
+          }
+        }}
+      />
+    </div>
+  )
+}
+
+/**
+ * The creator's other tiers, offered as upgrade / downgrade targets
+ */
+function OtherTiers({
+  subscription,
+  onSelect,
+}: {
+  subscription: Subscription
+  onSelect: (tier: TierSummary) => void
+}) {
+  const creatorId = subscription.tier.creator.id
+
+  // Same cache as the creator profile tier section
+  const { data: tiers } = useQuery({
+    queryKey: ['creator-tiers', creatorId],
+    queryFn: async () => {
+      const response = await subscriptionsApi.getCreatorTiers(creatorId)
+      return response.data as TierSummary[]
+    },
+  })
+
+  const others = tiers?.filter((tier) => tier.id !== subscription.tierId) ?? []
+  if (others.length === 0) return null
+
+  return (
+    <div className="space-y-2 border-t pt-3">
+      <p className="text-sm font-medium">Autres offres</p>
+      {others.map((tier) => {
+        const isPending = subscription.pendingTierId === tier.id
+        return (
+          <div key={tier.id} className="flex items-center justify-between gap-2">
+            <span className="text-sm">
+              {tier.name} <span className="text-muted-foreground">· {formatTierPrice(tier)}</span>
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isPending}
+              onClick={() => onSelect(tier)}
+            >
+              {isPending ? 'Programmé' : getTierChangeLabel(subscription, tier)}
+            </Button>
+          </div>
+        )
+      })}
     </div>
   )
 }
