@@ -12,9 +12,16 @@ describe('SubscriptionsService', () => {
   const mockPrismaService = {
     subscriptionTier: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn(),
+    },
+    transaction: {
+      groupBy: jest.fn(),
     },
     subscription: {
+      count: jest.fn(),
+      groupBy: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
@@ -744,6 +751,98 @@ describe('SubscriptionsService', () => {
         }),
       );
       expect(mockStripeService.setCancelAtPeriodEnd).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tier management', () => {
+    it('getMyTiers returns counts, monthly revenue and deletability per tier', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR' });
+      mockPrismaService.subscriptionTier.findMany.mockResolvedValue([
+        { id: 'tier-month', price: 10, interval: 'month' },
+        { id: 'tier-year', price: 120, interval: 'year' },
+        { id: 'tier-new', price: 5, interval: 'month' },
+      ]);
+      mockPrismaService.subscription.groupBy.mockResolvedValue([
+        { tierId: 'tier-month', status: 'ACTIVE', _count: { _all: 3 } },
+        { tierId: 'tier-month', status: 'CANCELLED', _count: { _all: 2 } },
+        { tierId: 'tier-year', status: 'ACTIVE', _count: { _all: 2 } },
+      ]);
+
+      const tiers = await service.getMyTiers(creatorId);
+
+      expect(tiers).toEqual([
+        expect.objectContaining({ id: 'tier-month', subscribersCount: 3, totalSubscriptionsCount: 5, monthlyRevenue: 30, canDelete: false }),
+        expect.objectContaining({ id: 'tier-year', subscribersCount: 2, totalSubscriptionsCount: 2, monthlyRevenue: 20, canDelete: false }),
+        expect.objectContaining({ id: 'tier-new', subscribersCount: 0, totalSubscriptionsCount: 0, monthlyRevenue: 0, canDelete: true }),
+      ]);
+    });
+
+    it('deleteTier refuses a tier with active subscribers', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({ id: 'tier-1', creatorId, name: 'Premium' });
+      mockPrismaService.subscription.count.mockResolvedValueOnce(2);
+
+      await expect(service.deleteTier(creatorId, 'tier-1')).rejects.toThrow(/2 abonné\(s\) actif\(s\)/);
+      expect(mockPrismaService.subscriptionTier.delete).not.toHaveBeenCalled();
+    });
+
+    it('deleteTier refuses a tier referenced by past subscriptions', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({ id: 'tier-1', creatorId, name: 'Premium' });
+      mockPrismaService.subscription.count.mockResolvedValueOnce(0).mockResolvedValueOnce(4);
+
+      await expect(service.deleteTier(creatorId, 'tier-1')).rejects.toThrow(BadRequestException);
+      expect(mockPrismaService.subscriptionTier.delete).not.toHaveBeenCalled();
+    });
+
+    it('deleteTier deletes an unused tier', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({ id: 'tier-1', creatorId, name: 'Ancienne offre' });
+      mockPrismaService.subscription.count.mockResolvedValue(0);
+
+      await service.deleteTier(creatorId, 'tier-1');
+
+      expect(mockPrismaService.subscriptionTier.delete).toHaveBeenCalledWith({ where: { id: 'tier-1' } });
+    });
+
+    it("deleteTier refuses another creator's tier", async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({ id: 'tier-1', creatorId: 'other' });
+
+      await expect(service.deleteTier(creatorId, 'tier-1')).rejects.toThrow('Vous ne pouvez supprimer que vos propres offres');
+    });
+  });
+
+  describe('getCreatorSubscribers', () => {
+    it("returns every subscription with the subscriber's total spent on the creator", async () => {
+      mockPrismaService.subscription.findMany.mockResolvedValue([
+        { id: 'sub-1', subscriberId: 'fan-1', status: 'ACTIVE' },
+        { id: 'sub-2', subscriberId: 'fan-2', status: 'CANCELLED' },
+      ]);
+      mockPrismaService.transaction.groupBy.mockResolvedValue([
+        { fromUserId: 'fan-1', _sum: { amount: 29.97 } },
+      ]);
+
+      const result = await service.getCreatorSubscribers(creatorId);
+
+      expect(mockPrismaService.subscription.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tier: { creatorId } } }),
+      );
+      expect(mockPrismaService.transaction.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { toUserId: creatorId, fromUserId: { in: ['fan-1', 'fan-2'] }, status: 'COMPLETED' },
+        }),
+      );
+      expect(result).toEqual([
+        expect.objectContaining({ id: 'sub-1', totalSpent: 29.97 }),
+        expect.objectContaining({ id: 'sub-2', totalSpent: 0 }),
+      ]);
+    });
+
+    it('filters on a status', async () => {
+      mockPrismaService.subscription.findMany.mockResolvedValue([]);
+
+      await expect(service.getCreatorSubscribers(creatorId, 'ACTIVE')).resolves.toEqual([]);
+      expect(mockPrismaService.subscription.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tier: { creatorId }, status: 'ACTIVE' } }),
+      );
+      expect(mockPrismaService.transaction.groupBy).not.toHaveBeenCalled();
     });
   });
 });

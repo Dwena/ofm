@@ -1,233 +1,316 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { usersApi, mediaApi } from '@/lib/api';
+import { usersApi } from '@/lib/api';
+import { useAuth } from '@/contexts/auth-context';
+import { formatEuros } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Upload, User, Settings, DollarSign, Shield } from 'lucide-react';
+import { useConfirm } from '@/hooks/use-confirm';
+import { AlertCircle, ExternalLink, ImageIcon, Loader2, Settings, Shield, Trash2, Upload, User } from 'lucide-react';
+
+const PROFILE_QUERY_KEY = ['profile'];
+
+interface ProfileForm {
+  displayName: string;
+  bio: string;
+  location: string;
+  website: string;
+  welcomeMessage: string;
+  allowMessages: boolean;
+  allowTips: boolean;
+  minimumTip: string;
+}
+
+type FieldErrors = Partial<Record<keyof ProfileForm, string>>;
+
+const PROFILE_FIELDS: (keyof ProfileForm)[] = ['displayName', 'bio', 'location', 'website'];
+
+function toForm(user: any): ProfileForm {
+  return {
+    displayName: user?.displayName || '',
+    bio: user?.bio || '',
+    location: user?.location || '',
+    website: user?.website || '',
+    welcomeMessage: user?.creatorProfile?.welcomeMessage || '',
+    allowMessages: user?.creatorProfile?.allowMessages ?? true,
+    allowTips: user?.creatorProfile?.allowTips ?? true,
+    minimumTip: Number(user?.creatorProfile?.minimumTip ?? 5).toFixed(2).replace('.', ','),
+  };
+}
+
+function validate(form: ProfileForm): FieldErrors {
+  const errors: FieldErrors = {};
+  if (!form.displayName.trim()) errors.displayName = "Le nom d'affichage est requis";
+  else if (form.displayName.trim().length > 100) errors.displayName = '100 caractères maximum';
+  if (form.bio.length > 500) errors.bio = '500 caractères maximum';
+  if (form.location.length > 100) errors.location = '100 caractères maximum';
+  const website = form.website.trim();
+  if (website) {
+    try {
+      const url = new URL(website);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error();
+      if (!url.hostname.includes('.')) throw new Error();
+    } catch {
+      errors.website = 'Adresse invalide (ex. https://monsite.com)';
+    }
+  }
+  if (form.welcomeMessage.length > 1000) errors.welcomeMessage = '1000 caractères maximum';
+  const rawTip = form.minimumTip.replace(',', '.').trim();
+  const tip = Number(rawTip);
+  if (!rawTip || !Number.isFinite(tip)) errors.minimumTip = 'Montant invalide';
+  else if (!/^\d+(\.\d{1,2})?$/.test(rawTip)) errors.minimumTip = 'Deux décimales maximum';
+  else if (tip < 1) errors.minimumTip = `Minimum ${formatEuros(1)}`;
+  else if (tip > 10000) errors.minimumTip = `Maximum ${formatEuros(10000)}`;
+  return errors;
+}
+
+function apiErrorMessage(error: any, fallback: string): string {
+  const message = error?.response?.data?.message;
+  if (Array.isArray(message)) return message.join(', ');
+  return typeof message === 'string' && message ? message : fallback;
+}
+
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 export default function CreatorProfilePage() {
   const { toast } = useToast();
+  const { confirm } = useConfirm();
+  const { refreshUser } = useAuth();
   const queryClient = useQueryClient();
-  const [isUploading, setIsUploading] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch user profile
-  const { data: user, isLoading } = useQuery({
-    queryKey: ['profile'],
+  const [form, setForm] = useState<ProfileForm>(toForm(null));
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [tab, setTab] = useState('profile');
+  const [uploading, setUploading] = useState<'avatar' | 'cover' | null>(null);
+
+  const { data: user, isLoading, isError, refetch } = useQuery({
+    queryKey: PROFILE_QUERY_KEY,
     queryFn: async () => {
       const response = await usersApi.getMe();
       return response.data;
     },
   });
 
-  // Profile update mutation
+  // Reset the form whenever fresh profile data arrives
+  useEffect(() => {
+    if (user) setForm(toForm(user));
+  }, [user]);
+
+  const onProfileSaved = async (updated: any) => {
+    queryClient.setQueryData(PROFILE_QUERY_KEY, updated);
+    queryClient.invalidateQueries({ queryKey: ['creator-profile', user?.username] });
+    await refreshUser().catch(() => undefined);
+  };
+
   const updateProfileMutation = useMutation({
-    mutationFn: async (data: any) => {
+    mutationFn: async (data: Record<string, unknown>) => {
       const response = await usersApi.updateProfile(data);
       return response.data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile'] });
-      toast({
-        title: 'Profil mis à jour',
-        description: 'Vos modifications ont été enregistrées avec succès.',
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: 'Erreur',
-        description: error.response?.data?.message || 'Impossible de mettre à jour le profil',
-        variant: 'destructive',
-      });
-    },
   });
 
-  // Avatar upload handler
-  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (kind: 'avatar' | 'cover', e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
-    // Validate file
-    if (!file.type.startsWith('image/')) {
-      toast({
-        title: 'Erreur',
-        description: 'Veuillez sélectionner une image',
-        variant: 'destructive',
-      });
+    if (!IMAGE_TYPES.includes(file.type)) {
+      toast({ title: 'Format non supporté', description: 'Choisissez une image JPG, PNG, GIF ou WebP.', variant: 'destructive' });
+      return;
+    }
+    const maxMb = kind === 'avatar' ? 5 : 10;
+    if (file.size > maxMb * 1024 * 1024) {
+      toast({ title: 'Image trop lourde', description: `L'image ne doit pas dépasser ${maxMb} Mo.`, variant: 'destructive' });
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      toast({
-        title: 'Erreur',
-        description: 'L\'image ne doit pas dépasser 5 MB',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setIsUploading(true);
+    setUploading(kind);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await mediaApi.uploadImage(formData);
-      const avatarUrl = response.data.url;
-
-      await updateProfileMutation.mutateAsync({ avatar: avatarUrl });
+      const response = kind === 'avatar' ? await usersApi.uploadAvatar(file) : await usersApi.uploadCover(file);
+      await onProfileSaved(response.data);
+      toast({ title: kind === 'avatar' ? 'Photo de profil mise à jour' : 'Photo de couverture mise à jour' });
     } catch (error: any) {
       toast({
         title: 'Erreur',
-        description: 'Impossible de télécharger l\'image',
+        description: apiErrorMessage(error, "Impossible de télécharger l'image"),
         variant: 'destructive',
       });
     } finally {
-      setIsUploading(false);
+      setUploading(null);
     }
   };
 
-  // Cover photo upload handler
-  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      toast({
-        title: 'Erreur',
-        description: 'Veuillez sélectionner une image',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    if (file.size > 10 * 1024 * 1024) {
-      toast({
-        title: 'Erreur',
-        description: 'L\'image ne doit pas dépasser 10 MB',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setIsUploading(true);
+  const handleImageRemove = async (kind: 'avatar' | 'cover') => {
+    const ok = await confirm({
+      title: kind === 'avatar' ? 'Retirer la photo de profil ?' : 'Retirer la photo de couverture ?',
+      confirmText: 'Retirer',
+      variant: 'destructive',
+    });
+    if (!ok) return;
+    setUploading(kind);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await mediaApi.uploadImage(formData);
-      const coverPhotoUrl = response.data.url;
-
-      await updateProfileMutation.mutateAsync({ coverPhoto: coverPhotoUrl });
+      const updated = await updateProfileMutation.mutateAsync(kind === 'avatar' ? { avatar: null } : { coverImage: null });
+      await onProfileSaved(updated);
+      toast({ title: 'Image retirée' });
     } catch (error: any) {
-      toast({
-        title: 'Erreur',
-        description: 'Impossible de télécharger l\'image',
-        variant: 'destructive',
-      });
+      toast({ title: 'Erreur', description: apiErrorMessage(error, "Impossible de retirer l'image"), variant: 'destructive' });
     } finally {
-      setIsUploading(false);
+      setUploading(null);
     }
   };
 
-  // Form submission
+  const updateField = <K extends keyof ProfileForm>(key: K, value: ProfileForm[K]) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+    if (errors[key]) setErrors((prev) => ({ ...prev, [key]: undefined }));
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
+    const nextErrors = validate(form);
+    setErrors(nextErrors);
+    const invalid = Object.keys(nextErrors) as (keyof ProfileForm)[];
+    if (invalid.length > 0) {
+      setTab(PROFILE_FIELDS.includes(invalid[0]) ? 'profile' : 'creator');
+      return;
+    }
 
-    const data = {
-      displayName: formData.get('displayName') as string,
-      bio: formData.get('bio') as string,
-      location: formData.get('location') as string,
-      website: formData.get('website') as string,
-      // Creator profile fields
-      welcomeMessage: formData.get('welcomeMessage') as string,
-      minimumTip: parseFloat(formData.get('minimumTip') as string) || 5,
-      allowMessages: formData.get('allowMessages') === 'on',
-      allowTips: formData.get('allowTips') === 'on',
-      autoAcceptSubscribers: formData.get('autoAcceptSubscribers') === 'on',
+    const isCreator = user?.role === 'CREATOR';
+    const data: Record<string, unknown> = {
+      displayName: form.displayName.trim(),
+      bio: form.bio.trim(),
+      location: form.location.trim(),
+      website: form.website.trim() || null,
+      ...(isCreator && {
+        welcomeMessage: form.welcomeMessage.trim() || null,
+        allowMessages: form.allowMessages,
+        allowTips: form.allowTips,
+        minimumTip: Math.round(Number(form.minimumTip.replace(',', '.')) * 100) / 100,
+      }),
     };
 
-    await updateProfileMutation.mutateAsync(data);
+    try {
+      const updated = await updateProfileMutation.mutateAsync(data);
+      await onProfileSaved(updated);
+      toast({ title: 'Profil mis à jour', description: 'Vos modifications ont été enregistrées.' });
+    } catch (error: any) {
+      toast({
+        title: 'Erreur',
+        description: apiErrorMessage(error, 'Impossible de mettre à jour le profil'),
+        variant: 'destructive',
+      });
+    }
   };
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex items-center justify-center min-h-[60vh]">
         <Loader2 className="h-8 w-8 animate-spin" />
       </div>
     );
   }
 
+  if (isError || !user) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 min-h-[60vh] text-center">
+        <AlertCircle className="h-8 w-8 text-destructive" />
+        <p className="text-muted-foreground">Impossible de charger votre profil.</p>
+        <Button variant="outline" onClick={() => refetch()}>
+          Réessayer
+        </Button>
+      </div>
+    );
+  }
+
+  const isCreator = user.role === 'CREATOR';
+  const dirty = JSON.stringify(form) !== JSON.stringify(toForm(user));
+  const saving = updateProfileMutation.isPending && !uploading;
+  const displayName = user.displayName || user.username;
+
   return (
-    <div className="container max-w-5xl py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Modifier mon profil</h1>
-        <p className="text-muted-foreground mt-2">
-          Personnalisez votre profil pour attirer plus d'abonnés
-        </p>
+    <div className="max-w-5xl space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold">Modifier mon profil</h1>
+          <p className="text-muted-foreground mt-2">Personnalisez votre profil pour attirer plus d&apos;abonnés</p>
+        </div>
+        <Button variant="outline" asChild>
+          <Link href={`/${user.username}`} target="_blank" rel="noopener noreferrer">
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Voir mon profil public
+          </Link>
+        </Button>
       </div>
 
-      <Tabs defaultValue="profile" className="space-y-6">
+      <Tabs value={tab} onValueChange={setTab} className="space-y-6">
         <TabsList>
           <TabsTrigger value="profile">
             <User className="h-4 w-4 mr-2" />
             Profil
           </TabsTrigger>
-          <TabsTrigger value="creator">
-            <Settings className="h-4 w-4 mr-2" />
-            Paramètres créateur
-          </TabsTrigger>
-          <TabsTrigger value="monetization">
-            <DollarSign className="h-4 w-4 mr-2" />
-            Monétisation
-          </TabsTrigger>
+          {isCreator && (
+            <TabsTrigger value="creator">
+              <Settings className="h-4 w-4 mr-2" />
+              Paramètres créateur
+            </TabsTrigger>
+          )}
         </TabsList>
 
-        <form onSubmit={handleSubmit}>
-          <TabsContent value="profile" className="space-y-6">
+        <form onSubmit={handleSubmit} noValidate className="space-y-6">
+          <TabsContent value="profile" className="space-y-6 mt-0">
             {/* Cover Photo */}
             <Card>
               <CardHeader>
                 <CardTitle>Photo de couverture</CardTitle>
-                <CardDescription>
-                  Image d'arrière-plan de votre profil (recommandé : 1500x500px)
-                </CardDescription>
+                <CardDescription>Image d&apos;arrière-plan de votre profil (recommandé : 1500x500px, 10 Mo max.)</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {user?.coverPhoto && (
-                    <div className="relative w-full h-48 rounded-lg overflow-hidden bg-muted">
-                      <img
-                        src={user.coverPhoto}
-                        alt="Cover"
-                        className="w-full h-full object-cover"
-                      />
+              <CardContent className="space-y-4">
+                <div className="relative w-full h-32 sm:h-48 rounded-lg overflow-hidden bg-muted flex items-center justify-center">
+                  {user.coverImage ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={user.coverImage} alt="Couverture" className="w-full h-full object-cover" />
+                  ) : (
+                    <ImageIcon className="h-10 w-10 text-muted-foreground" />
+                  )}
+                  {uploading === 'cover' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-background/60">
+                      <Loader2 className="h-6 w-6 animate-spin" />
                     </div>
                   )}
-                  <div>
-                    <Label htmlFor="cover-upload" className="cursor-pointer">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-                        <Upload className="h-4 w-4" />
-                        {isUploading ? 'Téléchargement...' : 'Changer la photo de couverture'}
-                      </div>
-                    </Label>
-                    <Input
-                      id="cover-upload"
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleCoverUpload}
-                      disabled={isUploading}
-                    />
-                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => coverInputRef.current?.click()}
+                    disabled={!!uploading}
+                  >
+                    {uploading === 'cover' ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                    {uploading === 'cover' ? 'Téléchargement...' : 'Changer la couverture'}
+                  </Button>
+                  {user.coverImage && (
+                    <Button type="button" variant="ghost" onClick={() => handleImageRemove('cover')} disabled={!!uploading}>
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Retirer
+                    </Button>
+                  )}
+                  <input
+                    ref={coverInputRef}
+                    type="file"
+                    accept={IMAGE_TYPES.join(',')}
+                    className="hidden"
+                    onChange={(e) => handleImageUpload('cover', e)}
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -236,38 +319,47 @@ export default function CreatorProfilePage() {
             <Card>
               <CardHeader>
                 <CardTitle>Photo de profil</CardTitle>
-                <CardDescription>
-                  Votre avatar visible partout sur la plateforme
-                </CardDescription>
+                <CardDescription>Votre avatar visible partout sur la plateforme</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex items-center gap-6">
-                  <Avatar className="h-24 w-24">
-                    <AvatarImage src={user?.avatar} alt={user?.displayName} />
-                    <AvatarFallback>
-                      {user?.displayName?.charAt(0) || user?.username?.charAt(0)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <Label htmlFor="avatar-upload" className="cursor-pointer">
-                      <Button type="button" variant="outline" disabled={isUploading} asChild>
-                        <span>
-                          <Upload className="h-4 w-4 mr-2" />
-                          {isUploading ? 'Téléchargement...' : 'Changer l\'avatar'}
-                        </span>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+                  <div className="relative w-fit">
+                    <Avatar className="h-24 w-24">
+                      <AvatarImage src={user.avatar || undefined} alt={displayName} />
+                      <AvatarFallback className="text-2xl">{displayName.charAt(0).toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                    {uploading === 'avatar' && (
+                      <div className="absolute inset-0 flex items-center justify-center rounded-full bg-background/60">
+                        <Loader2 className="h-6 w-6 animate-spin" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => avatarInputRef.current?.click()}
+                        disabled={!!uploading}
+                      >
+                        {uploading === 'avatar' ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                        {uploading === 'avatar' ? 'Téléchargement...' : "Changer l'avatar"}
                       </Button>
-                    </Label>
-                    <Input
-                      id="avatar-upload"
+                      {user.avatar && (
+                        <Button type="button" variant="ghost" onClick={() => handleImageRemove('avatar')} disabled={!!uploading}>
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Retirer
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-sm text-muted-foreground">JPG, PNG, GIF ou WebP. 5 Mo max.</p>
+                    <input
+                      ref={avatarInputRef}
                       type="file"
-                      accept="image/*"
+                      accept={IMAGE_TYPES.join(',')}
                       className="hidden"
-                      onChange={handleAvatarUpload}
-                      disabled={isUploading}
+                      onChange={(e) => handleImageUpload('avatar', e)}
                     />
-                    <p className="text-sm text-muted-foreground mt-2">
-                      JPG, PNG ou GIF. Max 5 MB.
-                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -277,202 +369,186 @@ export default function CreatorProfilePage() {
             <Card>
               <CardHeader>
                 <CardTitle>Informations de base</CardTitle>
-                <CardDescription>
-                  Ces informations seront visibles sur votre profil public
-                </CardDescription>
+                <CardDescription>Ces informations sont visibles sur votre profil public</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div>
-                  <Label htmlFor="username">Nom d'utilisateur</Label>
-                  <Input
-                    id="username"
-                    name="username"
-                    defaultValue={user?.username}
-                    disabled
-                    className="bg-muted"
-                  />
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Le nom d'utilisateur ne peut pas être modifié
-                  </p>
+                <div className="space-y-2">
+                  <Label htmlFor="username">Nom d&apos;utilisateur</Label>
+                  <Input id="username" value={user.username} disabled className="bg-muted" />
+                  <p className="text-sm text-muted-foreground">Le nom d&apos;utilisateur ne peut pas être modifié</p>
                 </div>
 
-                <div>
-                  <Label htmlFor="displayName">Nom d'affichage *</Label>
+                <div className="space-y-2">
+                  <Label htmlFor="displayName">
+                    Nom d&apos;affichage <span className="text-destructive">*</span>
+                  </Label>
                   <Input
                     id="displayName"
-                    name="displayName"
-                    defaultValue={user?.displayName}
-                    required
+                    value={form.displayName}
+                    onChange={(e) => updateField('displayName', e.target.value)}
+                    maxLength={100}
                     placeholder="Votre nom ou pseudonyme"
+                    aria-invalid={!!errors.displayName}
                   />
+                  {errors.displayName && <p className="text-sm text-destructive">{errors.displayName}</p>}
                 </div>
 
-                <div>
+                <div className="space-y-2">
                   <Label htmlFor="bio">Biographie</Label>
                   <Textarea
                     id="bio"
-                    name="bio"
-                    defaultValue={user?.bio}
+                    value={form.bio}
+                    onChange={(e) => updateField('bio', e.target.value)}
+                    maxLength={500}
                     placeholder="Parlez de vous et de votre contenu..."
                     rows={4}
                   />
+                  <p className="text-xs text-muted-foreground text-right">{form.bio.length}/500</p>
+                  {errors.bio && <p className="text-sm text-destructive">{errors.bio}</p>}
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
                     <Label htmlFor="location">Localisation</Label>
                     <Input
                       id="location"
-                      name="location"
-                      defaultValue={user?.location}
+                      value={form.location}
+                      onChange={(e) => updateField('location', e.target.value)}
+                      maxLength={100}
                       placeholder="Paris, France"
                     />
+                    {errors.location && <p className="text-sm text-destructive">{errors.location}</p>}
                   </div>
 
-                  <div>
+                  <div className="space-y-2">
                     <Label htmlFor="website">Site web</Label>
                     <Input
                       id="website"
-                      name="website"
                       type="url"
-                      defaultValue={user?.website}
+                      value={form.website}
+                      onChange={(e) => updateField('website', e.target.value)}
                       placeholder="https://..."
+                      aria-invalid={!!errors.website}
                     />
+                    {errors.website && <p className="text-sm text-destructive">{errors.website}</p>}
                   </div>
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
 
-          <TabsContent value="creator" className="space-y-6">
-            {/* Creator Settings */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Paramètres créateur</CardTitle>
-                <CardDescription>
-                  Configurez comment vous interagissez avec vos abonnés
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label htmlFor="welcomeMessage">Message de bienvenue</Label>
-                  <Textarea
-                    id="welcomeMessage"
-                    name="welcomeMessage"
-                    defaultValue={user?.creatorProfile?.welcomeMessage}
-                    placeholder="Message automatique envoyé aux nouveaux abonnés..."
-                    rows={3}
-                  />
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label htmlFor="allowMessages">Messages privés</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Autoriser les abonnés à vous envoyer des messages
-                      </p>
-                    </div>
-                    <Input
-                      id="allowMessages"
-                      name="allowMessages"
+          {isCreator && (
+            <TabsContent value="creator" className="space-y-6 mt-0">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Messages</CardTitle>
+                  <CardDescription>Configurez comment vos fans peuvent vous contacter</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start justify-between gap-4 cursor-pointer">
+                    <span>
+                      <span className="block text-sm font-medium">Messages privés</span>
+                      <span className="block text-sm text-muted-foreground">
+                        Autoriser les fans à vous envoyer des messages
+                      </span>
+                    </span>
+                    <input
                       type="checkbox"
-                      defaultChecked={user?.creatorProfile?.allowMessages}
-                      className="w-4 h-4"
+                      className="mt-1 h-4 w-4 shrink-0"
+                      checked={form.allowMessages}
+                      onChange={(e) => updateField('allowMessages', e.target.checked)}
                     />
-                  </div>
+                  </label>
 
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label htmlFor="autoAcceptSubscribers">Acceptation automatique</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Accepter automatiquement les nouveaux abonnés
-                      </p>
-                    </div>
-                    <Input
-                      id="autoAcceptSubscribers"
-                      name="autoAcceptSubscribers"
-                      type="checkbox"
-                      defaultChecked={user?.creatorProfile?.autoAcceptSubscribers}
-                      className="w-4 h-4"
+                  <div className="space-y-2">
+                    <Label htmlFor="welcomeMessage">Message de bienvenue</Label>
+                    <Textarea
+                      id="welcomeMessage"
+                      value={form.welcomeMessage}
+                      onChange={(e) => updateField('welcomeMessage', e.target.value)}
+                      maxLength={1000}
+                      placeholder="Message privé envoyé automatiquement à chaque nouvel abonné..."
+                      rows={3}
                     />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="monetization" className="space-y-6">
-            {/* Monetization Settings */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Paramètres de monétisation</CardTitle>
-                <CardDescription>
-                  Configurez vos options de paiement et de pourboires
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label htmlFor="allowTips">Autoriser les tips</Label>
                     <p className="text-sm text-muted-foreground">
-                      Permettre aux fans de vous donner des pourboires
+                      Envoyé en message privé à chaque nouvel abonné. Laissez vide pour ne rien envoyer.
                     </p>
+                    {errors.welcomeMessage && <p className="text-sm text-destructive">{errors.welcomeMessage}</p>}
                   </div>
-                  <Input
-                    id="allowTips"
-                    name="allowTips"
-                    type="checkbox"
-                    defaultChecked={user?.creatorProfile?.allowTips}
-                    className="w-4 h-4"
-                  />
-                </div>
+                </CardContent>
+              </Card>
 
-                <div>
-                  <Label htmlFor="minimumTip">Montant minimum du tip (€)</Label>
-                  <Input
-                    id="minimumTip"
-                    name="minimumTip"
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    defaultValue={user?.creatorProfile?.minimumTip || 5}
-                    placeholder="5.00"
-                  />
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Montant minimum qu'un fan peut vous donner en pourboire
-                  </p>
-                </div>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Pourboires</CardTitle>
+                  <CardDescription>Permettez à vos fans de vous soutenir ponctuellement</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start justify-between gap-4 cursor-pointer">
+                    <span>
+                      <span className="block text-sm font-medium">Autoriser les pourboires</span>
+                      <span className="block text-sm text-muted-foreground">
+                        Permettre aux fans de vous envoyer des pourboires
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 shrink-0"
+                      checked={form.allowTips}
+                      onChange={(e) => updateField('allowTips', e.target.checked)}
+                    />
+                  </label>
 
-                <div className="p-4 bg-muted rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <Shield className="h-5 w-5 text-primary mt-0.5" />
-                    <div>
-                      <h4 className="font-medium">Paiements sécurisés par Stripe</h4>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        Tous les paiements sont traités de manière sécurisée par Stripe.
-                        Les frais de plateforme sont de 15% par transaction.
-                      </p>
+                  <div className="space-y-2">
+                    <Label htmlFor="minimumTip">Montant minimum du pourboire (€)</Label>
+                    <Input
+                      id="minimumTip"
+                      type="text"
+                      inputMode="decimal"
+                      value={form.minimumTip}
+                      onChange={(e) => updateField('minimumTip', e.target.value)}
+                      disabled={!form.allowTips}
+                      placeholder="5,00"
+                      className="sm:max-w-[200px]"
+                      aria-invalid={!!errors.minimumTip}
+                    />
+                    {errors.minimumTip ? (
+                      <p className="text-sm text-destructive">{errors.minimumTip}</p>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Montant minimum qu&apos;un fan peut vous offrir (1 € minimum)</p>
+                    )}
+                  </div>
+
+                  <div className="p-4 bg-muted rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <Shield className="h-5 w-5 text-primary mt-0.5 shrink-0" />
+                      <div>
+                        <h4 className="font-medium">Paiements sécurisés par Stripe</h4>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          Tous les paiements sont traités de manière sécurisée par Stripe.
+                        </p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
 
-          <div className="flex justify-end gap-4">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button
               type="button"
               variant="outline"
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                setForm(toForm(user));
+                setErrors({});
+              }}
+              disabled={!dirty || saving}
             >
-              Annuler
+              Annuler les modifications
             </Button>
-            <Button
-              type="submit"
-              disabled={updateProfileMutation.isPending || isUploading}
-            >
-              {updateProfileMutation.isPending ? (
+            <Button type="submit" disabled={!dirty || saving || !!uploading}>
+              {saving ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Enregistrement...

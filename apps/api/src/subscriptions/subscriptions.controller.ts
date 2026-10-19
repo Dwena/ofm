@@ -1,5 +1,9 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, UseGuards } from '@nestjs/common';
-import { SubscriptionsService } from './subscriptions.service';
+import { Controller, Get, Post, Put, Delete, Param, Body, Query, UseGuards, BadRequestException } from '@nestjs/common';
+import {
+  SubscriptionsService,
+  SUBSCRIPTION_STATUSES,
+  SubscriptionStatusFilter,
+} from './subscriptions.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -20,8 +24,17 @@ export class SubscriptionsController {
   @Get('my-subscribers')
   @Roles('CREATOR')
   @UseGuards(RolesGuard)
-  async getMySubscribers(@CurrentUser('id') userId: string) {
-    return this.subscriptionsService.getCreatorSubscribers(userId);
+  async getMySubscribers(
+    @CurrentUser('id') userId: string,
+    @Query('status') status?: string,
+  ) {
+    if (status && !SUBSCRIPTION_STATUSES.includes(status as SubscriptionStatusFilter)) {
+      throw new BadRequestException(`status must be one of ${SUBSCRIPTION_STATUSES.join(', ')}`);
+    }
+    return this.subscriptionsService.getCreatorSubscribers(
+      userId,
+      status as SubscriptionStatusFilter | undefined,
+    );
   }
 
   @Get('creator/:creatorId/tiers')

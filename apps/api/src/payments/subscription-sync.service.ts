@@ -398,5 +398,56 @@ export class SubscriptionSyncService {
     } catch (error) {
       this.logger.error(`Failed to create notification: ${error.message}`);
     }
+
+    await this.sendWelcomeMessage(creatorId, subscriberId);
+  }
+
+  /**
+   * Send the creator's welcome message (CreatorProfile.welcomeMessage) to a
+   * new subscriber as a private message. Sent once: skipped when the
+   * subscriber already received that exact message (renewals, tier changes,
+   * webhook retries).
+   */
+  async sendWelcomeMessage(creatorId: string, subscriberId: string) {
+    try {
+      const profile = await this.prisma.creatorProfile.findUnique({
+        where: { userId: creatorId },
+        select: { welcomeMessage: true },
+      });
+      const content = profile?.welcomeMessage?.trim();
+      if (!content) return;
+
+      const alreadySent = await this.prisma.message.findFirst({
+        where: { senderId: creatorId, receiverId: subscriberId, content },
+        select: { id: true },
+      });
+      if (alreadySent) return;
+
+      const message = await this.prisma.message.create({
+        data: { senderId: creatorId, receiverId: subscriberId, content, status: 'SENT' },
+      });
+
+      const conversation = await this.prisma.conversation.findFirst({
+        where: {
+          OR: [
+            { participant1Id: creatorId, participant2Id: subscriberId },
+            { participant1Id: subscriberId, participant2Id: creatorId },
+          ],
+        },
+        select: { id: true },
+      });
+      if (conversation) {
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { lastMessageId: message.id, updatedAt: new Date() },
+        });
+      } else {
+        await this.prisma.conversation.create({
+          data: { participant1Id: creatorId, participant2Id: subscriberId, lastMessageId: message.id },
+        });
+      }
+    } catch (error) {
+      this.logger.error(`Failed to send welcome message: ${error.message}`);
+    }
   }
 }
