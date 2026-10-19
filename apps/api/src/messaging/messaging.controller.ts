@@ -7,16 +7,23 @@ import {
   Param,
   Query,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { MessagingService } from './messaging.service';
+import { MessagingGateway } from './messaging.gateway';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { StartConversationDto } from './dto/start-conversation.dto';
+import { SendMessageDto } from './dto/send-message.dto';
+import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
 
 @Controller('messages')
 @UseGuards(JwtAuthGuard)
 export class MessagingController {
-  constructor(private messagingService: MessagingService) {}
+  constructor(
+    private messagingService: MessagingService,
+    private messagingGateway: MessagingGateway,
+  ) {}
 
   @Get('conversations')
   getConversations(@CurrentUser('id') userId: string) {
@@ -31,23 +38,107 @@ export class MessagingController {
     return this.messagingService.startConversation(userId, dto.user);
   }
 
+  /**
+   * People the user can start a conversation with ("Nouveau message" picker)
+   */
+  @Get('contacts')
+  searchContacts(@CurrentUser('id') userId: string, @Query('q') query?: string) {
+    return this.messagingService.searchContacts(userId, query);
+  }
+
+  /**
+   * Send a message (text, attachment, PPV price) and push it in real time
+   */
+  @Post()
+  async sendMessage(@CurrentUser('id') userId: string, @Body() dto: SendMessageDto) {
+    const message = await this.messagingService.sendMessage(
+      userId,
+      dto.recipientId,
+      dto.content ?? '',
+      dto.attachmentUrl,
+      { ppvPrice: dto.ppvPrice },
+    );
+
+    this.messagingGateway.emitNewMessage(
+      dto.recipientId,
+      this.messagingGateway.toMessagePayload(message, dto.recipientId),
+    );
+    this.messagingGateway.emitToUser(userId, 'message:sent', {
+      message: this.messagingGateway.toMessagePayload(message, userId),
+    });
+
+    return this.messagingGateway.toMessagePayload(message, userId);
+  }
+
+  /**
+   * Mark the conversation with a user as read and notify them (read receipts)
+   */
+  @Post(':partnerId/read')
+  async markAsRead(
+    @CurrentUser('id') userId: string,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+  ) {
+    const result = await this.messagingService.markConversationRead(userId, partnerId);
+    if (result.count > 0) {
+      this.messagingGateway.emitToUser(partnerId, 'message:read', {
+        messageIds: result.messageIds,
+        readBy: userId,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Buy a PPV message: returns a pending payment (clientSecret) to confirm
+   * client-side, or completes right away with a saved card
+   */
+  @Post(':messageId/unlock')
+  unlockMessage(
+    @CurrentUser('id') userId: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Body() dto: OneTimePaymentDto,
+  ) {
+    return this.messagingService.unlockMessage(userId, messageId, dto?.paymentMethodId);
+  }
+
+  /**
+   * Re-check the PPV message payment with Stripe (idempotent)
+   */
+  @Post(':messageId/unlock/confirm')
+  confirmUnlockMessage(
+    @CurrentUser('id') userId: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Body() dto: ConfirmPaymentDto,
+  ) {
+    return this.messagingService.confirmUnlockMessage(userId, messageId, dto.paymentIntentId);
+  }
+
   @Get(':partnerId')
   getMessages(
     @CurrentUser('id') userId: string,
-    @Param('partnerId') partnerId: string,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('before') before?: string,
   ) {
     return this.messagingService.getMessages(
       userId,
       partnerId,
-      page ? parseInt(page) : 1,
-      limit ? parseInt(limit) : 50,
+      page ? parseInt(page) || 1 : 1,
+      limit ? parseInt(limit) || 50 : 50,
+      before,
     );
   }
 
   @Delete(':messageId')
-  deleteMessage(@CurrentUser('id') userId: string, @Param('messageId') messageId: string) {
-    return this.messagingService.deleteMessage(messageId, userId);
+  async deleteMessage(
+    @CurrentUser('id') userId: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+  ) {
+    const result = await this.messagingService.deleteMessage(messageId, userId);
+    const payload = { messageId, senderId: userId, receiverId: result.receiverId };
+    this.messagingGateway.emitToUser(result.receiverId, 'message:deleted', payload);
+    this.messagingGateway.emitToUser(userId, 'message:deleted', payload);
+    return result;
   }
 }
