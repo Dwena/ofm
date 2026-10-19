@@ -13,7 +13,8 @@ import {
   Settings,
   LogOut,
   MessageSquare,
-  BarChart3
+  BarChart3,
+  Radio
 } from 'lucide-react'
 
 export function Navigation() {
@@ -33,6 +34,7 @@ export function Navigation() {
   const creatorLinks = [
     { href: '/creator/dashboard', label: 'Dashboard', icon: Home },
     { href: '/creator/upload', label: 'Upload', icon: Upload },
+    { href: '/creator/live', label: 'Live', icon: Radio },
     { href: '/creator/subscribers', label: 'Abonnés', icon: Users },
     { href: '/creator/earnings', label: 'Revenus', icon: DollarSign },
     { href: '/creator/analytics', label: 'Analytics', icon: BarChart3 },
@@ -43,6 +45,7 @@ export function Navigation() {
   const subscriberLinks = [
     { href: '/feed', label: 'Feed', icon: Home },
     { href: '/subscriptions', label: 'Abonnements', icon: Users },
+    { href: '/live', label: 'Lives', icon: Radio },
     { href: '/messages', label: 'Messages', icon: MessageSquare },
     { href: '/settings', label: 'Paramètres', icon: Settings },
   ]

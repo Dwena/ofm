@@ -343,6 +343,19 @@ export const liveApi = {
   getScheduledStreams: () => api.get('/streaming/scheduled'),
   getCreatorStreams: (creatorId: string) => api.get(`/streaming/creator/${creatorId}`),
   getStream: (streamId: string) => api.get(`/streaming/${streamId}`),
+  // Without scheduledFor the stream goes live immediately; with it, it is SCHEDULED
+  create: (data: {
+    title: string
+    description?: string
+    thumbnailUrl?: string
+    visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PRIVATE'
+    isPpv?: boolean
+    ppvPrice?: number
+    scheduledFor?: string
+  }) => api.post('/streaming', data),
+  start: (streamId: string) => api.post(`/streaming/${streamId}/start`),
+  end: (streamId: string) => api.post(`/streaming/${streamId}/end`),
+  delete: (streamId: string) => api.delete(`/streaming/${streamId}`),
   join: (streamId: string) => api.post(`/streaming/${streamId}/join`),
   leave: (streamId: string) => api.post(`/streaming/${streamId}/leave`),
   // Tips go to the stream's creator through the payments endpoint
