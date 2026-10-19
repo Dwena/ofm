@@ -42,9 +42,23 @@ export class DiscoverCreatorsDto {
   @IsOptional()
   query?: string;
 
-  @IsEnum(['POPULAR', 'NEW', 'RECOMMENDED'])
+  @IsEnum(['POPULAR', 'NEW', 'RECOMMENDED', 'PRICE_ASC', 'PRICE_DESC'])
   @IsOptional()
-  sortBy?: 'POPULAR' | 'NEW' | 'RECOMMENDED' = 'POPULAR';
+  sortBy?: 'POPULAR' | 'NEW' | 'RECOMMENDED' | 'PRICE_ASC' | 'PRICE_DESC' = 'POPULAR';
+
+  /** Minimum monthly price (euros) of the creator's cheapest active tier */
+  @IsNumber()
+  @Type(() => Number)
+  @Min(0)
+  @IsOptional()
+  minPrice?: number;
+
+  /** Maximum monthly price (euros) of the creator's cheapest active tier */
+  @IsNumber()
+  @Type(() => Number)
+  @Min(0)
+  @IsOptional()
+  maxPrice?: number;
 
   @IsNumber()
   @Type(() => Number)

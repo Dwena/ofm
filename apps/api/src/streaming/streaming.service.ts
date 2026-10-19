@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { nanoid } from 'nanoid';
@@ -228,12 +229,34 @@ export class StreamingService {
   }
 
   /**
+   * Visibility filter for public stream listings: PRIVATE streams are only
+   * listed for their own creator
+   */
+  private listingVisibilityFilter(userId?: string): Prisma.LiveStreamWhereInput {
+    return userId
+      ? { OR: [{ visibility: { not: 'PRIVATE' } }, { creatorId: userId }] }
+      : { visibility: { not: 'PRIVATE' } };
+  }
+
+  /**
+   * Strips the stream key (an RTMP publishing secret) from listed streams
+   */
+  private toPublicListing<T extends { streamKey?: string | null }>(streams: T[]): Omit<T, 'streamKey'>[] {
+    return streams.map((stream) => {
+      const listed = { ...stream };
+      delete listed.streamKey;
+      return listed;
+    });
+  }
+
+  /**
    * Get active live streams
    */
   async getLiveStreams(userId?: string) {
-    return this.prisma.liveStream.findMany({
+    const streams = await this.prisma.liveStream.findMany({
       where: {
         status: 'LIVE',
+        ...this.listingVisibilityFilter(userId),
       },
       include: {
         creator: {
@@ -254,18 +277,20 @@ export class StreamingService {
         viewerCount: 'desc',
       },
     });
+    return this.toPublicListing(streams);
   }
 
   /**
    * Get scheduled streams
    */
   async getScheduledStreams(userId?: string) {
-    return this.prisma.liveStream.findMany({
+    const streams = await this.prisma.liveStream.findMany({
       where: {
         status: 'SCHEDULED',
         scheduledFor: {
           gte: new Date(),
         },
+        ...this.listingVisibilityFilter(userId),
       },
       include: {
         creator: {
@@ -281,6 +306,7 @@ export class StreamingService {
         scheduledFor: 'asc',
       },
     });
+    return this.toPublicListing(streams);
   }
 
   /**

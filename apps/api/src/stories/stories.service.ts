@@ -73,7 +73,10 @@ export class StoriesService {
   }
 
   /**
-   * Get active stories from subscribed creators
+   * Get active stories from subscribed creators (and the user's own stories),
+   * grouped by creator. Each story carries `isViewed` for the current user and
+   * each group `hasUnviewed`; the user's own group leads, then groups with
+   * unseen stories.
    */
   async getStoriesFeed(userId: string) {
     // Get subscriptions
@@ -91,7 +94,9 @@ export class StoriesService {
       },
     });
 
-    const creatorIds = subscriptions.map((sub: any) => sub.tier.creatorId);
+    const creatorIds = Array.from(
+      new Set([userId, ...subscriptions.map((sub: any) => sub.tier.creatorId)]),
+    );
 
     // Get active stories (not expired, not deleted)
     const stories = await this.prisma.story.findMany({
@@ -113,6 +118,11 @@ export class StoriesService {
             avatar: true,
           },
         },
+        views: {
+          where: { viewerId: userId },
+          select: { id: true },
+          take: 1,
+        },
         _count: {
           select: {
             views: true,
@@ -126,19 +136,24 @@ export class StoriesService {
     });
 
     // Group stories by creator
-    const grouped = stories.reduce((acc: any, story: any) => {
-      const creatorId = story.creatorId;
-      if (!acc[creatorId]) {
-        acc[creatorId] = {
-          creator: story.creator,
-          stories: [],
-        };
+    const grouped = new Map<string, { creator: any; stories: any[]; hasUnviewed: boolean; isOwn: boolean }>();
+    for (const { views, ...story } of stories as any[]) {
+      const isOwn = story.creatorId === userId;
+      const isViewed = isOwn || (views?.length ?? 0) > 0;
+      let group = grouped.get(story.creatorId);
+      if (!group) {
+        group = { creator: story.creator, stories: [], hasUnviewed: false, isOwn };
+        grouped.set(story.creatorId, group);
       }
-      acc[creatorId].stories.push(story);
-      return acc;
-    }, {});
+      group.stories.push({ ...story, isViewed });
+      if (!isViewed) group.hasUnviewed = true;
+    }
 
-    return Object.values(grouped);
+    return Array.from(grouped.values()).sort((a, b) => {
+      if (a.isOwn !== b.isOwn) return a.isOwn ? -1 : 1;
+      if (a.hasUnviewed !== b.hasUnviewed) return a.hasUnviewed ? -1 : 1;
+      return 0;
+    });
   }
 
   /**

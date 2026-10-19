@@ -74,6 +74,46 @@ describe('StoriesService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('getStoriesFeed', () => {
+    it('groups stories by creator with viewed status, own and unseen groups first', async () => {
+      mockPrismaService.subscription.findMany.mockResolvedValue([
+        { tier: { creatorId: 'creator-a' } },
+        { tier: { creatorId: 'creator-b' } },
+        { tier: { creatorId: 'creator-a' } },
+      ]);
+      mockPrismaService.story.findMany.mockResolvedValue([
+        { id: 's-a1', creatorId: 'creator-a', creator: { id: 'creator-a' }, views: [{ id: 'v1' }] },
+        { id: 's-b1', creatorId: 'creator-b', creator: { id: 'creator-b' }, views: [] },
+        { id: 's-own', creatorId: 'user-1', creator: { id: 'user-1' }, views: [] },
+        { id: 's-a2', creatorId: 'creator-a', creator: { id: 'creator-a' }, views: [{ id: 'v2' }] },
+      ]);
+
+      const feed: any[] = await service.getStoriesFeed('user-1');
+
+      expect(mockPrismaService.story.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            creatorId: { in: ['user-1', 'creator-a', 'creator-b'] },
+            deletedAt: null,
+          }),
+          include: expect.objectContaining({
+            views: { where: { viewerId: 'user-1' }, select: { id: true }, take: 1 },
+          }),
+        }),
+      );
+      expect(feed.map((g) => [g.creator.id, g.hasUnviewed, g.isOwn])).toEqual([
+        ['user-1', false, true],
+        ['creator-b', true, false],
+        ['creator-a', false, false],
+      ]);
+      expect(feed[2].stories.map((s: any) => [s.id, s.isViewed])).toEqual([
+        ['s-a1', true],
+        ['s-a2', true],
+      ]);
+      expect(feed[1].stories[0]).not.toHaveProperty('views');
+    });
+  });
+
   describe('createStory', () => {
     const userId = 'creator-123';
     const dto = {
