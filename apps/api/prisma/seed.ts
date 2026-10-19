@@ -2,7 +2,7 @@
  * Demo / QA seed: one dataset that exercises every feature of the platform.
  *
  *   npm run seed            seed an empty database
- *   npm run seed:fresh      wipe every table, then seed (SEED_RESET=true)
+ *   npm run seed:fresh      wipe every table, then seed (--reset or SEED_RESET=true)
  *   npm run db:reset        drop the schema, re-apply migrations, then seed
  *
  * All accounts share the password below. See docs/SEED_ACCOUNTS.md for the
@@ -199,7 +199,11 @@ async function main() {
 
   console.log('🌱 Seed de démonstration OFM');
 
-  if (process.env.SEED_RESET === 'true' || process.env.NODE_ENV === 'development') {
+  if (
+    process.argv.includes('--reset') ||
+    process.env.SEED_RESET === 'true' ||
+    process.env.NODE_ENV === 'development'
+  ) {
     await resetDatabase();
   } else if ((await prisma.user.count()) > 0) {
     throw new Error('La base contient déjà des utilisateurs. Lancez `npm run seed:fresh` pour la vider avant de seeder.');
