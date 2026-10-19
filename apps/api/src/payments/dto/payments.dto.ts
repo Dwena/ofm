@@ -54,18 +54,30 @@ export class GetStatsDto {
   endDate?: string;
 }
 
+// Mirrors the Prisma TransactionType / TransactionStatus enums
 export enum TransactionType {
   SUBSCRIPTION = 'SUBSCRIPTION',
   TIP = 'TIP',
-  PPV = 'PPV',
+  PPV_UNLOCK = 'PPV_UNLOCK',
+  PAYOUT = 'PAYOUT',
   REFUND = 'REFUND',
+  PLATFORM_FEE = 'PLATFORM_FEE',
 }
 
 export enum TransactionStatus {
   PENDING = 'PENDING',
+  PROCESSING = 'PROCESSING',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
+  CANCELLED = 'CANCELLED',
   REFUNDED = 'REFUNDED',
+  PARTIALLY_REFUNDED = 'PARTIALLY_REFUNDED',
+  DISPUTED = 'DISPUTED',
+}
+
+export enum TransactionDirection {
+  SENT = 'sent',
+  RECEIVED = 'received',
 }
 
 export class FilterTransactionsDto {
@@ -84,6 +96,17 @@ export class FilterTransactionsDto {
   @IsString()
   @IsOptional()
   endDate?: string;
+
+  // Paid by the user, or received by the user (earnings, refunds)
+  @IsEnum(TransactionDirection)
+  @IsOptional()
+  direction?: TransactionDirection;
+
+  // Username or display name of the other party
+  @IsString()
+  @MaxLength(100)
+  @IsOptional()
+  search?: string;
 
   @IsNumber()
   @Type(() => Number)
@@ -132,4 +155,20 @@ export class OneTimePaymentDto {
 export class ConfirmPaymentDto {
   @IsString()
   paymentIntentId: string;
+}
+
+export enum CheckoutItemType {
+  SUBSCRIPTION = 'subscription',
+  PPV = 'ppv',
+  STREAM = 'stream',
+  TIP = 'tip',
+}
+
+export class CheckoutInfoQueryDto {
+  @IsEnum(CheckoutItemType)
+  type: CheckoutItemType;
+
+  // Tier id, content id, stream id or creator id (tip)
+  @IsUUID()
+  itemId: string;
 }

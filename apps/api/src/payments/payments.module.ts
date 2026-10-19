@@ -8,6 +8,7 @@ import { StripeWebhookService } from './stripe-webhook.service';
 import { BillingService } from './billing.service';
 import { SubscriptionSyncService } from './subscription-sync.service';
 import { OneTimePaymentService } from './one-time-payment.service';
+import { CheckoutInfoService } from './checkout-info.service';
 
 @Module({
   imports: [ConfigModule],
@@ -19,6 +20,7 @@ import { OneTimePaymentService } from './one-time-payment.service';
     BillingService,
     SubscriptionSyncService,
     OneTimePaymentService,
+    CheckoutInfoService,
   ],
   exports: [
     PaymentsService,

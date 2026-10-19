@@ -40,6 +40,8 @@ describe('SubscriptionsService', () => {
     cancelSubscription: jest.fn(),
     updateTierSubscription: jest.fn(),
     listIncompleteSubscriptions: jest.fn(),
+    setSubscriptionPaymentMethod: jest.fn(),
+    payInvoice: jest.fn(),
   };
 
   const mockSubscriptionSync = {
@@ -744,6 +746,74 @@ describe('SubscriptionsService', () => {
         }),
       );
       expect(mockStripeService.setCancelAtPeriodEnd).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('retryPayment', () => {
+    const pastDue = {
+      id: 'sub-1',
+      subscriberId: userId,
+      status: 'PAST_DUE',
+      cancelAtPeriodEnd: false,
+      stripeSubscriptionId: 'sub_stripe',
+      tier: paidTier,
+    };
+
+    it('should reject a subscription that is not past due', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue({ ...pastDue, status: 'ACTIVE' });
+
+      await expect(service.retryPayment(userId, 'sub-1')).rejects.toThrow(BadRequestException);
+      expect(mockStripeService.payInvoice).not.toHaveBeenCalled();
+    });
+
+    it('should reject a past-due subscription without Stripe subscription', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue({ ...pastDue, stripeSubscriptionId: null });
+
+      await expect(service.retryPayment(userId, 'sub-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('should switch the subscription card and pay the open invoice', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(pastDue);
+      mockStripeService.retrieveSubscription
+        .mockResolvedValueOnce({ id: 'sub_stripe', status: 'past_due', latest_invoice: { id: 'in_1', status: 'open' } })
+        .mockResolvedValueOnce({ id: 'sub_stripe', status: 'active', latest_invoice: { id: 'in_1', status: 'paid' } });
+      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', status: 'ACTIVE' });
+
+      const result = await service.retryPayment(userId, 'sub-1', 'pm_new');
+
+      expect(mockPaymentsService.assertPaymentMethodOwnership).toHaveBeenCalledWith(userId, 'pm_new');
+      expect(mockStripeService.setSubscriptionPaymentMethod).toHaveBeenCalledWith('sub_stripe', 'pm_new');
+      expect(mockStripeService.payInvoice).toHaveBeenCalledWith('in_1', 'pm_new');
+      expect(result).toEqual({ requiresPayment: false, subscription: { id: 'sub-1', status: 'ACTIVE' } });
+    });
+
+    it('should return the client secret when the bank asks for 3D Secure', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(pastDue);
+      const stillPastDue = {
+        id: 'sub_stripe',
+        status: 'past_due',
+        latest_invoice: {
+          id: 'in_1',
+          status: 'open',
+          payment_intent: { client_secret: 'pi_secret', status: 'requires_action' },
+        },
+      };
+      mockStripeService.retrieveSubscription.mockResolvedValue(stillPastDue);
+      mockStripeService.payInvoice.mockRejectedValue(new Error('invoice_payment_intent_requires_action'));
+      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', status: 'PAST_DUE' });
+
+      const result = await service.retryPayment(userId, 'sub-1');
+
+      expect(mockStripeService.setSubscriptionPaymentMethod).not.toHaveBeenCalled();
+      expect(mockStripeService.payInvoice).toHaveBeenCalledWith('in_1', undefined);
+      expect(result).toEqual(
+        expect.objectContaining({
+          requiresPayment: true,
+          stripeSubscriptionId: 'sub_stripe',
+          clientSecret: 'pi_secret',
+          paymentStatus: 'requires_action',
+        }),
+      );
     });
   });
 });

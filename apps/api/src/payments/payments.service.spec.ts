@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PaymentsService } from './payments.service';
 import { StripeService } from './stripe.service';
@@ -27,6 +27,10 @@ describe('PaymentsService (money units)', () => {
   const mockStripeService = {
     getAccountBalance: jest.fn(),
     createPayout: jest.fn(),
+    isConfigured: jest.fn(),
+    createSetupIntent: jest.fn(),
+    listPaymentMethods: jest.fn(),
+    getCustomer: jest.fn(),
   };
 
   const mockOneTimePayments = {
@@ -172,6 +176,80 @@ describe('PaymentsService (money units)', () => {
         kind: 'tip',
         creatorId: 'creator-1',
       });
+    });
+  });
+
+  describe('getFilteredTransactions', () => {
+    beforeEach(() => {
+      mockPrismaService.transaction.findMany.mockResolvedValue([
+        { id: 'tx-1', amount: new Prisma.Decimal('9.99'), platformFee: new Prisma.Decimal('1.5'), netAmount: new Prisma.Decimal('8.49') },
+      ]);
+      mockPrismaService.transaction.count.mockResolvedValue(21);
+      mockPrismaService.transaction.aggregate
+        .mockResolvedValueOnce({ _sum: { amount: new Prisma.Decimal('59.97') } })
+        .mockResolvedValueOnce({ _sum: { amount: new Prisma.Decimal('9.99') } })
+        .mockResolvedValueOnce({ _sum: { netAmount: null } });
+    });
+
+    it('filters sent transactions by type, status, other party and whole end day', async () => {
+      const result = await service.getFilteredTransactions('fan-1', {
+        type: 'TIP' as any,
+        status: 'COMPLETED' as any,
+        direction: 'sent' as any,
+        search: ' alice ',
+        endDate: '2026-10-19',
+        page: 2,
+        limit: 20,
+      });
+
+      const { where, skip, take } = mockPrismaService.transaction.findMany.mock.calls[0][0];
+      expect(skip).toBe(20);
+      expect(take).toBe(20);
+      expect(where.AND).toEqual(
+        expect.arrayContaining([
+          { fromUserId: 'fan-1' },
+          { type: 'TIP' },
+          { status: 'COMPLETED' },
+          { createdAt: { lte: new Date('2026-10-19T23:59:59.999Z') } },
+          expect.objectContaining({
+            OR: [
+              expect.objectContaining({ fromUserId: 'fan-1', toUser: expect.anything() }),
+              expect.objectContaining({ toUserId: 'fan-1', fromUser: expect.anything() }),
+            ],
+          }),
+        ]),
+      );
+      expect(JSON.stringify(where)).toContain('"contains":"alice"');
+      expect(result.items[0]).toEqual(expect.objectContaining({ amount: 9.99, platformFee: 1.5, netAmount: 8.49 }));
+      expect(result.pagination).toEqual({ page: 2, limit: 20, total: 21, totalPages: 2 });
+      expect(result.summary).toEqual({ totalSpent: 59.97, totalRefunded: 9.99, totalReceived: 0 });
+    });
+
+    it('includes both directions by default', async () => {
+      await service.getFilteredTransactions('fan-1', {});
+
+      const { where } = mockPrismaService.transaction.findMany.mock.calls[0][0];
+      expect(where.AND).toEqual([{ OR: [{ fromUserId: 'fan-1' }, { toUserId: 'fan-1' }] }]);
+    });
+  });
+
+  describe('payment methods without Stripe keys', () => {
+    beforeEach(() => {
+      mockStripeService.isConfigured.mockReturnValue(false);
+    });
+
+    it('lists no saved card', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ stripeCustomerId: 'cus_1' });
+
+      await expect(service.listPaymentMethods('fan-1')).resolves.toEqual([]);
+      expect(mockStripeService.listPaymentMethods).not.toHaveBeenCalled();
+    });
+
+    it('refuses to create a setup intent with a clear error', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'fan-1', stripeCustomerId: 'cus_1' });
+
+      await expect(service.createSetupIntent('fan-1')).rejects.toThrow(ServiceUnavailableException);
+      expect(mockStripeService.createSetupIntent).not.toHaveBeenCalled();
     });
   });
 });

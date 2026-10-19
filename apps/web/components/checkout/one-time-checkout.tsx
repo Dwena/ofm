@@ -1,14 +1,21 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { paymentsApi } from '@/lib/api'
 import { formatEuros } from '@/lib/utils'
-import StripePaymentElement, { getStripe } from '@/components/checkout/stripe-payment-element'
+import { getPaymentErrorMessage } from '@/lib/payment-errors'
+import StripePaymentElement, {
+  getStripe,
+  STRIPE_NOT_CONFIGURED_MESSAGE,
+} from '@/components/checkout/stripe-payment-element'
+import PaymentMethodPicker, {
+  NEW_CARD,
+  resolvePaymentMethod,
+  usePaymentMethods,
+} from '@/components/checkout/payment-method-picker'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CreditCard, CheckCircle, AlertCircle, Loader2, Lock, Plus } from 'lucide-react'
+import { CheckCircle, AlertCircle, Loader2, Lock } from 'lucide-react'
 
 /** Response of the start / confirm endpoints of one-off payments (tips, PPV) */
 export interface OneTimePaymentResult {
@@ -22,6 +29,12 @@ export interface OneTimePaymentResult {
 }
 
 export type OneTimePaymentKind = 'ppv' | 'tip' | 'stream'
+
+/** Back from a Stripe redirect (3D Secure page) with the payment intent being paid */
+export interface OneTimeRedirectResume {
+  paymentIntentId: string
+  status: string | null // redirect_status: succeeded | processing | failed
+}
 
 interface OneTimeCheckoutProps {
   kind: OneTimePaymentKind
@@ -38,18 +51,18 @@ interface OneTimeCheckoutProps {
   successDelay?: number
   // Render without the summary card (modals)
   compact?: boolean
+  // Rendered in the summary card, e.g. the tip amount field
+  summaryExtra?: React.ReactNode
+  // Blocks the payment button (e.g. invalid tip amount)
+  disabled?: boolean
+  resume?: OneTimeRedirectResume
 }
-
-const NEW_CARD = 'new'
 
 const LABELS: Record<OneTimePaymentKind, { item: string; success: string; done: string }> = {
   ppv: { item: 'Contenu pay-per-view', success: 'Contenu débloqué !', done: 'Le contenu est maintenant accessible.' },
   stream: { item: 'Accès au live', success: 'Accès au live acheté !', done: 'Vous pouvez maintenant regarder le live.' },
   tip: { item: 'Pourboire', success: 'Pourboire envoyé !', done: 'Merci pour votre soutien.' },
 }
-
-const getErrorMessage = (error: any) =>
-  error?.response?.data?.message || error?.message || 'Une erreur est survenue lors du paiement.'
 
 const isDone = (result: OneTimePaymentResult) =>
   !!(result.completed || result.alreadyUnlocked || result.alreadyPurchased)
@@ -69,26 +82,23 @@ export default function OneTimeCheckout({
   onCancel,
   successDelay = 2000,
   compact = false,
+  summaryExtra,
+  disabled = false,
+  resume,
 }: OneTimeCheckoutProps) {
-  const [step, setStep] = useState<'review' | 'card' | 'processing' | 'success' | 'error'>('review')
+  const [step, setStep] = useState<'review' | 'card' | 'processing' | 'success' | 'error'>(
+    resume ? 'processing' : 'review',
+  )
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
   const [pending, setPending] = useState<{ clientSecret: string; paymentIntentId: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const successTimer = useRef<ReturnType<typeof setTimeout>>()
+  const resumed = useRef(false)
 
   useEffect(() => () => clearTimeout(successTimer.current), [])
 
-  const { data: paymentMethods, isLoading: loadingMethods } = useQuery({
-    queryKey: ['payment-methods'],
-    queryFn: async () => {
-      const response = await paymentsApi.getPaymentMethods()
-      return response.data as { id: string; brand?: string; last4: string; expMonth?: number; expYear?: number; isDefault: boolean }[]
-    },
-  })
-
-  // Preselect the default card, or a new card when none is saved
-  const method =
-    selectedMethod ?? (paymentMethods?.find((m) => m.isDefault)?.id || paymentMethods?.[0]?.id || NEW_CARD)
+  const { data: paymentMethods, isLoading: loadingMethods } = usePaymentMethods()
+  const method = resolvePaymentMethod(selectedMethod, paymentMethods)
 
   const labels = LABELS[kind]
   const formattedAmount = formatEuros(amount)
@@ -99,7 +109,7 @@ export default function OneTimeCheckout({
   }
 
   const fail = (err: any) => {
-    setError(getErrorMessage(err))
+    setError(getPaymentErrorMessage(err))
     setStep('error')
   }
 
@@ -115,6 +125,18 @@ export default function OneTimeCheckout({
     }
     throw new Error('Le paiement est en cours de traitement. Vous serez notifié dès sa validation.')
   }
+
+  // Back from a Stripe redirect: check the payment instead of starting over
+  useEffect(() => {
+    if (!resume || resumed.current) return
+    resumed.current = true
+    if (resume.status === 'failed') {
+      fail(new Error('Le paiement n’a pas été validé par votre banque. Veuillez réessayer.'))
+      return
+    }
+    waitForConfirmation(resume.paymentIntentId).then(succeed, fail)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume])
 
   const handlePay = async () => {
     setStep('processing')
@@ -151,7 +173,7 @@ export default function OneTimeCheckout({
 
       // Saved card needing authentication (3D Secure)
       const stripe = await getStripe()
-      if (!stripe) throw new Error('Le paiement est indisponible : clé Stripe manquante.')
+      if (!stripe) throw new Error(STRIPE_NOT_CONFIGURED_MESSAGE)
 
       const { error: stripeError } = await stripe.confirmCardPayment(result.clientSecret, {
         payment_method: savedCard,
@@ -187,6 +209,17 @@ export default function OneTimeCheckout({
           <p className="text-muted-foreground">
             Votre paiement de {formattedAmount} a été effectué avec succès. {labels.done}
           </p>
+          {onSuccess && (
+            <Button
+              className="mt-4 w-full"
+              onClick={() => {
+                clearTimeout(successTimer.current)
+                onSuccess()
+              }}
+            >
+              Continuer
+            </Button>
+          )}
         </CardContent>
       </Card>
     )
@@ -201,7 +234,7 @@ export default function OneTimeCheckout({
           </div>
           <h3 className="text-xl font-bold mb-2">Paiement échoué</h3>
           <p className="text-muted-foreground mb-4">{error}</p>
-          <div className="flex gap-2">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
             {onCancel && (
               <Button variant="outline" onClick={onCancel} className="flex-1">
                 Annuler
@@ -238,14 +271,15 @@ export default function OneTimeCheckout({
             <CardTitle>Récapitulatif</CardTitle>
             <CardDescription>Paiement unique, sans abonnement</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/50">
-              <div>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-4 p-4 border rounded-lg bg-muted/50">
+              <div className="min-w-0">
                 <p className="font-medium">{labels.item}</p>
-                <p className="text-sm text-muted-foreground">{description}</p>
+                <p className="text-sm text-muted-foreground break-words">{description}</p>
               </div>
-              <p className="text-2xl font-bold">{formattedAmount}</p>
+              <p className="text-2xl font-bold whitespace-nowrap">{formattedAmount}</p>
             </div>
+            {step === 'review' && summaryExtra}
           </CardContent>
         </Card>
       )}
@@ -268,67 +302,34 @@ export default function OneTimeCheckout({
               onSuccess={handleCardConfirmed}
               onCancel={() => setStep('review')}
             />
-          ) : loadingMethods ? (
-            <div className="flex justify-center py-4">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
           ) : (
             <>
-              {paymentMethods?.map((pm) => (
-                <label
-                  key={pm.id}
-                  className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${
-                    method === pm.id ? 'ring-2 ring-primary' : ''
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="one-time-payment-method"
-                    checked={method === pm.id}
-                    onChange={() => setSelectedMethod(pm.id)}
-                  />
-                  <CreditCard className="h-5 w-5 text-muted-foreground" />
-                  <span className="flex-1 text-sm">
-                    <span className="capitalize">{pm.brand || 'Carte'}</span> •••• {pm.last4}
-                  </span>
-                  {pm.expMonth && pm.expYear && (
-                    <span className="text-xs text-muted-foreground">
-                      {pm.expMonth.toString().padStart(2, '0')}/{pm.expYear}
-                    </span>
-                  )}
-                </label>
-              ))}
-              <label
-                className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${
-                  method === NEW_CARD ? 'ring-2 ring-primary' : ''
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="one-time-payment-method"
-                  checked={method === NEW_CARD}
-                  onChange={() => setSelectedMethod(NEW_CARD)}
-                />
-                <Plus className="h-5 w-5 text-muted-foreground" />
-                <span className="text-sm">Nouvelle carte</span>
-              </label>
-              <Alert>
-                <Lock className="h-4 w-4" />
-                <AlertDescription className="text-sm">Paiement sécurisé par Stripe.</AlertDescription>
-              </Alert>
+              <PaymentMethodPicker
+                name="one-time-payment-method"
+                methods={paymentMethods}
+                loading={loadingMethods}
+                value={method}
+                onChange={setSelectedMethod}
+              />
+              {!loadingMethods && (
+                <Alert>
+                  <Lock className="h-4 w-4" />
+                  <AlertDescription className="text-sm">Paiement sécurisé par Stripe.</AlertDescription>
+                </Alert>
+              )}
             </>
           )}
         </CardContent>
       </Card>
 
       {step === 'review' && (
-        <div className="flex gap-3">
+        <div className="flex flex-col-reverse gap-3 sm:flex-row">
           {onCancel && (
             <Button variant="outline" onClick={onCancel} className="flex-1">
               Annuler
             </Button>
           )}
-          <Button onClick={handlePay} className="flex-1" disabled={loadingMethods}>
+          <Button onClick={handlePay} className="flex-1" disabled={loadingMethods || disabled}>
             <Lock className="h-4 w-4 mr-2" />
             {method === NEW_CARD ? 'Continuer' : `Payer ${formattedAmount}`}
           </Button>

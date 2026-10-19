@@ -20,6 +20,16 @@ export class StripeService {
     });
   }
 
+  /**
+   * Whether a real Stripe secret key is set. The local stack ships with
+   * placeholders (sk_test_remplacez_moi): payments are then disabled and the
+   * web app explains it instead of showing a broken form.
+   */
+  isConfigured(): boolean {
+    const key = this.configService.get<string>('STRIPE_SECRET_KEY') || '';
+    return /^(sk|rk)_(test|live)_[A-Za-z0-9]{20,}$/.test(key);
+  }
+
   /** Platform commission (percent), editable from /admin/settings */
   private getPlatformFeePercentage(): Promise<number> {
     return this.settingsService.getPlatformFeePercentage();
@@ -325,6 +335,26 @@ export class StripeService {
    */
   async detachPaymentMethod(paymentMethodId: string) {
     return this.stripe.paymentMethods.detach(paymentMethodId);
+  }
+
+  /**
+   * Use another saved card for the future invoices of a subscription
+   */
+  async setSubscriptionPaymentMethod(subscriptionId: string, paymentMethodId: string) {
+    return this.stripe.subscriptions.update(subscriptionId, {
+      default_payment_method: paymentMethodId,
+    });
+  }
+
+  /**
+   * Pay an open invoice now (past-due subscription), with a given card or the
+   * subscription / customer default one. Returns the invoice with its payment intent.
+   */
+  async payInvoice(invoiceId: string, paymentMethodId?: string) {
+    return this.stripe.invoices.pay(invoiceId, {
+      ...(paymentMethodId && { payment_method: paymentMethodId }),
+      expand: ['payment_intent'],
+    });
   }
 
   /**
