@@ -20,6 +20,15 @@ export class StripeService {
     });
   }
 
+  /**
+   * Whether a real Stripe secret key is set (placeholders such as
+   * `sk_test_...` or `sk_test_remplacez_moi` from the .env examples are not)
+   */
+  isConfigured(): boolean {
+    const key = this.configService.get<string>('STRIPE_SECRET_KEY') ?? '';
+    return /^(sk|rk)_(test|live)_[A-Za-z0-9]{16,}$/.test(key);
+  }
+
   /** Platform commission (percent), editable from /admin/settings */
   private getPlatformFeePercentage(): Promise<number> {
     return this.settingsService.getPlatformFeePercentage();

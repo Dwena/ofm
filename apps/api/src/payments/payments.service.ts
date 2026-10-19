@@ -1,4 +1,11 @@
-import { Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
@@ -8,6 +15,7 @@ import { StripeWebhookService } from './stripe-webhook.service';
 import { OneTimePaymentService } from './one-time-payment.service';
 import { FilterTransactionsDto, GetStatsDto, SendTipDto, StatsInterval } from './dto/payments.dto';
 import { roundMoney, sumBalanceEntries, toCents } from '../common/utils/money';
+import { createPeriodMap, getPeriodKey, resolvePeriodRange } from '../common/utils/periods';
 import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
@@ -42,6 +50,8 @@ export class PaymentsService {
     if (user.stripeAccountId) {
       throw new BadRequestException('Connect account already exists');
     }
+
+    this.assertStripeConfigured();
 
     // Create Stripe Connect account
     const account = await this.stripeService.createConnectAccount(user.email, userId);
@@ -79,9 +89,12 @@ export class PaymentsService {
       throw new BadRequestException('No Connect account found. Please create one first.');
     }
 
+    this.assertStripeConfigured();
+
+    // Stripe sends the creator back to the earnings page, which re-checks the status
     const webUrl = this.configService.get('WEB_URL', 'http://localhost:3000');
-    const returnUrl = `${webUrl}/creator/onboarding/complete`;
-    const refreshUrl = `${webUrl}/creator/onboarding/refresh`;
+    const returnUrl = `${webUrl}/creator/earnings?stripe=return`;
+    const refreshUrl = `${webUrl}/creator/earnings?stripe=refresh`;
 
     const accountLink = await this.stripeService.createAccountLink(
       user.stripeAccountId,
@@ -107,15 +120,44 @@ export class PaymentsService {
       throw new BadRequestException('User not found');
     }
 
+    const stripeConfigured = this.stripeService.isConfigured();
+
     if (!user.stripeAccountId) {
       return {
+        stripeConfigured,
         hasAccount: false,
         isOnboarded: false,
+        chargesEnabled: false,
+        payoutsEnabled: false,
+        detailsSubmitted: false,
       };
     }
 
-    const isOnboarded = await this.stripeService.isAccountOnboarded(user.stripeAccountId);
-    const account = await this.stripeService.getAccount(user.stripeAccountId);
+    // Without Stripe (or when it is unreachable) report the last known state
+    const lastKnown = {
+      stripeConfigured,
+      hasAccount: true,
+      isOnboarded: user.stripeOnboarded,
+      chargesEnabled: user.stripeOnboarded,
+      payoutsEnabled: user.stripeOnboarded,
+      detailsSubmitted: user.stripeOnboarded,
+    };
+
+    if (!stripeConfigured) {
+      return lastKnown;
+    }
+
+    let account: Awaited<ReturnType<StripeService['getAccount']>>;
+    try {
+      account = await this.stripeService.getAccount(user.stripeAccountId);
+    } catch (error: any) {
+      this.logger.warn(`Unable to read Stripe account for ${userId}: ${error.message}`);
+      return { ...lastKnown, error: 'STRIPE_UNAVAILABLE' };
+    }
+
+    const isOnboarded = Boolean(
+      account.charges_enabled && account.payouts_enabled && account.details_submitted,
+    );
 
     // Update user onboarding status if changed
     if (user.stripeOnboarded !== isOnboarded) {
@@ -126,6 +168,7 @@ export class PaymentsService {
     }
 
     return {
+      stripeConfigured,
       hasAccount: true,
       isOnboarded,
       chargesEnabled: account.charges_enabled,
@@ -147,11 +190,18 @@ export class PaymentsService {
       throw new BadRequestException('User not found');
     }
 
+    this.assertStripeConfigured();
+
     if (!user.stripeAccountId || !user.stripeOnboarded) {
       throw new BadRequestException('Stripe account not fully onboarded');
     }
 
     amount = roundMoney(amount);
+
+    const minimumPayout = await this.settingsService.getMinimumPayoutAmount();
+    if (amount < minimumPayout) {
+      throw new BadRequestException(`Minimum payout amount is ${minimumPayout.toFixed(2)}€`);
+    }
 
     // Get available balance (Stripe returns cents)
     const balance = await this.stripeService.getAccountBalance(user.stripeAccountId);
@@ -231,7 +281,7 @@ export class PaymentsService {
     });
 
     // Stripe balance of the connected account (cents, converted to euros below)
-    const balance = user.stripeAccountId
+    const balance = user.stripeAccountId && this.stripeService.isConfigured()
       ? await this.stripeService.getAccountBalance(user.stripeAccountId).catch((error) => {
           this.logger.warn(`Unable to read Stripe balance for ${userId}: ${error.message}`);
           return null;
@@ -266,9 +316,12 @@ export class PaymentsService {
       },
     });
 
+    const minimumPayoutAmount = await this.settingsService.getMinimumPayoutAmount();
+
     // Every amount is in euros
     return {
       currency: 'EUR',
+      minimumPayoutAmount,
       totalEarnings: Number(totalEarnings._sum.netAmount ?? 0),
       monthlyEarnings: Number(monthlyEarnings._sum.netAmount ?? 0),
       availableBalance,
@@ -346,11 +399,19 @@ export class PaymentsService {
    * Get payout history
    */
   async getPayouts(userId: string) {
-    return this.prisma.payout.findMany({
+    const payouts = await this.prisma.payout.findMany({
       where: { creatorId: userId },
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
+    return payouts.map((payout) => ({ ...payout, amount: Number(payout.amount) }));
+  }
+
+  /** Stripe Connect calls need a real secret key */
+  private assertStripeConfigured() {
+    if (!this.stripeService.isConfigured()) {
+      throw new ServiceUnavailableException('Stripe payments are not configured on this platform');
+    }
   }
 
   /**
@@ -760,32 +821,9 @@ export class PaymentsService {
     }
 
     const { interval = StatsInterval.MONTH, periods = 12, startDate, endDate } = filters;
+    const { start, end } = resolvePeriodRange(interval, periods, startDate, endDate);
 
-    // Calculate date range
-    const end = endDate ? new Date(endDate) : new Date();
-    let start: Date;
-
-    if (startDate) {
-      start = new Date(startDate);
-    } else {
-      start = new Date(end);
-      switch (interval) {
-        case StatsInterval.DAY:
-          start.setDate(start.getDate() - periods);
-          break;
-        case StatsInterval.WEEK:
-          start.setDate(start.getDate() - (periods * 7));
-          break;
-        case StatsInterval.MONTH:
-          start.setMonth(start.getMonth() - periods);
-          break;
-        case StatsInterval.YEAR:
-          start.setFullYear(start.getFullYear() - periods);
-          break;
-      }
-    }
-
-    // Get all transactions in date range
+    // Creator income (net of the platform fee) in the date range
     const transactions = await this.prisma.transaction.findMany({
       where: {
         toUserId: userId,
@@ -800,27 +838,21 @@ export class PaymentsService {
       },
     });
 
-    // Group transactions by period
-    const stats: any[] = [];
-    const periodMap = new Map<string, any>();
+    // One bucket per period, empty ones included
+    const periodMap = createPeriodMap(start, end, interval, (period) => ({
+      period,
+      totalRevenue: 0,
+      subscriptionRevenue: 0,
+      ppvRevenue: 0,
+      tipRevenue: 0,
+      transactionCount: 0,
+      refundAmount: 0,
+      netRevenue: 0,
+    }));
 
     transactions.forEach((tx: any) => {
-      const periodKey = this.getPeriodKey(tx.createdAt, interval);
-
-      if (!periodMap.has(periodKey)) {
-        periodMap.set(periodKey, {
-          period: periodKey,
-          totalRevenue: 0,
-          subscriptionRevenue: 0,
-          ppvRevenue: 0,
-          tipRevenue: 0,
-          transactionCount: 0,
-          refundAmount: 0,
-          netRevenue: 0,
-        });
-      }
-
-      const periodData = periodMap.get(periodKey);
+      const periodData = periodMap.get(getPeriodKey(tx.createdAt, interval));
+      if (!periodData) return;
       const amount = Number(tx.netAmount);
 
       periodData.totalRevenue += amount;
@@ -842,29 +874,36 @@ export class PaymentsService {
       }
     });
 
-    // Convert map to array and calculate net revenue
-    periodMap.forEach((data) => {
-      data.netRevenue = data.totalRevenue - data.refundAmount;
-      stats.push(data);
+    const moneyKeys = [
+      'totalRevenue',
+      'subscriptionRevenue',
+      'ppvRevenue',
+      'tipRevenue',
+      'refundAmount',
+      'netRevenue',
+    ] as const;
+
+    const stats = Array.from(periodMap.values()).map((data) => {
+      const row = { ...data, netRevenue: data.totalRevenue - data.refundAmount };
+      moneyKeys.forEach((key) => (row[key] = roundMoney(row[key])));
+      return row;
     });
 
-    // Sort by period
-    stats.sort((a, b) => a.period.localeCompare(b.period));
+    const sum = (key: (typeof moneyKeys)[number] | 'transactionCount') =>
+      stats.reduce((total, s) => total + s[key], 0);
 
-    // Calculate totals
     const totals = {
-      totalRevenue: stats.reduce((sum, s) => sum + s.totalRevenue, 0),
-      subscriptionRevenue: stats.reduce((sum, s) => sum + s.subscriptionRevenue, 0),
-      ppvRevenue: stats.reduce((sum, s) => sum + s.ppvRevenue, 0),
-      tipRevenue: stats.reduce((sum, s) => sum + s.tipRevenue, 0),
-      refundAmount: stats.reduce((sum, s) => sum + s.refundAmount, 0),
-      netRevenue: stats.reduce((sum, s) => sum + s.netRevenue, 0),
-      transactionCount: stats.reduce((sum, s) => sum + s.transactionCount, 0),
+      totalRevenue: roundMoney(sum('totalRevenue')),
+      subscriptionRevenue: roundMoney(sum('subscriptionRevenue')),
+      ppvRevenue: roundMoney(sum('ppvRevenue')),
+      tipRevenue: roundMoney(sum('tipRevenue')),
+      refundAmount: roundMoney(sum('refundAmount')),
+      netRevenue: roundMoney(sum('netRevenue')),
+      transactionCount: sum('transactionCount'),
     };
 
-    // Calculate average per period
     const averages = {
-      avgRevenuePerPeriod: stats.length > 0 ? totals.totalRevenue / stats.length : 0,
+      avgRevenuePerPeriod: stats.length > 0 ? roundMoney(totals.totalRevenue / stats.length) : 0,
       avgTransactionsPerPeriod: stats.length > 0 ? totals.transactionCount / stats.length : 0,
     };
 
@@ -878,32 +917,6 @@ export class PaymentsService {
       totals,
       averages,
     };
-  }
-
-  /**
-   * Get period key for grouping
-   */
-  private getPeriodKey(date: Date, interval: StatsInterval): string {
-    const d = new Date(date);
-
-    switch (interval) {
-      case StatsInterval.DAY:
-        return d.toISOString().split('T')[0]; // YYYY-MM-DD
-
-      case StatsInterval.WEEK:
-        const weekStart = new Date(d);
-        weekStart.setDate(d.getDate() - d.getDay()); // Start of week (Sunday)
-        return weekStart.toISOString().split('T')[0];
-
-      case StatsInterval.MONTH:
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; // YYYY-MM
-
-      case StatsInterval.YEAR:
-        return String(d.getFullYear()); // YYYY
-
-      default:
-        return d.toISOString().split('T')[0];
-    }
   }
 
   /**
