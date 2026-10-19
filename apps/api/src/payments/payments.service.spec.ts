@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { PaymentsService } from './payments.service';
 import { StripeService } from './stripe.service';
 import { StripeWebhookService } from './stripe-webhook.service';
+import { SettingsService } from '../settings/settings.service';
 import { OneTimePaymentService } from './one-time-payment.service';
 import { SubscriptionSyncService } from './subscription-sync.service';
 import { PrismaService } from '../common/database/prisma.service';
@@ -45,6 +46,10 @@ describe('PaymentsService (money units)', () => {
         { provide: ConfigService, useValue: config() },
         { provide: StripeWebhookService, useValue: {} },
         { provide: OneTimePaymentService, useValue: mockOneTimePayments },
+        {
+          provide: SettingsService,
+          useValue: { getPlatformFeePercentage: jest.fn(async () => 15), getMinimumPayoutAmount: jest.fn(async () => 50) },
+        },
       ],
     }).compile();
 
@@ -173,7 +178,7 @@ describe('PaymentsService (money units)', () => {
 
 describe('StripeService.createOneTimePaymentIntent', () => {
   it('sends cents to Stripe, with the platform fee as application fee', async () => {
-    const stripeService = new StripeService(config({ STRIPE_SECRET_KEY: 'sk_test_x' }) as any, {} as any);
+    const stripeService = new StripeService(config({ STRIPE_SECRET_KEY: 'sk_test_x' }) as any, {} as any, { getPlatformFeePercentage: jest.fn(async () => 15), getMinimumPayoutAmount: jest.fn(async () => 50) } as any);
     const create = jest.fn().mockResolvedValue({ id: 'pi_1' });
     (stripeService as any).stripe = { paymentIntents: { create } };
 
@@ -199,7 +204,7 @@ describe('StripeService.createOneTimePaymentIntent', () => {
   });
 
   it('confirms immediately with a saved card', async () => {
-    const stripeService = new StripeService(config({ STRIPE_SECRET_KEY: 'sk_test_x' }) as any, {} as any);
+    const stripeService = new StripeService(config({ STRIPE_SECRET_KEY: 'sk_test_x' }) as any, {} as any, { getPlatformFeePercentage: jest.fn(async () => 15), getMinimumPayoutAmount: jest.fn(async () => 50) } as any);
     const create = jest.fn().mockResolvedValue({ id: 'pi_1' });
     (stripeService as any).stripe = { paymentIntents: { create } };
 
@@ -231,6 +236,7 @@ describe('StripeWebhookService (one-off payments)', () => {
       config({ STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_x' }) as any,
       {} as SubscriptionSyncService,
       mockOneTimePayments as any,
+      { getPlatformFeePercentage: jest.fn(async () => 15), getMinimumPayoutAmount: jest.fn(async () => 50) } as any,
     );
 
   beforeEach(() => jest.clearAllMocks());

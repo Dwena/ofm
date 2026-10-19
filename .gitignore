@@ -49,6 +49,8 @@ Thumbs.db
 # Logs
 logs
 *.log
+# ...but not the /admin/logs route of the web app
+!apps/web/app/(app)/admin/logs/
 
 # Database
 *.db

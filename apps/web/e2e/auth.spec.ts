@@ -1,40 +1,51 @@
-import { test, expect } from './fixtures/auth.fixture';
+import { test, expect, testUser } from './fixtures/auth.fixture';
 
-test.describe('Authentication', () => {
-  test.describe('Login', () => {
-    test('should display login page', async ({ authPage }) => {
+test.describe('Authentification', () => {
+  test.describe('Connexion', () => {
+    test('affiche la page de connexion', async ({ authPage, page }) => {
       await authPage.goto();
+      await expect(page.getByText('Connectez-vous à votre compte')).toBeVisible();
       await expect(authPage.emailInput).toBeVisible();
       await expect(authPage.passwordInput).toBeVisible();
-      await expect(authPage.loginButton).toBeVisible();
+      await expect(authPage.loginButton).toHaveText('Se connecter');
     });
 
-    test('should login with valid credentials', async ({ authPage, page }) => {
+    test('connecte un créateur et redirige vers son dashboard', async ({ authPage, page }) => {
+      const creator = testUser('creator');
       await authPage.goto();
-      await authPage.login('creator@test.com', 'Password123!');
+      await authPage.login(creator.email, creator.password);
 
-      // Should redirect to dashboard
-      await expect(page).toHaveURL(/\/(creator\/dashboard|feed)/, { timeout: 5000 });
+      await expect(page).toHaveURL(/\/creator\/dashboard/, { timeout: 10000 });
     });
 
-    test('should show error with invalid credentials', async ({ authPage }) => {
+    test('connecte un abonné et redirige vers le feed', async ({ authPage, page }) => {
+      const subscriber = testUser('subscriber');
+      await authPage.goto();
+      await authPage.login(subscriber.email, subscriber.password);
+
+      await expect(page).toHaveURL(/\/feed/, { timeout: 10000 });
+    });
+
+    test('affiche une erreur avec des identifiants invalides', async ({ authPage }) => {
       await authPage.goto();
       await authPage.login('invalid@test.com', 'wrongpassword');
 
-      // Should show error message
-      await expect(authPage.page.locator('text=/identifiants|incorrects|invalid/i')).toBeVisible({ timeout: 3000 });
+      await expect(authPage.loginError).toHaveText(/Email ou mot de passe incorrect|Trop de tentatives/, {
+        timeout: 5000,
+      });
     });
 
-    test('should show validation error for empty email', async ({ authPage }) => {
+    test('exige un email', async ({ authPage }) => {
       await authPage.goto();
       await authPage.passwordInput.fill('password123');
       await authPage.loginButton.click();
 
-      // Should show validation error
+      // Native `required` validation keeps the form from submitting
       await expect(authPage.emailInput).toBeFocused();
+      expect(await authPage.emailInput.evaluate((el: HTMLInputElement) => el.validity.valueMissing)).toBe(true);
     });
 
-    test('should navigate to register page', async ({ authPage, page }) => {
+    test("navigue vers la page d'inscription", async ({ authPage, page }) => {
       await authPage.goto();
       await authPage.goToRegister();
 
@@ -42,84 +53,76 @@ test.describe('Authentication', () => {
     });
   });
 
-  test.describe('Registration', () => {
-    test('should display registration form', async ({ page }) => {
+  test.describe('Inscription', () => {
+    test("affiche le formulaire d'inscription", async ({ authPage, page }) => {
       await page.goto('/register');
 
-      await expect(page.locator('input[type="email"]')).toBeVisible();
-      await expect(page.locator('input[name="username"]')).toBeVisible();
-      await expect(page.locator('input[type="password"]')).toBeVisible();
+      await expect(page.getByTestId('register-role-subscriber')).toBeVisible();
+      await expect(page.getByTestId('register-role-creator')).toBeVisible();
+      await expect(authPage.registerEmailInput).toBeVisible();
+      await expect(authPage.usernameInput).toBeVisible();
+      await expect(authPage.registerPasswordInput).toBeVisible();
+      await expect(authPage.passwordConfirmInput).toBeVisible();
+      await expect(authPage.registerSubmitButton).toHaveText("S'inscrire");
     });
 
-    test('should register new creator account', async ({ authPage, page }) => {
+    test('crée un compte créateur', async ({ authPage, page }) => {
       const timestamp = Date.now();
-      const email = `creator-${timestamp}@test.com`;
-      const username = `creator${timestamp}`;
+      await authPage.register(`creator-${timestamp}@test.com`, `creator${timestamp}`, 'Password123!', 'CREATOR');
 
-      await authPage.register(email, username, 'Password123!', 'CREATOR');
-
-      // Should redirect after successful registration
-      await expect(page).toHaveURL(/\/(login|creator\/dashboard)/, { timeout: 5000 });
+      // Registration logs the user in (or asks to verify the email first)
+      await expect(page).toHaveURL(/\/(login|verify-email|creator\/dashboard)/, { timeout: 10000 });
     });
 
-    test('should register new subscriber account', async ({ authPage, page }) => {
+    test('crée un compte abonné', async ({ authPage, page }) => {
       const timestamp = Date.now();
-      const email = `subscriber-${timestamp}@test.com`;
-      const username = `subscriber${timestamp}`;
+      await authPage.register(`subscriber-${timestamp}@test.com`, `subscriber${timestamp}`, 'Password123!', 'SUBSCRIBER');
 
-      await authPage.register(email, username, 'Password123!', 'SUBSCRIBER');
-
-      // Should redirect after successful registration
-      await expect(page).toHaveURL(/\/(login|feed)/, { timeout: 5000 });
+      await expect(page).toHaveURL(/\/(login|verify-email|feed)/, { timeout: 10000 });
     });
 
-    test('should show error for mismatched passwords', async ({ authPage, page }) => {
+    test('signale des mots de passe différents', async ({ authPage, page }) => {
       await page.goto('/register');
-
-      await authPage.emailInput.fill('test@test.com');
-      await authPage.usernameInput.fill('testuser');
-      await authPage.passwordInput.fill('Password123!');
-      await authPage.passwordConfirmInput.fill('DifferentPassword123!');
+      await authPage.fillRegistration('test@test.com', 'testuser', 'Password123!', 'DifferentPassword123!');
       await authPage.registerSubmitButton.click();
 
-      // Should show validation error
-      await expect(page.locator('text=/mot de passe.*correspondent|passwords.*match/i')).toBeVisible();
+      await expect(authPage.registerError).toHaveText('Les mots de passe ne correspondent pas');
     });
 
-    test('should show error for weak password', async ({ authPage, page }) => {
+    test('refuse un mot de passe trop court', async ({ authPage, page }) => {
       await page.goto('/register');
-
-      await authPage.emailInput.fill('test@test.com');
-      await authPage.usernameInput.fill('testuser');
-      await authPage.passwordInput.fill('weak');
-      await authPage.passwordConfirmInput.fill('weak');
+      await authPage.fillRegistration('test@test.com', 'testuser', 'weak');
       await authPage.registerSubmitButton.click();
 
-      // Should show validation error
-      await expect(page.locator('text=/mot de passe.*faible|password.*weak|caractères|characters/i')).toBeVisible();
+      // Either the native minLength check or the form's own message blocks the submission
+      const nativeInvalid = await authPage.registerPasswordInput.evaluate(
+        (el: HTMLInputElement) => !el.checkValidity(),
+      );
+      if (!nativeInvalid) {
+        await expect(authPage.registerError).toHaveText('Le mot de passe doit contenir au moins 8 caractères');
+      }
+      await expect(page).toHaveURL(/\/register/);
     });
   });
 
-  test.describe('Authenticated Session', () => {
-    test('should maintain session after page reload', async ({ authenticatedCreator, page }) => {
+  test.describe('Session', () => {
+    test('conserve la session après rechargement', async ({ asCreator, page }) => {
       await page.reload();
 
-      // Should still be on dashboard
       await expect(page).toHaveURL(/\/creator\/dashboard/);
+      await expect(page.getByTestId('main-nav')).toBeVisible();
     });
 
-    test('should logout successfully', async ({ authenticatedCreator, page }) => {
-      await page.click('button:has-text("Déconnexion")');
+    test('se déconnecte', async ({ asCreator, page }) => {
+      await page.getByTestId('logout-button').click();
 
-      // Should redirect to login
       await expect(page).toHaveURL(/\/login/);
     });
 
-    test('should redirect to login when accessing protected route without auth', async ({ page }) => {
+    test('redirige vers la connexion sans session', async ({ page }) => {
       await page.goto('/creator/dashboard');
 
-      // Should redirect to login
-      await expect(page).toHaveURL(/\/login/, { timeout: 3000 });
+      await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
     });
   });
 });

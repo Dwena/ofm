@@ -354,6 +354,7 @@ export default function UploadPage() {
             <input
               ref={fileInputRef}
               type="file"
+              data-testid="upload-file-input"
               multiple
               accept="image/*,video/*,.pdf"
               onChange={handleFileSelect}
@@ -420,6 +421,7 @@ export default function UploadPage() {
                 return (
                   <div
                     key={index}
+                    data-testid="upload-file-item"
                     className={`flex items-center space-x-4 p-3 border rounded-lg transition-colors ${
                       hasError ? 'border-red-300 bg-red-50 dark:bg-red-950/20' : 'border-border'
                     }`}
@@ -478,7 +480,7 @@ export default function UploadPage() {
 
                       {/* Errors */}
                       {file.validationError && (
-                        <div className="flex items-center mt-2 text-xs text-red-600 dark:text-red-400">
+                        <div className="flex items-center mt-2 text-xs text-red-600 dark:text-red-400" data-testid="upload-file-error">
                           <AlertCircle className="h-3 w-3 mr-1 flex-shrink-0" />
                           <span>{file.validationError}</span>
                         </div>
@@ -508,6 +510,8 @@ export default function UploadPage() {
                         size="sm"
                         onClick={() => handleRemoveFile(index)}
                         disabled={file.uploading}
+                        aria-label="Retirer le fichier"
+                        data-testid="upload-file-remove"
                         className="h-8 w-8 p-0"
                       >
                         <X className="h-4 w-4" />
@@ -535,6 +539,9 @@ export default function UploadPage() {
               Titre <span className="text-red-500">*</span>
             </label>
             <Input
+              name="title"
+              data-testid="content-title"
+              aria-label="Titre"
               placeholder="Donnez un titre accrocheur à votre contenu"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -548,6 +555,9 @@ export default function UploadPage() {
           <div className="space-y-2">
             <label className="text-sm font-medium">Description</label>
             <textarea
+              name="description"
+              data-testid="content-description"
+              aria-label="Description"
               placeholder="Décrivez votre contenu, ajoutez des hashtags, etc."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -563,7 +573,7 @@ export default function UploadPage() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Niveau d'abonnement minimum</label>
               <Select value={tier} onValueChange={(value: any) => setTier(value)}>
-                <SelectTrigger>
+                <SelectTrigger data-testid="content-tier" aria-label="Niveau d'abonnement minimum">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -578,7 +588,7 @@ export default function UploadPage() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Type de contenu</label>
               <Select value={isPPV ? 'ppv' : 'normal'} onValueChange={(value) => setIsPPV(value === 'ppv')}>
-                <SelectTrigger>
+                <SelectTrigger data-testid="content-kind" aria-label="Type de contenu">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -596,6 +606,9 @@ export default function UploadPage() {
               </label>
               <Input
                 type="number"
+                name="ppvPrice"
+                data-testid="content-ppv-price"
+                aria-label="Prix PPV (€)"
                 step="0.01"
                 min="0.50"
                 max="999.99"
@@ -638,6 +651,7 @@ export default function UploadPage() {
           <Button
             onClick={handlePublish}
             disabled={!canPublish}
+            data-testid="publish-content"
             size="lg"
           >
             {createContentMutation.isPending ? (

@@ -75,6 +75,25 @@ const reportStatusLabels: Record<string, { label: string; className: string }> =
   REJECTED: { label: 'Rejeté', className: 'bg-gray-500 text-white' },
 }
 
+/** Audit-log actions written by admin & moderation endpoints */
+export const ACTION_LABELS: Record<string, string> = {
+  REPORT_RESOLVED: 'Signalement résolu',
+  REPORT_REJECTED: 'Signalement rejeté',
+  REPORT_REVIEWING: 'Signalement mis en examen',
+  REPORT_PENDING: 'Signalement remis en attente',
+  USER_WARN: 'Avertissement',
+  USER_SUSPEND: 'Suspension',
+  USER_SUSPENDED: 'Suspension',
+  USER_BAN: 'Bannissement',
+  USER_BANNED: 'Bannissement',
+  USER_ACTIVATE: 'Réactivation',
+  USER_DELETED: 'Suppression de compte',
+  CONTENT_REMOVED: 'Contenu retiré',
+  CONTENT_RESTORED: 'Contenu restauré',
+  SETTINGS_UPDATED: 'Paramètres modifiés',
+  SETTINGS_RESET: 'Paramètre réinitialisé',
+}
+
 export function ReportStatusBadge({ status }: { status: string }) {
   const config = reportStatusLabels[status] || { label: status, className: '' }
   return <Badge className={config.className}>{config.label}</Badge>

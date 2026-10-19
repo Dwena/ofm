@@ -29,6 +29,7 @@ import { AdminModule } from './admin/admin.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { StoriesModule } from './stories/stories.module';
 import { StreamingModule } from './streaming/streaming.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { StreamingModule } from './streaming/streaming.module';
     RedisModule,
     LoggerModule,
     MailModule,
+    SettingsModule,
 
     // Feature modules
     AuthModule,

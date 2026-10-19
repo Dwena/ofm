@@ -13,42 +13,17 @@ import {
   UserAction,
   ReportStatus,
 } from './dto/admin.dto';
-
-/**
- * Reports are stored with lowercase statuses (pending, reviewed, resolved, dismissed)
- * by the moderation module. The admin API speaks uppercase ReportStatus values,
- * so map between the two representations.
- */
-const REPORT_STATUS_TO_DB: Record<ReportStatus, string> = {
-  [ReportStatus.PENDING]: 'pending',
-  [ReportStatus.REVIEWING]: 'reviewed',
-  [ReportStatus.RESOLVED]: 'resolved',
-  [ReportStatus.REJECTED]: 'dismissed',
-};
-
-const REPORT_STATUS_FROM_DB: Record<string, ReportStatus> = {
-  pending: ReportStatus.PENDING,
-  reviewed: ReportStatus.REVIEWING,
-  resolved: ReportStatus.RESOLVED,
-  dismissed: ReportStatus.REJECTED,
-};
+import {
+  REPORT_STATUS_TO_DB,
+  reportStatusValues,
+  normalizeReportStatus,
+} from './report-status.util';
 
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
   constructor(private prisma: PrismaService) {}
-
-  /**
-   * DB values matching an API report status (both legacy uppercase and lowercase)
-   */
-  private reportStatusValues(status: ReportStatus): string[] {
-    return [REPORT_STATUS_TO_DB[status], status];
-  }
-
-  private normalizeReportStatus(status: string): ReportStatus {
-    return REPORT_STATUS_FROM_DB[status?.toLowerCase()] ?? (status?.toUpperCase() as ReportStatus);
-  }
 
   /**
    * Record an admin action in the audit log. Never fails the calling action.
@@ -369,7 +344,7 @@ export class AdminService {
     const where: any = {};
 
     if (status) {
-      where.status = { in: this.reportStatusValues(status) };
+      where.status = { in: reportStatusValues(status) };
     }
 
     if (type) {
@@ -402,7 +377,7 @@ export class AdminService {
         return {
           ...report,
           reportedType: report.reportedType?.toUpperCase(),
-          status: this.normalizeReportStatus(report.status),
+          status: normalizeReportStatus(report.status),
           reportedEntity: target.entity,
           reportedUser: target.user,
         };
@@ -479,8 +454,13 @@ export class AdminService {
   /**
    * Handle report (resolve, reject)
    */
-  async handleReport(adminId: string, dto: HandleReportDto) {
+  async handleReport(adminId: string, dto: HandleReportDto, actorRole: string = 'ADMIN') {
     const { reportId, status, adminNotes, action, durationDays, removeContent } = dto;
+
+    // Moderators triage reports; sanctions and takedowns stay admin-only
+    if (actorRole !== 'ADMIN' && (action || removeContent)) {
+      throw new ForbiddenException('Seuls les administrateurs peuvent appliquer des sanctions');
+    }
 
     const report = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -526,9 +506,28 @@ export class AdminService {
       }
     }
 
+    // Let the reporter know once a final decision is taken
+    if (report.reporterId && (status === ReportStatus.RESOLVED || status === ReportStatus.REJECTED)) {
+      try {
+        await this.prisma.notification.create({
+          data: {
+            userId: report.reporterId,
+            type: 'SYSTEM',
+            title: 'Mise à jour de votre signalement',
+            message:
+              status === ReportStatus.RESOLVED
+                ? 'Votre signalement a été examiné et des mesures ont été prises. Merci de votre vigilance.'
+                : 'Votre signalement a été examiné : aucune infraction n\'a été constatée.',
+          },
+        });
+      } catch (error) {
+        this.logger.error(`Failed to notify reporter of report ${reportId}: ${error.message}`);
+      }
+    }
+
     this.logger.log(`Report ${reportId} handled by admin ${adminId}: ${status}`);
 
-    return { ...updatedReport, status: this.normalizeReportStatus(updatedReport.status) };
+    return { ...updatedReport, status: normalizeReportStatus(updatedReport.status) };
   }
 
   // ==================== Content Management ====================
@@ -553,7 +552,7 @@ export class AdminService {
       const pendingReports = await this.prisma.report.findMany({
         where: {
           reportedType: { in: ['CONTENT', 'content'] },
-          status: { in: this.reportStatusValues(ReportStatus.PENDING) },
+          status: { in: reportStatusValues(ReportStatus.PENDING) },
         },
         select: { reportedId: true },
       });
@@ -623,7 +622,7 @@ export class AdminService {
           where: {
             reportedId: { in: ids },
             reportedType: { in: ['CONTENT', 'content'] },
-            status: { in: this.reportStatusValues(ReportStatus.PENDING) },
+            status: { in: reportStatusValues(ReportStatus.PENDING) },
           },
           _count: { id: true },
         })
@@ -918,7 +917,7 @@ export class AdminService {
 
       // Pending reports
       this.prisma.report.count({
-        where: { status: { in: this.reportStatusValues(ReportStatus.PENDING) } },
+        where: { status: { in: reportStatusValues(ReportStatus.PENDING) } },
       }),
     ]);
 
@@ -1002,12 +1001,13 @@ export class AdminService {
           ? ((totalSubscriptions - activeSubscriptions) / totalSubscriptions) * 100
           : 0,
       },
+      // Amounts are stored in euros (Decimal)
       revenue: {
-        total: Number(totalRevenue._sum.amount || 0) / 100,
-        platformFees: Number(platformFees._sum.platformFee || 0) / 100,
+        total: Number(totalRevenue._sum.amount || 0),
+        platformFees: Number(platformFees._sum.platformFee || 0),
         byType: revenueByType.map((item: any) => ({
           type: item.type,
-          amount: Number(item._sum.amount || 0) / 100,
+          amount: Number(item._sum.amount || 0),
         })),
       },
       reports: {

@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
 import { roundMoney, toCents } from '../common/utils/money';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class BillingService {
@@ -11,6 +12,7 @@ export class BillingService {
   constructor(
     private prisma: PrismaService,
     private stripeService: StripeService,
+    private settingsService: SettingsService,
   ) {}
 
   /**
@@ -193,7 +195,8 @@ export class BillingService {
   async processPendingPayouts() {
     this.logger.log('Processing pending payouts...');
 
-    const minimumPayoutAmount = 50; // EUR (transactions and payouts are stored in euros)
+    // Balances are computed from transaction net amounts, in EUR
+    const minimumPayoutAmount = await this.settingsService.getMinimumPayoutAmount();
 
     // Get creators with completed transactions
     const creatorsWithBalance = await this.prisma.user.findMany({

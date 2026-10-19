@@ -1,206 +1,106 @@
 import { test, expect } from './fixtures/auth.fixture';
 
-test.describe('Subscriber Feed', () => {
-  test.use({ authenticatedSubscriber: undefined });
-
-  test('should display feed page', async ({ page }) => {
+test.describe('Feed abonné', () => {
+  test.beforeEach(async ({ asSubscriber, page }) => {
     await page.goto('/feed');
-
-    await expect(page.locator('h1:has-text("Feed")')).toBeVisible();
   });
 
-  test('should have feed tabs', async ({ page }) => {
-    await page.goto('/feed');
-
-    await expect(page.locator('text=Tout')).toBeVisible();
-    await expect(page.locator('text=Mes Abonnements')).toBeVisible();
+  test('affiche le feed', async ({ page }) => {
+    await expect(page.getByRole('heading', { level: 1, name: 'Feed' })).toBeVisible();
   });
 
-  test('should switch between feed tabs', async ({ page }) => {
-    await page.goto('/feed');
-
-    await page.click('text=Mes Abonnements');
-
-    // URL or content should change
-    await page.waitForTimeout(500);
+  test('propose les onglets Tout / Mes Abonnements', async ({ page }) => {
+    await expect(page.getByRole('tab', { name: 'Tout' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Mes Abonnements' })).toBeVisible();
   });
 
-  test('should display content cards', async ({ page }) => {
-    await page.goto('/feed');
+  test('bascule sur « Mes Abonnements »', async ({ page }) => {
+    const tab = page.getByRole('tab', { name: 'Mes Abonnements' });
+    await tab.click();
 
-    // Should show content or empty state
-    const hasContent = await page.locator('[class*="Card"]').count() > 0;
-    const hasEmptyState = await page.locator('text=Aucun contenu').isVisible();
-
-    expect(hasContent || hasEmptyState).toBeTruthy();
+    await expect(tab).toHaveAttribute('data-state', 'active');
   });
 
-  test('should show pagination when available', async ({ page }) => {
-    await page.goto('/feed');
+  test('affiche des contenus ou un état vide', async ({ page }) => {
+    const empty = page.getByText(/Aucun contenu (disponible|de vos abonnements)/);
+    const cards = page.locator('main .rounded-lg.border');
 
-    // Check for pagination controls
-    const hasPagination = await page.locator('text=/Précédent|Suivant|Page/').count() > 0;
+    await expect(empty.or(cards.first())).toBeVisible({ timeout: 10000 });
+  });
 
-    // Pagination might not be visible if there's not enough content
-    if (hasPagination) {
-      await expect(page.locator('text=Page')).toBeVisible();
+  test('affiche la pagination quand elle est disponible', async ({ page }) => {
+    const previous = page.getByRole('button', { name: 'Précédent' });
+    if (await previous.count()) {
+      await expect(page.getByRole('button', { name: 'Suivant' })).toBeVisible();
     }
   });
 
-  test('should display locked content indicator', async ({ page }) => {
-    await page.goto('/feed');
-
-    // Look for any locked content
-    const lockedContent = page.locator('text=Contenu verrouillé').or(page.locator('text=Débloquer'));
-
-    if (await lockedContent.count() > 0) {
-      await expect(lockedContent.first()).toBeVisible();
-    }
-  });
-
-  test('should show like button on content', async ({ page }) => {
-    await page.goto('/feed');
-
-    // Look for like buttons (heart icons)
-    const likeButtons = page.locator('button').filter({ has: page.locator('svg') }).filter({ hasText: /^\d+$/ });
-
-    if (await likeButtons.count() > 0) {
-      await expect(likeButtons.first()).toBeVisible();
+  test('indique les contenus verrouillés', async ({ page }) => {
+    const locked = page.getByText('Contenu verrouillé');
+    if (await locked.count()) {
+      await expect(locked.first()).toBeVisible();
+      await expect(page.getByRole('button', { name: /Débloquer maintenant|S'abonner/ }).first()).toBeVisible();
     }
   });
 });
 
-test.describe('Subscriptions Management', () => {
-  test.use({ authenticatedSubscriber: undefined });
-
-  test('should display subscriptions page', async ({ page }) => {
+test.describe('Abonnements (abonné)', () => {
+  test.beforeEach(async ({ asSubscriber, page }) => {
     await page.goto('/subscriptions');
-
-    await expect(page.locator('h1:has-text("Abonnements")')).toBeVisible();
   });
 
-  test('should have discover and my subscriptions tabs', async ({ page }) => {
-    await page.goto('/subscriptions');
-
-    await expect(page.locator('text=Découvrir')).toBeVisible();
-    await expect(page.locator('text=Mes Abonnements')).toBeVisible();
+  test('affiche la page des abonnements', async ({ page }) => {
+    await expect(page.getByRole('heading', { level: 1, name: 'Abonnements' })).toBeVisible();
   });
 
-  test('should display search bar', async ({ page }) => {
-    await page.goto('/subscriptions');
-
-    await expect(page.locator('input[placeholder*="Rechercher"]')).toBeVisible();
+  test('propose les onglets Découvrir / Mes Abonnements', async ({ page }) => {
+    await expect(page.getByRole('tab', { name: 'Découvrir' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Mes Abonnements/ })).toBeVisible();
   });
 
-  test('should search for creators', async ({ page }) => {
-    await page.goto('/subscriptions');
+  test('recherche des créateurs', async ({ page }) => {
+    const search = page.getByPlaceholder('Rechercher des créateurs...');
+    await expect(search).toBeVisible();
+    await search.fill('creator');
 
-    const searchInput = page.locator('input[placeholder*="Rechercher"]');
-    await searchInput.fill('test');
-
-    await page.waitForTimeout(500);
+    await expect(
+      page.getByText(/abonnés$/).first().or(page.getByText('Aucun créateur trouvé')),
+    ).toBeVisible({ timeout: 10000 });
   });
 
-  test('should switch to my subscriptions tab', async ({ page }) => {
-    await page.goto('/subscriptions');
+  test('liste mes abonnements ou un état vide', async ({ page }) => {
+    await page.getByRole('tab', { name: /Mes Abonnements/ }).click();
 
-    await page.click('text=Mes Abonnements');
-
-    // Should show subscriptions or empty state
-    const hasSubscriptions = await page.locator('[class*="Card"]').count() > 0;
-    const hasEmptyState = await page.locator('text=Aucun abonnement').isVisible();
-
-    expect(hasSubscriptions || hasEmptyState).toBeTruthy();
-  });
-
-  test('should display featured creators', async ({ page }) => {
-    await page.goto('/subscriptions');
-
-    // Should show creators or loading state
-    await page.waitForTimeout(1000);
-
-    const hasCreators = await page.locator('text=abonnés').count() > 0;
-    const isLoading = await page.locator('.animate-spin').isVisible();
-
-    expect(hasCreators || isLoading).toBeTruthy();
-  });
-
-  test('should show subscribe buttons', async ({ page }) => {
-    await page.goto('/subscriptions');
-
-    await page.waitForTimeout(1000);
-
-    // Look for subscribe buttons
-    const subscribeButtons = page.locator('button:has-text("S\'abonner")');
-
-    if (await subscribeButtons.count() > 0) {
-      await expect(subscribeButtons.first()).toBeVisible();
-    }
-  });
-
-  test('should display tier information', async ({ page }) => {
-    await page.goto('/subscriptions');
-
-    await page.waitForTimeout(1000);
-
-    // Look for tier badges or names
-    const hasTiers = await page.locator('text=/BASIC|PREMIUM|VIP/').count() > 0;
-
-    if (hasTiers) {
-      await expect(page.locator('text=/BASIC|PREMIUM|VIP/').first()).toBeVisible();
-    }
+    await expect(
+      page.getByRole('button', { name: /Se désabonner|Reprendre|Se réabonner/ }).first().or(page.getByText("Vous n'avez aucun abonnement actif")),
+    ).toBeVisible({ timeout: 10000 });
   });
 });
 
-test.describe('Messages', () => {
-  test.use({ authenticatedSubscriber: undefined });
-
-  test('should display messages page', async ({ page }) => {
+test.describe('Messages (abonné)', () => {
+  test.beforeEach(async ({ asSubscriber, page }) => {
     await page.goto('/messages');
-
-    await expect(page.locator('h2:has-text("Messages")')).toBeVisible();
   });
 
-  test('should show online status', async ({ page }) => {
-    await page.goto('/messages');
-
-    // Should show online/offline badge
-    await expect(page.locator('text=/En ligne|Hors ligne/')).toBeVisible();
+  test('affiche la messagerie', async ({ page }) => {
+    await expect(page.getByRole('heading', { level: 2, name: 'Messages' })).toBeVisible();
   });
 
-  test('should display conversations list', async ({ page }) => {
-    await page.goto('/messages');
-
-    // Should show conversations or empty state
-    const hasConversations = await page.locator('[class*="cursor-pointer"]').count() > 0;
-    const hasEmptyState = await page.locator('text=Aucune conversation').isVisible();
-
-    expect(hasConversations || hasEmptyState).toBeTruthy();
+  test('affiche le statut de connexion temps réel', async ({ page }) => {
+    await expect(page.getByText(/^(En ligne|Hors ligne)$/).first()).toBeVisible();
   });
 
-  test('should show message input when conversation selected', async ({ page }) => {
-    await page.goto('/messages');
-
-    // If there are conversations, click one
-    const conversation = page.locator('[class*="cursor-pointer"]').first();
-
-    if (await conversation.count() > 0) {
-      await conversation.click();
-
-      // Should show message input
-      await expect(page.locator('input[placeholder*="message"]')).toBeVisible();
-      await expect(page.locator('button:has(svg)').last()).toBeVisible(); // Send button
-    }
+  test('affiche les conversations ou un état vide', async ({ page }) => {
+    await expect(
+      page.getByText('Aucune conversation').or(page.getByText('Sélectionnez une conversation')),
+    ).toBeVisible({ timeout: 10000 });
   });
 
-  test('should show empty state when no conversation selected', async ({ page }) => {
-    await page.goto('/messages');
+  test('ouvre une conversation et affiche la saisie', async ({ page }) => {
+    const firstConversation = page.locator('.cursor-pointer').first();
+    test.skip((await firstConversation.count()) === 0, 'Aucune conversation pour cet utilisateur');
 
-    // If no conversation selected, should show placeholder
-    const placeholder = page.locator('text=Sélectionnez une conversation');
-
-    if (await placeholder.isVisible()) {
-      await expect(placeholder).toBeVisible();
-    }
+    await firstConversation.click();
+    await expect(page.getByPlaceholder('Tapez votre message...')).toBeVisible();
   });
 });

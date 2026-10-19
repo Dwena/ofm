@@ -8,6 +8,7 @@ import { StripeWebhookService } from './stripe-webhook.service';
 import { OneTimePaymentService } from './one-time-payment.service';
 import { FilterTransactionsDto, GetStatsDto, SendTipDto, StatsInterval } from './dto/payments.dto';
 import { roundMoney, sumBalanceEntries, toCents } from '../common/utils/money';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class PaymentsService {
@@ -19,6 +20,7 @@ export class PaymentsService {
     private configService: ConfigService,
     private stripeWebhookService: StripeWebhookService,
     private oneTimePayments: OneTimePaymentService,
+    private settingsService: SettingsService,
   ) {}
 
   /**
@@ -359,7 +361,7 @@ export class PaymentsService {
   async processAutomatedPayouts() {
     this.logger.log('Running automated payouts...');
 
-    const minPayoutAmount = 50; // Minimum 50 EUR for payout
+    const minPayoutAmount = await this.settingsService.getMinimumPayoutAmount(); // EUR, see /admin/settings
 
     // Get all creators with Stripe accounts
     const creators = await this.prisma.user.findMany({

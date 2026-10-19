@@ -3,23 +3,26 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PrismaService } from '../common/database/prisma.service';
 import { toCents } from '../common/utils/money';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class StripeService {
   private readonly logger = new Logger(StripeService.name);
   private stripe: Stripe;
-  private platformFeePercentage: number;
 
   constructor(
     private configService: ConfigService,
     private prisma: PrismaService,
+    private settingsService: SettingsService,
   ) {
     this.stripe = new Stripe(this.configService.get('STRIPE_SECRET_KEY')!, {
       apiVersion: '2023-10-16',
     });
-    this.platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
+  }
+
+  /** Platform commission (percent), editable from /admin/settings */
+  private getPlatformFeePercentage(): Promise<number> {
+    return this.settingsService.getPlatformFeePercentage();
   }
 
   /**
@@ -58,7 +61,7 @@ export class StripeService {
 
     // If connected account, add application fee
     if (connectedAccountId) {
-      const platformFee = Math.round((amount * this.platformFeePercentage) / 100 * 100);
+      const platformFee = Math.round((amount * (await this.getPlatformFeePercentage())) / 100 * 100);
       paymentIntentData.application_fee_amount = platformFee;
       paymentIntentData.transfer_data = {
         destination: connectedAccountId,
@@ -168,7 +171,7 @@ export class StripeService {
     priceId: string,
     connectedAccountId: string,
   ) {
-    const platformFee = this.platformFeePercentage;
+    const platformFee = await this.getPlatformFeePercentage();
 
     return this.stripe.subscriptions.create({
       customer: customerId,
@@ -200,7 +203,7 @@ export class StripeService {
     return this.stripe.subscriptions.create({
       customer: params.customerId,
       items: [{ price: params.priceId }],
-      application_fee_percent: this.platformFeePercentage,
+      application_fee_percent: await this.getPlatformFeePercentage(),
       transfer_data: {
         destination: params.connectedAccountId,
       },
@@ -596,7 +599,7 @@ export class StripeService {
       });
 
       if (subscription) {
-        const platformFee = (invoice.amount_paid / 100) * (this.platformFeePercentage / 100);
+        const platformFee = (invoice.amount_paid / 100) * ((await this.getPlatformFeePercentage()) / 100);
         const netAmount = invoice.amount_paid / 100 - platformFee;
 
         await this.prisma.transaction.create({

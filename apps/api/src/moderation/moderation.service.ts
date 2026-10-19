@@ -64,103 +64,8 @@ export class ModerationService {
     };
   }
 
-  /**
-   * Get reports for moderation queue (admin)
-   */
-  async getReportsQueue(filters?: {
-    status?: string;
-    reportedType?: string;
-    page?: number;
-    limit?: number;
-  }) {
-    const page = filters?.page || 1;
-    const limit = filters?.limit || 20;
-    const skip = (page - 1) * limit;
-
-    const where: any = {};
-    if (filters?.status) where.status = filters.status;
-    if (filters?.reportedType) where.reportedType = filters.reportedType;
-
-    const [reports, total] = await Promise.all([
-      this.prisma.report.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          reporter: {
-            select: {
-              id: true,
-              username: true,
-              displayName: true,
-              avatar: true,
-            },
-          },
-        },
-      }),
-      this.prisma.report.count({ where }),
-    ]);
-
-    // Enrich with reported entity details
-    const enrichedReports = await Promise.all(
-      reports.map(async (report) => {
-        const entityDetails = await this.getReportedEntityDetails(
-          report.reportedType,
-          report.reportedId,
-        );
-        return { ...report, reportedEntity: entityDetails };
-      }),
-    );
-
-    return {
-      reports: enrichedReports,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-  }
-
-  /**
-   * Handle a report (admin action)
-   */
-  async handleReport(
-    adminId: string,
-    reportId: string,
-    decision: 'RESOLVE' | 'DISMISS' | 'ESCALATE',
-    resolution: string,
-  ) {
-    const report = await this.prisma.report.findUnique({
-      where: { id: reportId },
-    });
-
-    if (!report) {
-      throw new NotFoundException('Signalement non trouvé');
-    }
-
-    const updatedReport = await this.prisma.report.update({
-      where: { id: reportId },
-      data: {
-        status: decision === 'RESOLVE' ? 'resolved' : decision === 'DISMISS' ? 'dismissed' : 'reviewed',
-        reviewedBy: adminId,
-        reviewedAt: new Date(),
-        resolution,
-      },
-    });
-
-    // Notify reporter
-    await this.notificationsService.create({
-      userId: report.reporterId,
-      type: 'SYSTEM',
-      title: 'Mise à jour de votre signalement',
-      message: `Votre signalement a été traité: ${resolution}`,
-      linkUrl: `/reports/${report.id}`,
-    });
-
-    return updatedReport;
-  }
+  // Listing and handling reports lives in AdminService (GET /admin/reports,
+  // POST /admin/reports/handle) so both back-office screens share one format.
 
   /**
    * Auto-moderate content based on rules
@@ -366,44 +271,6 @@ export class ModerationService {
     }
   }
 
-  private async getReportedEntityDetails(type: string, id: string) {
-    switch (type) {
-      case 'USER':
-        return this.prisma.user.findUnique({
-          where: { id },
-          select: { id: true, username: true, displayName: true, avatar: true },
-        });
-      case 'CONTENT':
-        return this.prisma.content.findUnique({
-          where: { id },
-          select: {
-            id: true,
-            title: true,
-            type: true,
-            createdAt: true,
-            creator: { select: { username: true } },
-          },
-        });
-      case 'COMMENT':
-        return this.prisma.comment.findUnique({
-          where: { id },
-          select: {
-            id: true,
-            content: true,
-            createdAt: true,
-            user: { select: { username: true } },
-          },
-        });
-      case 'MESSAGE':
-        return this.prisma.message.findUnique({
-          where: { id },
-          select: { id: true, content: true, createdAt: true },
-        });
-      default:
-        return null;
-    }
-  }
-
   private async notifyAdminsOfNewReport(report: any) {
     // Get all admins
     const admins = await this.prisma.user.findMany({
@@ -418,7 +285,7 @@ export class ModerationService {
         type: 'SYSTEM',
         title: 'Nouveau signalement',
         message: `Un nouveau signalement de type ${report.reportedType} a été reçu`,
-        linkUrl: `/admin/moderation/reports/${report.id}`,
+        linkUrl: '/admin/reports',
       });
     }
   }

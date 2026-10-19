@@ -43,7 +43,7 @@ export function MediaJobProgress({
 
   if (isError) {
     return (
-      <p className="mt-2 text-xs text-muted-foreground">
+      <p className="mt-2 text-xs text-muted-foreground" data-testid="media-job-status" data-status="unknown">
         Statut du traitement indisponible
       </p>
     )
@@ -51,7 +51,7 @@ export function MediaJobProgress({
 
   if (!data) {
     return (
-      <div className="mt-2 flex items-center text-xs text-muted-foreground">
+      <div className="mt-2 flex items-center text-xs text-muted-foreground" data-testid="media-job-status" data-status="queued">
         <Loader2 className="h-3 w-3 mr-1 animate-spin" />
         {text.queued}...
       </div>
@@ -60,7 +60,7 @@ export function MediaJobProgress({
 
   if (data.status === 'completed') {
     return (
-      <div className="mt-2 flex items-center text-xs text-green-600">
+      <div className="mt-2 flex items-center text-xs text-green-600" data-testid="media-job-status" data-status="completed">
         <CheckCircle className="h-3 w-3 mr-1" />
         {text.ready}
       </div>
@@ -69,7 +69,7 @@ export function MediaJobProgress({
 
   if (data.status === 'failed') {
     return (
-      <div className="mt-2 flex items-center text-xs text-red-600 dark:text-red-400">
+      <div className="mt-2 flex items-center text-xs text-red-600 dark:text-red-400" data-testid="media-job-status" data-status="failed">
         <AlertCircle className="h-3 w-3 mr-1 flex-shrink-0" />
         <span>
           {text.failed}
@@ -80,7 +80,7 @@ export function MediaJobProgress({
   }
 
   return (
-    <div className="mt-2">
+    <div className="mt-2" data-testid="media-job-status" data-status={data.status}>
       <div className="flex items-center justify-between text-xs mb-1">
         <span className="flex items-center text-muted-foreground">
           <Loader2 className="h-3 w-3 mr-1 animate-spin" />

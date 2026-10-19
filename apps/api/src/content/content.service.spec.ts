@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/database/prisma.service';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
 import { StorageService } from '../storage/storage.service';
+import { SettingsService } from '../settings/settings.service';
 import { NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 
 describe('ContentService', () => {
@@ -74,6 +75,10 @@ describe('ContentService', () => {
         { provide: OneTimePaymentService, useValue: mockOneTimePayments },
         { provide: StorageService, useValue: mockStorageService },
         { provide: ConfigService, useValue: mockConfigService },
+        {
+          provide: SettingsService,
+          useValue: { getPlatformFeePercentage: jest.fn(async () => 15) },
+        },
       ],
     }).compile();
 

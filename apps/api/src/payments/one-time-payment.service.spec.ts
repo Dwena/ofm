@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
+import { SettingsService } from '../settings/settings.service';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { OneTimePaymentService, TipCompletedEvent } from './one-time-payment.service';
@@ -102,7 +102,7 @@ describe('OneTimePaymentService', () => {
         OneTimePaymentService,
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: StripeService, useValue: mockStripeService },
-        { provide: ConfigService, useValue: { get: jest.fn((_key: string, fallback?: string) => fallback) } },
+        { provide: SettingsService, useValue: { getPlatformFeePercentage: jest.fn(async () => 15) } },
       ],
     }).compile();
 

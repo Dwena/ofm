@@ -4,7 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { SettingsService } from '../settings/settings.service';
 import { Prisma, TransactionType } from '@prisma/client';
 import { Subject } from 'rxjs';
 import Stripe from 'stripe';
@@ -87,12 +87,8 @@ export class OneTimePaymentService {
   constructor(
     private prisma: PrismaService,
     private stripeService: StripeService,
-    private configService: ConfigService,
+    private settingsService: SettingsService,
   ) {}
-
-  get platformFeePercentage() {
-    return parseFloat(this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'));
-  }
 
   /**
    * Create the pending transaction and its PaymentIntent
@@ -125,7 +121,7 @@ export class OneTimePaymentService {
       await this.assertPaymentMethodOwnership(customerId, params.paymentMethodId);
     }
 
-    const { platformFee, netAmount } = computeFees(amount, this.platformFeePercentage);
+    const { platformFee, netAmount } = computeFees(amount, await this.settingsService.getPlatformFeePercentage());
     const metadata = Object.fromEntries(
       Object.entries(params.metadata ?? {}).filter(([, value]) => value !== undefined),
     );

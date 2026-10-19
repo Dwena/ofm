@@ -10,6 +10,7 @@ import { PrismaService } from '../common/database/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../common/mail/mail.service';
+import { SettingsService } from '../settings/settings.service';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -43,6 +44,10 @@ describe('AuthService (email verification & password reset)', () => {
     sendPasswordChangedEmail: jest.fn().mockResolvedValue(true),
   };
 
+  const mockSettingsService = {
+    isRegistrationOpen: jest.fn(async () => true),
+  };
+
   const mockConfigService = {
     get: jest.fn((key: string, defaultValue?: any) => (key === 'BCRYPT_ROUNDS' ? '4' : defaultValue)),
   };
@@ -57,6 +62,7 @@ describe('AuthService (email verification & password reset)', () => {
         { provide: ConfigService, useValue: mockConfigService },
         { provide: UsersService, useValue: {} },
         { provide: MailService, useValue: mockMailService },
+        { provide: SettingsService, useValue: mockSettingsService },
       ],
     }).compile();
 
@@ -92,6 +98,20 @@ describe('AuthService (email verification & password reset)', () => {
       expect(updateArgs.data.emailVerificationToken).toBe(sha256(rawToken));
       expect(updateArgs.data.emailVerificationToken).not.toBe(rawToken);
       expect(updateArgs.data.emailVerificationExpires.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('refuses registration when it is closed in the platform settings', async () => {
+      mockSettingsService.isRegistrationOpen.mockResolvedValueOnce(false);
+
+      await expect(
+        service.register({
+          email: 'bob@example.com',
+          username: 'bob',
+          password: 'Password1!',
+          role: 'SUBSCRIBER' as any,
+        }),
+      ).rejects.toThrow('Les inscriptions sont actuellement fermées');
+      expect(mockPrismaService.user.create).not.toHaveBeenCalled();
     });
   });
 
