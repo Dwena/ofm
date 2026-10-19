@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { subscriptionsApi } from '@/lib/api'
+import { formatEuros } from '@/lib/utils'
 import { getStripe } from '@/components/checkout/stripe-payment-element'
 import {
   Dialog,

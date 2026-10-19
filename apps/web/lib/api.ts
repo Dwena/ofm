@@ -263,6 +263,9 @@ export const paymentsApi = {
     api.post(`/payments/methods/${paymentMethodId}/default`),
   deletePaymentMethod: (paymentMethodId: string) =>
     api.delete(`/payments/methods/${paymentMethodId}`),
+  // Server price, tip limits and whether the payment can go through
+  getCheckoutInfo: (type: 'subscription' | 'ppv' | 'stream' | 'tip', itemId: string) =>
+    api.get('/payments/checkout-info', { params: { type, itemId } }),
 }
 
 export const subscriptionsApi = {
@@ -307,6 +310,9 @@ export const subscriptionsApi = {
   // paymentMethodId only applies to free → paid (new Stripe subscription).
   changeTier: (subscriptionId: string, data: { tierId: string; paymentMethodId?: string }) =>
     api.post(`/subscriptions/${subscriptionId}/change-tier`, data),
+  // Past-due subscription: pay the overdue invoice again; same result shape as subscribe
+  retryPayment: (subscriptionId: string, data: { paymentMethodId?: string } = {}) =>
+    api.post(`/subscriptions/${subscriptionId}/retry-payment`, data),
 }
 
 export const contentApi = {

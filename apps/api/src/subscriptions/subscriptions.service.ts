@@ -604,6 +604,65 @@ export class SubscriptionsService {
   }
 
   /**
+   * Pay the overdue invoice of a past-due subscription again, optionally with
+   * another saved card (which then becomes the subscription's card for the
+   * next renewals). Paid subscriptions save their card on the subscription, so
+   * changing the customer's default card alone would not fix a failed renewal.
+   * When the bank asks for 3D Secure, the clientSecret is returned and the
+   * client confirms it, then calls confirmSubscription.
+   */
+  async retryPayment(userId: string, subscriptionId: string, paymentMethodId?: string): Promise<SubscribeResult> {
+    const subscription = await this.getOwnSubscription(userId, subscriptionId);
+
+    if (subscription.status !== 'PAST_DUE') {
+      throw new BadRequestException('Only a past-due subscription can be paid again');
+    }
+
+    if (!subscription.stripeSubscriptionId) {
+      throw new BadRequestException('This subscription has no payment to retry');
+    }
+
+    const stripeSubscriptionId = subscription.stripeSubscriptionId;
+
+    if (paymentMethodId) {
+      await this.paymentsService.assertPaymentMethodOwnership(userId, paymentMethodId);
+      await this.stripeService.setSubscriptionPaymentMethod(stripeSubscriptionId, paymentMethodId);
+    }
+
+    const current = await this.stripeService.retrieveSubscription(stripeSubscriptionId);
+    const invoice = current.latest_invoice as Stripe.Invoice | null;
+
+    if (invoice?.id && invoice.status === 'open') {
+      try {
+        await this.stripeService.payInvoice(invoice.id, paymentMethodId);
+      } catch (error) {
+        // Declined, or 3D Secure needed: reported through the payment intent below
+        this.logger.warn(`Retry payment of subscription ${subscriptionId} failed: ${(error as Error).message}`);
+      }
+    }
+
+    const refreshed = await this.stripeService.retrieveSubscription(stripeSubscriptionId);
+    const synced = await this.subscriptionSync.syncFromStripe(refreshed);
+
+    if (refreshed.status === 'active' || refreshed.status === 'trialing') {
+      this.logger.log(`Past-due subscription ${subscriptionId} paid by user ${userId}`);
+      return { requiresPayment: false, subscription: synced };
+    }
+
+    const paymentIntent = (refreshed.latest_invoice as Stripe.Invoice | null)?.payment_intent as
+      | Stripe.PaymentIntent
+      | null;
+
+    return {
+      requiresPayment: true,
+      subscription: synced,
+      stripeSubscriptionId,
+      clientSecret: paymentIntent?.client_secret ?? null,
+      ...(paymentIntent?.status && { paymentStatus: paymentIntent.status }),
+    };
+  }
+
+  /**
    * Current user's subscription to a creator, if any
    */
   async getSubscriptionStatus(userId: string, creatorId: string) {

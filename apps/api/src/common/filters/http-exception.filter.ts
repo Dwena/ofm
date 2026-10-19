@@ -31,6 +31,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
       } else {
         message = exceptionResponse;
       }
+    } else if ((exception as { type?: string })?.type === 'StripeAuthenticationError') {
+      // Missing or placeholder Stripe secret key (local stack)
+      status = HttpStatus.SERVICE_UNAVAILABLE;
+      message = 'Payments are not configured';
+      this.logger.error(`Stripe authentication failed: ${(exception as Error).message}`);
     } else if (exception instanceof Error) {
       // Keep internal details (Prisma queries, stack paths) in the logs only
       this.logger.error(

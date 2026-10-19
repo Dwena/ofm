@@ -24,11 +24,16 @@ import {
   GetStatsDto,
   SendTipDto,
   ConfirmPaymentDto,
+  CheckoutInfoQueryDto,
 } from './dto/payments.dto';
+import { CheckoutInfoService } from './checkout-info.service';
 
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(
+    private readonly paymentsService: PaymentsService,
+    private readonly checkoutInfoService: CheckoutInfoService,
+  ) {}
 
   /**
    * Stripe Connect - Create account for creator
@@ -203,6 +208,19 @@ export class PaymentsController {
     @Body() dto: ConfirmPaymentDto,
   ) {
     return this.paymentsService.confirmTip(userId, creatorId, dto.paymentIntentId);
+  }
+
+  /**
+   * What a checkout is about to charge (server price, tip limits) and whether
+   * it can go through (Stripe configured, creator onboarded…)
+   */
+  @Get('checkout-info')
+  @UseGuards(JwtAuthGuard)
+  async getCheckoutInfo(
+    @CurrentUser('id') userId: string,
+    @Query() query: CheckoutInfoQueryDto,
+  ) {
+    return this.checkoutInfoService.getCheckoutInfo(userId, query.type, query.itemId);
   }
 
   /**

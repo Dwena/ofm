@@ -1,65 +1,77 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { paymentsApi, subscriptionsApi } from '@/lib/api'
+import { subscriptionsApi } from '@/lib/api'
 import { formatEuros } from '@/lib/utils'
-import StripePaymentElement, { getStripe } from '@/components/checkout/stripe-payment-element'
+import { getPaymentErrorMessage } from '@/lib/payment-errors'
+import StripePaymentElement, {
+  getStripe,
+  STRIPE_NOT_CONFIGURED_MESSAGE,
+} from '@/components/checkout/stripe-payment-element'
+import PaymentMethodPicker, {
+  NEW_CARD,
+  resolvePaymentMethod,
+  usePaymentMethods,
+} from '@/components/checkout/payment-method-picker'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CreditCard, CheckCircle, AlertCircle, Loader2, Lock, Plus } from 'lucide-react'
+import { CheckCircle, AlertCircle, Loader2, Lock } from 'lucide-react'
 
 interface SubscribeResult {
   requiresPayment: boolean
   subscription?: any
   stripeSubscriptionId?: string
   clientSecret?: string | null
+  paymentStatus?: string
+}
+
+/** Back from a Stripe redirect (3D Secure page) with the subscription being paid */
+export interface SubscriptionRedirectResume {
+  stripeSubscriptionId: string
+  status: string | null // redirect_status: succeeded | processing | failed
 }
 
 interface SubscriptionCheckoutProps {
   tierId: string
-  // Amount in euros, for display
+  // Amount in euros, for display (the API charges the tier price)
   amount: number
+  // 'month' | 'year'
+  interval?: string
   description: string
   // Free subscription being upgraded to this paid tier: it ends once the paid one is active
   changeFromSubscriptionId?: string
+  resume?: SubscriptionRedirectResume
   onSuccess?: () => void
   onCancel?: () => void
 }
 
-const NEW_CARD = 'new'
-
-const getErrorMessage = (error: any) =>
-  error?.response?.data?.message || error?.message || 'Une erreur est survenue lors du paiement.'
+// Query param carrying the Stripe subscription through a redirect
+export const PENDING_SUBSCRIPTION_PARAM = 'pendingSubscription'
 
 export default function SubscriptionCheckout({
   tierId,
   amount,
+  interval,
   description,
   changeFromSubscriptionId,
+  resume,
   onSuccess,
   onCancel,
 }: SubscriptionCheckoutProps) {
-  const [step, setStep] = useState<'review' | 'card' | 'processing' | 'success' | 'error'>('review')
+  const [step, setStep] = useState<'review' | 'card' | 'processing' | 'success' | 'error'>(
+    resume ? 'processing' : 'review',
+  )
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
   const [pending, setPending] = useState<{ clientSecret: string; stripeSubscriptionId: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const successTimer = useRef<ReturnType<typeof setTimeout>>()
+  const resumed = useRef(false)
 
   useEffect(() => () => clearTimeout(successTimer.current), [])
 
-  const { data: paymentMethods, isLoading: loadingMethods } = useQuery({
-    queryKey: ['payment-methods'],
-    queryFn: async () => {
-      const response = await paymentsApi.getPaymentMethods()
-      return response.data as { id: string; brand?: string; last4: string; expMonth?: number; expYear?: number; isDefault: boolean }[]
-    },
-  })
-
-  // Preselect the default card, or a new card when none is saved
-  const method =
-    selectedMethod ?? (paymentMethods?.find((m) => m.isDefault)?.id || paymentMethods?.[0]?.id || NEW_CARD)
+  const { data: paymentMethods, isLoading: loadingMethods } = usePaymentMethods()
+  const method = resolvePaymentMethod(selectedMethod, paymentMethods)
 
   const succeed = () => {
     setStep('success')
@@ -67,7 +79,7 @@ export default function SubscriptionCheckout({
   }
 
   const fail = (err: any) => {
-    setError(getErrorMessage(err))
+    setError(getPaymentErrorMessage(err))
     setStep('error')
   }
 
@@ -78,10 +90,25 @@ export default function SubscriptionCheckout({
       const response = await subscriptionsApi.confirm(stripeSubscriptionId)
       const result = response.data as SubscribeResult
       if (!result.requiresPayment) return
+      if (result.paymentStatus === 'requires_payment_method') {
+        throw new Error('Le paiement a été refusé. Essayez avec une autre carte.')
+      }
       await new Promise((resolve) => setTimeout(resolve, 1500))
     }
     throw new Error('Le paiement est en cours de traitement. Votre abonnement sera activé sous peu.')
   }
+
+  // Back from a Stripe redirect: check the payment instead of starting over
+  useEffect(() => {
+    if (!resume || resumed.current) return
+    resumed.current = true
+    if (resume.status === 'failed') {
+      fail(new Error('Le paiement n’a pas été validé par votre banque. Veuillez réessayer.'))
+      return
+    }
+    confirmSubscription(resume.stripeSubscriptionId).then(succeed, fail)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume])
 
   const handlePay = async () => {
     setStep('processing')
@@ -112,9 +139,13 @@ export default function SubscriptionCheckout({
         return
       }
 
-      // Saved card needing authentication (3D Secure)
+      // Saved card declined, or needing authentication (3D Secure)
+      if (result.paymentStatus === 'requires_payment_method') {
+        throw new Error('Le paiement a été refusé. Essayez avec une autre carte.')
+      }
+
       const stripe = await getStripe()
-      if (!stripe) throw new Error('Le paiement est indisponible : clé Stripe manquante.')
+      if (!stripe) throw new Error(STRIPE_NOT_CONFIGURED_MESSAGE)
 
       const { error: stripeError } = await stripe.confirmCardPayment(result.clientSecret, {
         payment_method: method,
@@ -140,6 +171,7 @@ export default function SubscriptionCheckout({
   }
 
   const formattedAmount = formatEuros(amount)
+  const period = interval === 'year' ? 'an' : 'mois'
 
   if (step === 'success') {
     return (
@@ -153,6 +185,15 @@ export default function SubscriptionCheckout({
             Votre paiement de {formattedAmount} a été effectué avec succès.
           </p>
           <p className="text-sm text-muted-foreground mt-2">Vous allez être redirigé...</p>
+          <Button
+            className="mt-4 w-full"
+            onClick={() => {
+              clearTimeout(successTimer.current)
+              onSuccess?.()
+            }}
+          >
+            Continuer
+          </Button>
         </CardContent>
       </Card>
     )
@@ -165,9 +206,9 @@ export default function SubscriptionCheckout({
           <div className="h-16 w-16 rounded-full bg-red-100 mx-auto mb-4 flex items-center justify-center">
             <AlertCircle className="h-8 w-8 text-red-600" />
           </div>
-          <h3 className="text-xl font-bold mb-2">Paiement Échoué</h3>
+          <h3 className="text-xl font-bold mb-2">Paiement échoué</h3>
           <p className="text-muted-foreground mb-4">{error}</p>
-          <div className="flex gap-2">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
             <Button variant="outline" onClick={onCancel} className="flex-1">
               Annuler
             </Button>
@@ -203,12 +244,15 @@ export default function SubscriptionCheckout({
           <CardDescription>Abonnement renouvelé automatiquement, résiliable à tout moment</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/50">
-            <div>
+          <div className="flex items-center justify-between gap-4 p-4 border rounded-lg bg-muted/50">
+            <div className="min-w-0">
               <p className="font-medium">Abonnement</p>
-              <p className="text-sm text-muted-foreground">{description}</p>
+              <p className="text-sm text-muted-foreground break-words">{description}</p>
             </div>
-            <p className="text-2xl font-bold">{formattedAmount}</p>
+            <p className="text-2xl font-bold whitespace-nowrap">
+              {formattedAmount}
+              <span className="text-sm font-normal text-muted-foreground">/{period}</span>
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -216,7 +260,7 @@ export default function SubscriptionCheckout({
       {/* Payment Method */}
       <Card>
         <CardHeader>
-          <CardTitle>Méthode de Paiement</CardTitle>
+          <CardTitle>Méthode de paiement</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           {step === 'card' && pending ? (
@@ -224,59 +268,27 @@ export default function SubscriptionCheckout({
               clientSecret={pending.clientSecret}
               mode="payment"
               submitLabel={`Payer ${formattedAmount}`}
+              returnParams={{ [PENDING_SUBSCRIPTION_PARAM]: pending.stripeSubscriptionId }}
               onSuccess={handleCardConfirmed}
               onCancel={() => setStep('review')}
             />
-          ) : loadingMethods ? (
-            <div className="flex justify-center py-4">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
           ) : (
             <>
-              {paymentMethods?.map((pm) => (
-                <label
-                  key={pm.id}
-                  className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${
-                    method === pm.id ? 'ring-2 ring-primary' : ''
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="payment-method"
-                    checked={method === pm.id}
-                    onChange={() => setSelectedMethod(pm.id)}
-                  />
-                  <CreditCard className="h-5 w-5 text-muted-foreground" />
-                  <span className="flex-1 text-sm">
-                    <span className="capitalize">{pm.brand || 'Carte'}</span> •••• {pm.last4}
-                  </span>
-                  {pm.expMonth && pm.expYear && (
-                    <span className="text-xs text-muted-foreground">
-                      {pm.expMonth.toString().padStart(2, '0')}/{pm.expYear}
-                    </span>
-                  )}
-                </label>
-              ))}
-              <label
-                className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${
-                  method === NEW_CARD ? 'ring-2 ring-primary' : ''
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="payment-method"
-                  checked={method === NEW_CARD}
-                  onChange={() => setSelectedMethod(NEW_CARD)}
-                />
-                <Plus className="h-5 w-5 text-muted-foreground" />
-                <span className="text-sm">Nouvelle carte</span>
-              </label>
-              <Alert>
-                <Lock className="h-4 w-4" />
-                <AlertDescription className="text-sm">
-                  Paiement sécurisé par Stripe. La carte utilisée sera enregistrée pour les renouvellements.
-                </AlertDescription>
-              </Alert>
+              <PaymentMethodPicker
+                name="payment-method"
+                methods={paymentMethods}
+                loading={loadingMethods}
+                value={method}
+                onChange={setSelectedMethod}
+              />
+              {!loadingMethods && (
+                <Alert>
+                  <Lock className="h-4 w-4" />
+                  <AlertDescription className="text-sm">
+                    Paiement sécurisé par Stripe. La carte utilisée sera enregistrée pour les renouvellements.
+                  </AlertDescription>
+                </Alert>
+              )}
             </>
           )}
         </CardContent>
@@ -284,7 +296,7 @@ export default function SubscriptionCheckout({
 
       {/* Actions */}
       {step === 'review' && (
-        <div className="flex gap-3">
+        <div className="flex flex-col-reverse gap-3 sm:flex-row">
           <Button variant="outline" onClick={onCancel} className="flex-1">
             Annuler
           </Button>

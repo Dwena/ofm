@@ -337,6 +337,26 @@ export class StripeService {
   }
 
   /**
+   * Use another saved card for the future invoices of a subscription
+   */
+  async setSubscriptionPaymentMethod(subscriptionId: string, paymentMethodId: string) {
+    return this.stripe.subscriptions.update(subscriptionId, {
+      default_payment_method: paymentMethodId,
+    });
+  }
+
+  /**
+   * Pay an open invoice now (past-due subscription), with a given card or the
+   * subscription / customer default one. Returns the invoice with its payment intent.
+   */
+  async payInvoice(invoiceId: string, paymentMethodId?: string) {
+    return this.stripe.invoices.pay(invoiceId, {
+      ...(paymentMethodId && { payment_method: paymentMethodId }),
+      expand: ['payment_intent'],
+    });
+  }
+
+  /**
    * Cancel subscription
    */
   async cancelSubscription(subscriptionId: string) {

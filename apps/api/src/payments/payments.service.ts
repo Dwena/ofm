@@ -8,12 +8,19 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { Prisma, TransactionStatus, TransactionType } from '@prisma/client';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { OneTimePaymentService } from './one-time-payment.service';
-import { FilterTransactionsDto, GetStatsDto, SendTipDto, StatsInterval } from './dto/payments.dto';
+import {
+  FilterTransactionsDto,
+  GetStatsDto,
+  SendTipDto,
+  StatsInterval,
+  TransactionDirection,
+} from './dto/payments.dto';
 import { roundMoney, sumBalanceEntries, toCents } from '../common/utils/money';
 import { createPeriodMap, getPeriodKey, resolvePeriodRange } from '../common/utils/periods';
 import { SettingsService } from '../settings/settings.service';
@@ -534,7 +541,8 @@ export class PaymentsService {
       throw new NotFoundException('User not found');
     }
 
-    if (!user.stripeCustomerId) {
+    // No saved card without Stripe (local stack with placeholder keys)
+    if (!user.stripeCustomerId || !this.stripeService.isConfigured()) {
       return [];
     }
 
@@ -573,6 +581,10 @@ export class PaymentsService {
 
     if (!user) {
       throw new NotFoundException('User not found');
+    }
+
+    if (!this.stripeService.isConfigured()) {
+      throw new ServiceUnavailableException('Payments are not configured');
     }
 
     const customerId = await this.getOrCreateCustomerId(user);
@@ -642,38 +654,66 @@ export class PaymentsService {
   }
 
   /**
-   * Get filtered transaction history
+   * Get filtered transaction history, with totals over all the user's
+   * transactions (not only the current page)
    */
   async getFilteredTransactions(userId: string, filters: FilterTransactionsDto) {
-    const { type, status, startDate, endDate, page = 1, limit = 20 } = filters;
+    const { type, status, startDate, endDate, direction, search, page = 1, limit = 20 } = filters;
     const skip = (page - 1) * limit;
 
-    const where: any = {
-      OR: [
-        { fromUserId: userId },
-        { toUserId: userId },
-      ],
-    };
+    const and: Prisma.TransactionWhereInput[] = [
+      direction === TransactionDirection.SENT
+        ? { fromUserId: userId }
+        : direction === TransactionDirection.RECEIVED
+          ? { toUserId: userId }
+          : { OR: [{ fromUserId: userId }, { toUserId: userId }] },
+    ];
 
     if (type) {
-      where.type = type;
+      and.push({ type: type as TransactionType });
     }
 
     if (status) {
-      where.status = status;
+      and.push({ status: status as TransactionStatus });
     }
 
     if (startDate || endDate) {
-      where.createdAt = {};
+      const createdAt: Prisma.DateTimeFilter = {};
       if (startDate) {
-        where.createdAt.gte = new Date(startDate);
+        createdAt.gte = new Date(startDate);
       }
       if (endDate) {
-        where.createdAt.lte = new Date(endDate);
+        // A bare date (YYYY-MM-DD) includes the whole day
+        const end = new Date(endDate);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+          end.setUTCHours(23, 59, 59, 999);
+        }
+        createdAt.lte = end;
       }
+      and.push({ createdAt });
     }
 
-    const [transactions, total] = await Promise.all([
+    const term = search?.trim();
+    if (term) {
+      // The other party of the transaction
+      const userMatch: Prisma.UserWhereInput = {
+        OR: [
+          { username: { contains: term, mode: 'insensitive' } },
+          { displayName: { contains: term, mode: 'insensitive' } },
+        ],
+      };
+      and.push({
+        OR: [
+          { fromUserId: userId, toUser: userMatch },
+          { toUserId: userId, fromUser: userMatch },
+        ],
+      });
+    }
+
+    const where: Prisma.TransactionWhereInput = { AND: and };
+    const paidStatuses: TransactionStatus[] = ['COMPLETED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'DISPUTED'];
+
+    const [transactions, total, spent, refunded, received] = await Promise.all([
       this.prisma.transaction.findMany({
         where,
         orderBy: {
@@ -701,15 +741,49 @@ export class PaymentsService {
         },
       }),
       this.prisma.transaction.count({ where }),
+      // Paid to creators
+      this.prisma.transaction.aggregate({
+        where: {
+          fromUserId: userId,
+          type: { in: ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'] },
+          status: { in: paidStatuses },
+        },
+        _sum: { amount: true },
+      }),
+      // Refunds received back
+      this.prisma.transaction.aggregate({
+        where: { toUserId: userId, type: 'REFUND', status: 'COMPLETED' },
+        _sum: { amount: true },
+      }),
+      // Earnings (creators), net of the platform fee
+      this.prisma.transaction.aggregate({
+        where: {
+          toUserId: userId,
+          type: { in: ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'] },
+          status: { in: paidStatuses },
+        },
+        _sum: { netAmount: true },
+      }),
     ]);
 
     return {
-      items: transactions,
+      items: transactions.map((transaction) => ({
+        ...transaction,
+        amount: Number(transaction.amount),
+        platformFee: Number(transaction.platformFee),
+        netAmount: Number(transaction.netAmount),
+      })),
       pagination: {
         page,
         limit,
         total,
         totalPages: Math.ceil(total / limit),
+      },
+      // Euros
+      summary: {
+        totalSpent: roundMoney(Number(spent._sum.amount ?? 0)),
+        totalRefunded: roundMoney(Number(refunded._sum.amount ?? 0)),
+        totalReceived: roundMoney(Number(received._sum.netAmount ?? 0)),
       },
     };
   }

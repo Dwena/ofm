@@ -63,7 +63,7 @@ const L = {
   notifications: link('/notifications', 'notifications', Bell),
   settings: link('/settings', 'settings', Settings, true),
   paymentMethods: link('/settings/payment-methods', 'paymentMethods', CreditCard),
-  transactions: link('/transactions', 'transactions', Receipt),
+  transactions: link('/payments', 'transactions', Receipt),
   wallet: link('/wallet', 'wallet', Wallet),
   creatorDashboard: link('/creator/dashboard', 'creatorDashboard', LayoutDashboard),
   creatorContent: link('/creator/content', 'creatorContent', FileText),
