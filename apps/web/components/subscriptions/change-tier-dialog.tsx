@@ -17,7 +17,6 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AlertCircle, Loader2 } from 'lucide-react'
 import { toast } from '@/hooks/use-toast'
-import { formatEuros } from '@/lib/utils'
 
 export interface TierSummary {
   id: string
