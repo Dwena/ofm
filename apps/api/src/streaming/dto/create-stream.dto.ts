@@ -3,6 +3,7 @@ import { IsString, IsOptional, IsEnum, IsBoolean, IsNumber, IsDateString, Min } 
 export enum StreamVisibility {
   PUBLIC = 'PUBLIC',
   SUBSCRIBERS_ONLY = 'SUBSCRIBERS_ONLY',
+  PREMIUM_SUBSCRIBERS = 'PREMIUM_SUBSCRIBERS',
   PRIVATE = 'PRIVATE',
 }
 
