@@ -24,6 +24,7 @@ describe('StreamingGateway', () => {
     updateViewerStats: jest.fn(),
     getRecentChatMessages: jest.fn(),
     createChatMessage: jest.fn(),
+    deleteChatMessage: jest.fn(),
   };
 
   const liveStream = {
@@ -113,6 +114,39 @@ describe('StreamingGateway', () => {
       expect(socket.disconnect).not.toHaveBeenCalled();
       expect(socket.userId).toBe('user-1');
       expect(socket.user?.username).toBe('alice');
+    });
+  });
+
+  describe('afterInit (auth middleware)', () => {
+    const setup = () => {
+      let middleware: (socket: any, next: (err?: Error) => void) => void = () => undefined;
+      gateway.afterInit({ use: (fn: typeof middleware) => (middleware = fn) } as any);
+      const run = (socket: AuthenticatedStreamSocket) =>
+        new Promise<Error | undefined>((resolve) => middleware(socket, resolve));
+      return run;
+    };
+
+    it('authenticates the socket before the client is connected', async () => {
+      const run = setup();
+      const socket = createSocket('s1');
+      socket.handshake.auth = { token: 'good' };
+      mockJwtService.verifyAsync.mockResolvedValue({ sub: 'user-1' });
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'user-1', username: 'alice', status: 'ACTIVE' });
+
+      expect(await run(socket)).toBeUndefined();
+      expect(socket.userId).toBe('user-1');
+
+      // handleConnection does not re-check an authenticated socket
+      await gateway.handleConnection(socket);
+      expect(mockJwtService.verifyAsync).toHaveBeenCalledTimes(1);
+      expect(socket.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('refuses the connection without a valid token', async () => {
+      const run = setup();
+      const error = await run(createSocket('s1'));
+      expect(error).toBeInstanceOf(Error);
+      expect(error?.message).toBe('Unauthorized');
     });
   });
 
@@ -320,6 +354,82 @@ describe('StreamingGateway', () => {
       await gateway.handleChatMessage(viewer, { streamId: 'stream-1', message: 'a' });
       const second = await gateway.handleChatMessage(viewer, { streamId: 'stream-1', message: 'b' });
       expect(second).toMatchObject({ reason: 'RATE_LIMITED' });
+    });
+
+    describe('moderation', () => {
+      let broadcaster: AuthenticatedStreamSocket;
+
+      beforeEach(async () => {
+        broadcaster = createSocket('b1', 'creator-1');
+        await gateway.handleStartBroadcast(broadcaster, { streamId: 'stream-1' });
+        emitted = [];
+      });
+
+      it('lets the creator delete a chat message', async () => {
+        mockStreamingService.deleteChatMessage.mockResolvedValue(true);
+        const result = await gateway.handleDeleteChatMessage(broadcaster, { streamId: 'stream-1', messageId: 'msg-1' });
+        expect(result).toEqual({ success: true });
+        expect(mockStreamingService.deleteChatMessage).toHaveBeenCalledWith('stream-1', 'msg-1');
+        expect(eventsTo(streamRoom('stream-1'), 'chat-message-deleted')).toEqual([
+          { streamId: 'stream-1', messageId: 'msg-1' },
+        ]);
+      });
+
+      it('reports unknown messages', async () => {
+        mockStreamingService.deleteChatMessage.mockResolvedValue(false);
+        const result = await gateway.handleDeleteChatMessage(broadcaster, { streamId: 'stream-1', messageId: 'nope' });
+        expect(result).toMatchObject({ reason: 'NOT_FOUND' });
+        expect(eventsTo(streamRoom('stream-1'), 'chat-message-deleted')).toHaveLength(0);
+      });
+
+      it('forbids viewers from moderating', async () => {
+        const deleted = await gateway.handleDeleteChatMessage(viewer, { streamId: 'stream-1', messageId: 'msg-1' });
+        const muted = gateway.handleMuteViewer(viewer, { streamId: 'stream-1', userId: 'user-2' });
+        expect(deleted).toMatchObject({ reason: 'NOT_CREATOR' });
+        expect(muted).toMatchObject({ reason: 'NOT_CREATOR' });
+        expect(mockStreamingService.deleteChatMessage).not.toHaveBeenCalled();
+      });
+
+      it('mutes and unmutes a viewer in the chat', async () => {
+        expect(gateway.handleMuteViewer(broadcaster, { streamId: 'stream-1', userId: 'user-1' })).toEqual({
+          success: true,
+          muted: true,
+        });
+        expect(eventsTo(streamRoom('stream-1'), 'viewer-muted')).toEqual([
+          { streamId: 'stream-1', userId: 'user-1', muted: true },
+        ]);
+
+        const refused = await gateway.handleChatMessage(viewer, { streamId: 'stream-1', message: 'spam' });
+        expect(refused).toMatchObject({ reason: 'MUTED' });
+        expect(mockStreamingService.createChatMessage).not.toHaveBeenCalled();
+
+        // A muted viewer who rejoins is told so
+        const rejoin = await gateway.handleJoinStream(createSocket('v2', 'user-1'), { streamId: 'stream-1' });
+        expect(rejoin).toMatchObject({ muted: true });
+
+        gateway.handleMuteViewer(broadcaster, { streamId: 'stream-1', userId: 'user-1', muted: false });
+        mockStreamingService.createChatMessage.mockResolvedValue({
+          id: 'msg-2',
+          senderId: 'user-1',
+          message: 'ok',
+          createdAt: new Date(),
+        });
+        const allowed = await gateway.handleChatMessage(viewer, { streamId: 'stream-1', message: 'ok' });
+        expect(allowed).toMatchObject({ success: true });
+      });
+
+      it('cannot mute the creator', () => {
+        expect(gateway.handleMuteViewer(broadcaster, { streamId: 'stream-1', userId: 'creator-1' })).toHaveProperty(
+          'error',
+        );
+      });
+
+      it('forgets mutes once the stream ends', async () => {
+        gateway.handleMuteViewer(broadcaster, { streamId: 'stream-1', userId: 'user-1' });
+        gateway.notifyStreamEnded('stream-1');
+        const rejoin = await gateway.handleJoinStream(createSocket('v3', 'user-1'), { streamId: 'stream-1' });
+        expect(rejoin).toMatchObject({ muted: false });
+      });
     });
 
     it('rejects chat from sockets that did not join', async () => {
