@@ -55,7 +55,7 @@ import ChangeTierDialog, {
 } from '@/components/subscriptions/change-tier-dialog'
 import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 import TipDialog from '@/components/profile/tip-dialog'
-import ReportDialog from '@/components/profile/report-dialog'
+import ReportDialog from '@/components/social/report-dialog'
 
 interface PublicProfile {
   id: string
@@ -831,11 +831,8 @@ export default function CreatorProfilePage() {
 
       {!isOwnProfile && (
         <ReportDialog
-          open={reportOpen}
-          onOpenChange={setReportOpen}
-          reportedType="USER"
-          reportedId={creator.id}
-          targetLabel={`@${creator.username}`}
+          target={reportOpen ? { type: 'USER', id: creator.id } : null}
+          onClose={() => setReportOpen(false)}
         />
       )}
 
