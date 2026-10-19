@@ -31,40 +31,58 @@ function unwrapEnvelope(response: AxiosResponse) {
   return response
 }
 
+/** Fired on `window` when the session can no longer be refreshed (AuthProvider clears it). */
+export const SESSION_EXPIRED_EVENT = 'auth:session-expired'
+
+// One refresh at a time: refresh tokens are single-use (rotated on every refresh), so
+// parallel 401s must share the same refresh call instead of revoking each other.
+let refreshPromise: Promise<string> | null = null
+
+function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const refreshToken = localStorage.getItem('refreshToken')
+      if (!refreshToken) {
+        throw new Error('No refresh token')
+      }
+      const response = await axios.post(`${API_URL}/api/v1/auth/refresh`, { refreshToken })
+      const { accessToken, refreshToken: newRefreshToken } = response.data.data
+      localStorage.setItem('accessToken', accessToken)
+      localStorage.setItem('refreshToken', newRefreshToken)
+      return accessToken as string
+    })().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
 // Response interceptor - Unwrap envelope, handle errors and token refresh
 api.interceptors.response.use(
   unwrapEnvelope,
   async (error: AxiosError) => {
     const originalRequest = error.config as any
 
-    // If 401 and not already retried
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // If 401 and not already retried (and there is a session to refresh)
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !originalRequest._retry &&
+      localStorage.getItem('refreshToken')
+    ) {
       originalRequest._retry = true
 
       try {
-        const refreshToken = localStorage.getItem('refreshToken')
-        if (!refreshToken) {
-          throw new Error('No refresh token')
-        }
-
-        const response = await axios.post(`${API_URL}/api/v1/auth/refresh`, {
-          refreshToken,
-        })
-
-        const { accessToken, refreshToken: newRefreshToken } = response.data.data
-
-        localStorage.setItem('accessToken', accessToken)
-        localStorage.setItem('refreshToken', newRefreshToken)
-
+        const accessToken = await refreshAccessToken()
         originalRequest.headers.Authorization = `Bearer ${accessToken}`
         return api(originalRequest)
       } catch (refreshError) {
-        // Refresh failed - logout user
+        // Refresh failed: the AuthProvider clears the session (protected layouts then go to /login)
         localStorage.removeItem('accessToken')
         localStorage.removeItem('refreshToken')
         localStorage.removeItem('user')
-        window.location.href = '/login'
-        return Promise.reject(refreshError)
+        window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+        return Promise.reject(error)
       }
     }
 
@@ -80,7 +98,8 @@ export const authApi = {
   // redirecting to /login) when the credentials or the 2FA code are wrong.
   login: (data: { email: string; password: string; totpCode?: string }) =>
     api.post('/auth/login', data, { _retry: true } as any),
-  logout: () => api.post('/auth/logout'),
+  // No refresh attempt: the local session is cleared whatever the answer
+  logout: () => api.post('/auth/logout', undefined, { _retry: true } as any),
   getMe: () => api.get('/auth/me'),
   enable2FA: () => api.post('/auth/2fa/enable'),
   verify2FA: (code: string) => api.post('/auth/2fa/verify', { code }),
@@ -90,6 +109,10 @@ export const authApi = {
   forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
   resetPassword: (token: string, password: string) =>
     api.post('/auth/reset-password', { token, password }),
+  getPublicSettings: () =>
+    api.get<{ registrationOpen: boolean; maintenanceMode: boolean; maintenanceMessage: string | null }>(
+      '/settings/public'
+    ),
 }
 
 export const pushApi = {

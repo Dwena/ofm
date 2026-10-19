@@ -3,22 +3,27 @@
 import { Suspense, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { CheckCircle, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { CheckCircle, Loader2 } from 'lucide-react'
 import { authApi } from '@/lib/api'
+import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { CardContent, CardFooter } from '@/components/ui/card'
-import { AuthMessage, AuthShell, getApiErrorMessage } from '@/components/auth-shell'
-
-const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/
+import {
+  AuthMessage,
+  AuthShell,
+  PasswordChecklist,
+  PasswordInput,
+  getApiErrorMessage,
+  getPasswordError,
+} from '@/components/auth-shell'
 
 function ResetPasswordContent() {
   const searchParams = useSearchParams()
   const token = searchParams.get('token')
+  const { clearSession } = useAuth()
 
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
@@ -28,24 +33,21 @@ function ResetPasswordContent() {
     setError('')
 
     if (!token) return
-    if (password !== confirmPassword) {
-      setError('Les mots de passe ne correspondent pas.')
+    const passwordError = getPasswordError(password)
+    if (passwordError) {
+      setError(passwordError)
       return
     }
-    if (!PASSWORD_REGEX.test(password)) {
-      setError(
-        'Le mot de passe doit contenir au moins 8 caractères, dont une majuscule, une minuscule, un chiffre et un caractère spécial (@$!%*?&).'
-      )
+    if (password !== confirmPassword) {
+      setError('Les mots de passe ne correspondent pas.')
       return
     }
 
     setLoading(true)
     try {
       await authApi.resetPassword(token, password)
-      // All sessions were revoked server-side
-      localStorage.removeItem('accessToken')
-      localStorage.removeItem('refreshToken')
-      localStorage.removeItem('user')
+      // All sessions were revoked server-side: drop the local one too
+      clearSession()
       setDone(true)
     } catch (err) {
       setError(getApiErrorMessage(err, 'Impossible de réinitialiser le mot de passe.'))
@@ -92,7 +94,7 @@ function ResetPasswordContent() {
     <form onSubmit={handleSubmit}>
       <CardContent className="space-y-4">
         {error && (
-          <AuthMessage type="error">
+          <AuthMessage type="error" testId="reset-password-error">
             {error}{' '}
             {error.includes('expiré') && (
               <Link href="/forgot-password" className="underline">
@@ -105,38 +107,26 @@ function ResetPasswordContent() {
           <label className="text-sm font-medium" htmlFor="password">
             Nouveau mot de passe
           </label>
-          <div className="relative">
-            <Input
-              id="password"
-              type={showPassword ? 'text' : 'password'}
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              disabled={loading}
-              autoComplete="new-password"
-              className="pr-10"
-            />
-            <button
-              type="button"
-              className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground"
-              onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
-            >
-              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            8 caractères minimum, avec une majuscule, une minuscule, un chiffre et un caractère spécial.
-          </p>
+          <PasswordInput
+            id="password"
+            data-testid="reset-password"
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            disabled={loading}
+            autoComplete="new-password"
+            autoFocus
+          />
+          <PasswordChecklist value={password} />
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="confirmPassword">
             Confirmer le mot de passe
           </label>
-          <Input
+          <PasswordInput
             id="confirmPassword"
-            type={showPassword ? 'text' : 'password'}
+            data-testid="reset-password-confirm"
             placeholder="••••••••"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
@@ -152,6 +142,7 @@ function ResetPasswordContent() {
           className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg py-6"
           disabled={loading}
         >
+          {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
           {loading ? 'Enregistrement...' : 'Changer le mot de passe'}
         </Button>
         <p className="text-sm text-center text-muted-foreground">

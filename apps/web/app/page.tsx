@@ -1,15 +1,20 @@
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { DollarSign, Users, Lock, TrendingUp, Video, MessageCircle, Star, Heart } from 'lucide-react'
+import { DollarSign, Lock, TrendingUp, Video, MessageCircle, Star, Heart, ShieldCheck, CreditCard, Radio } from 'lucide-react'
+import {
+  LandingFooterCta,
+  LandingHeaderActions,
+  LandingHeroActions,
+  LandingMaintenanceBanner,
+} from '@/components/landing-actions'
 
 export default function Home() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
       {/* Hero Section */}
-      <div className="container mx-auto px-4 py-16">
+      <div className="container mx-auto px-4 py-8 sm:py-16">
+        <LandingMaintenanceBanner />
         {/* Navigation */}
-        <nav className="flex justify-between items-center mb-20">
+        <nav className="flex justify-between items-center gap-4 mb-12 sm:mb-20">
           <div className="flex items-center space-x-2">
             <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-lg flex items-center justify-center">
               <Heart className="w-6 h-6 text-white" />
@@ -18,16 +23,7 @@ export default function Home() {
               OFM
             </span>
           </div>
-          <div className="flex items-center space-x-4">
-            <Link href="/login">
-              <Button variant="ghost">Connexion</Button>
-            </Link>
-            <Link href="/register">
-              <Button className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700">
-                Commencer
-              </Button>
-            </Link>
-          </div>
+          <LandingHeaderActions />
         </nav>
 
         {/* Hero Content */}
@@ -37,36 +33,25 @@ export default function Home() {
               Plateforme pour Créateurs de Contenu
             </span>
           </div>
-          <h1 className="text-5xl md:text-7xl font-bold mb-6 leading-tight">
+          <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold mb-6 leading-tight">
             Monétisez votre{' '}
             <span className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
               passion
             </span>
           </h1>
-          <p className="text-xl text-gray-600 dark:text-gray-300 mb-8 max-w-2xl mx-auto">
+          <p className="text-lg sm:text-xl text-gray-600 dark:text-gray-300 mb-8 max-w-2xl mx-auto">
             Créez du contenu exclusif, connectez-vous avec vos fans, et générez des revenus récurrents grâce aux abonnements.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link href="/register">
-              <Button size="lg" className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg px-8 py-6">
-                Devenir Créateur
-              </Button>
-            </Link>
-            <Link href="/register">
-              <Button size="lg" variant="outline" className="text-lg px-8 py-6 border-2">
-                S'abonner à des Créateurs
-              </Button>
-            </Link>
-          </div>
+          <LandingHeroActions />
         </div>
 
-        {/* Stats */}
+        {/* Highlights */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-8 max-w-4xl mx-auto mb-20">
           {[
-            { label: 'Créateurs', value: '1K+', icon: Users },
-            { label: 'Revenus Générés', value: '€500K+', icon: DollarSign },
-            { label: 'Abonnés Actifs', value: '50K+', icon: Heart },
-            { label: 'Contenus', value: '100K+', icon: Video },
+            { label: 'Inscription gratuite', value: '0 €', icon: Heart },
+            { label: 'Paiements sécurisés par Stripe', value: 'Stripe', icon: CreditCard },
+            { label: 'Double authentification', value: '2FA', icon: ShieldCheck },
+            { label: 'Lives & messagerie', value: 'Live', icon: Radio },
           ].map((stat) => (
             <div key={stat.label} className="text-center">
               <div className="flex justify-center mb-2">
@@ -82,7 +67,7 @@ export default function Home() {
         <div className="mb-20">
           <div className="text-center mb-12">
             <h2 className="text-4xl font-bold mb-4">Tout ce dont vous avez besoin</h2>
-            <p className="text-xl text-gray-600 dark:text-gray-300">
+            <p className="text-lg sm:text-xl text-gray-600 dark:text-gray-300">
               Des outils puissants pour développer votre activité de créateur
             </p>
           </div>
@@ -142,7 +127,7 @@ export default function Home() {
         <div className="mb-20">
           <div className="text-center mb-12">
             <h2 className="text-4xl font-bold mb-4">Comment ça marche</h2>
-            <p className="text-xl text-gray-600 dark:text-gray-300">
+            <p className="text-lg sm:text-xl text-gray-600 dark:text-gray-300">
               Lancez votre activité en quelques minutes
             </p>
           </div>
@@ -176,23 +161,19 @@ export default function Home() {
         </div>
 
         {/* CTA Section */}
-        <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl p-12 text-center text-white">
-          <h2 className="text-4xl font-bold mb-4">Prêt à commencer ?</h2>
+        <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl p-6 sm:p-12 text-center text-white">
+          <h2 className="text-3xl sm:text-4xl font-bold mb-4">Prêt à commencer ?</h2>
           <p className="text-xl mb-8 opacity-90">
-            Rejoignez des milliers de créateurs qui monétisent leur passion
+            Rejoignez les créateurs qui monétisent leur passion
           </p>
-          <Link href="/register">
-            <Button size="lg" variant="secondary" className="text-lg px-8 py-6">
-              Créer mon compte gratuitement
-            </Button>
-          </Link>
+          <LandingFooterCta />
         </div>
       </div>
 
       {/* Footer */}
       <footer className="border-t border-gray-200 dark:border-gray-800 py-8">
         <div className="container mx-auto px-4 text-center text-gray-600 dark:text-gray-400">
-          <p>&copy; 2024 OFM. Tous droits réservés.</p>
+          <p>&copy; {new Date().getFullYear()} OFM. Tous droits réservés.</p>
         </div>
       </footer>
     </div>
