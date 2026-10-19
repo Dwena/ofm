@@ -728,6 +728,16 @@ model AuditLog {
   @@index([createdAt])
 }
 
+// Platform-wide settings editable from the back-office (key/value).
+// Missing keys fall back to environment variables (see SettingsService).
+model PlatformSetting {
+  key         String   @id
+  value       Json
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 model Story {
   id          String   @id @default(uuid())
 

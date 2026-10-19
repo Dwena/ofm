@@ -1,17 +1,26 @@
 {
   "creator": {
-    "email": "alice@ofm.com",
+    "email": "creator@demo.com",
     "password": "SecurePass123!",
-    "username": "alice"
+    "username": "demo_creator",
+    "displayName": "Alice Martin"
+  },
+  "creator2": {
+    "email": "creator2@demo.com",
+    "password": "SecurePass123!",
+    "username": "creator_fitness",
+    "displayName": "Bob Dupont"
   },
   "subscriber": {
-    "email": "david@ofm.com",
+    "email": "subscriber@demo.com",
     "password": "SecurePass123!",
-    "username": "david"
+    "username": "demo_subscriber",
+    "displayName": "David Bernard"
   },
   "admin": {
     "email": "admin@ofm.com",
     "password": "SecurePass123!",
-    "username": "admin"
+    "username": "admin",
+    "displayName": "Administrateur"
   }
 }

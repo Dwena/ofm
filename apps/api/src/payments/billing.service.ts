@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class BillingService {
@@ -10,6 +11,7 @@ export class BillingService {
   constructor(
     private prisma: PrismaService,
     private stripeService: StripeService,
+    private settingsService: SettingsService,
   ) {}
 
   /**
@@ -192,7 +194,8 @@ export class BillingService {
   async processPendingPayouts() {
     this.logger.log('Processing pending payouts...');
 
-    const minimumPayoutAmount = 5000; // 50 EUR in cents
+    // Balances are computed from transaction net amounts, in EUR
+    const minimumPayoutAmount = await this.settingsService.getMinimumPayoutAmount();
 
     // Get creators with completed transactions
     const creatorsWithBalance = await this.prisma.user.findMany({

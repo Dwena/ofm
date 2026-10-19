@@ -394,16 +394,28 @@ export const adminApi = {
     api.get('/admin/activity-logs', { params: { page, limit } }),
   getAuditLogs: (params?: { action?: string; resource?: string; userId?: string; page?: number; limit?: number }) =>
     api.get('/admin/audit-logs', { params }),
+  // Time series grouped by day | week | month; amounts in euros
+  getAnalytics: (params?: { startDate?: string; endDate?: string; interval?: 'day' | 'week' | 'month' }) =>
+    api.get('/admin/stats/analytics', { params }),
+  // Reports received/handled over the last `days` days, handling time, actions taken
+  getModerationStats: (days: number = 30) =>
+    api.get('/admin/moderation/stats', { params: { days } }),
+  getSettings: () => api.get('/admin/settings'),
+  updateSettings: (data: {
+    platformFeePercentage?: number
+    minimumPayoutAmount?: number
+    registrationOpen?: boolean
+    maintenanceMode?: boolean
+    maintenanceMessage?: string
+  }) => api.put('/admin/settings', data),
+  // Remove the database override so the setting falls back to the environment value
+  resetSetting: (key: string) => api.delete(`/admin/settings/${key}`),
 }
 
 export const moderationApi = {
   createReport: (data: { reportedType: string; reportedId: string; reason: string; description?: string }) =>
     api.post('/moderation/reports', data),
-  // Statuses are lowercase here: pending | reviewed | resolved | dismissed
-  getReportsQueue: (params?: { status?: string; reportedType?: string; page?: number; limit?: number }) =>
-    api.get('/moderation/reports/queue', { params }),
-  handleReport: (reportId: string, decision: 'RESOLVE' | 'DISMISS' | 'ESCALATE', resolution: string) =>
-    api.post(`/moderation/reports/${reportId}/handle`, { decision, resolution }),
+  // Listing/handling reports: use adminApi.getReports / adminApi.handleReport (single format)
   banUser: (userId: string, reason: string) =>
     api.post(`/moderation/users/${userId}/ban`, { reason }),
   suspendUser: (userId: string, reason: string, durationDays: number) =>

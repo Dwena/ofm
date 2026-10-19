@@ -1,7 +1,9 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useState } from 'react';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { format, parseISO } from 'date-fns';
+import { fr } from 'date-fns/locale';
 import {
   BarChart,
   Bar,
@@ -12,190 +14,284 @@ import {
   ResponsiveContainer,
   LineChart,
   Line,
-  PieChart,
-  Pie,
-  Cell,
 } from 'recharts';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { adminApi } from '@/lib/api';
+import { ACTION_LABELS, EmptyState, LoadingState, timeAgo } from '@/components/admin/admin-shared';
+import {
+  ChartLegend,
+  ChartTooltip,
+  StatTile,
+  VIZ,
+  axisProps,
+  formatNumber,
+  gridProps,
+} from '@/components/admin/admin-charts';
+
+interface ModerationStatsResponse {
+  period: { start: string; end: string; days: number };
+  totals: {
+    received: number;
+    handled: number;
+    pending: number;
+    resolutionRate: number;
+    avgHandlingHours: number | null;
+    medianHandlingHours: number | null;
+    actions: number;
+    todayActions: number;
+  };
+  byStatus: { status: string; count: number }[];
+  byReason: { reason: string; count: number }[];
+  byType: { type: string; count: number }[];
+  overTime: { date: string; received: number; handled: number }[];
+  actionsByDay: {
+    date: string;
+    resolved: number;
+    rejected: number;
+    sanctions: number;
+    contentRemoved: number;
+    other: number;
+  }[];
+  actionsByType: { action: string; count: number }[];
+  recentActions: {
+    id: string;
+    action: string;
+    resource: string;
+    resourceId: string | null;
+    createdAt: string;
+    actor: { id: string; username: string; displayName?: string | null } | null;
+  }[];
+}
+
+const REASON_LABELS: Record<string, string> = {
+  SPAM: 'Spam',
+  HARASSMENT: 'Harcèlement',
+  HATE_SPEECH: 'Discours haineux',
+  NUDITY: 'Nudité',
+  VIOLENCE: 'Violence',
+  FAKE_NEWS: 'Fausse information',
+  COPYRIGHT: "Droits d'auteur",
+  UNDERAGE: 'Mineur',
+  ILLEGAL_CONTENT: 'Contenu illégal',
+  OTHER: 'Autre',
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  USER: 'Utilisateurs',
+  CONTENT: 'Contenus',
+  COMMENT: 'Commentaires',
+  MESSAGE: 'Messages',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  PENDING: 'En attente',
+  REVIEWING: 'En examen',
+  RESOLVED: 'Résolus',
+  REJECTED: 'Rejetés',
+};
+
+const ACTION_SERIES = [
+  { key: 'resolved', label: 'Résolus', color: VIZ[1] },
+  { key: 'rejected', label: 'Rejetés', color: VIZ[2] },
+  { key: 'sanctions', label: 'Sanctions', color: VIZ[3] },
+  { key: 'contentRemoved', label: 'Contenus retirés', color: VIZ[4] },
+] as const;
+
+const dayLabel = (date: string | number) => format(parseISO(String(date)), 'd MMM', { locale: fr });
+
+function formatHours(hours: number | null) {
+  if (hours === null) return '—';
+  if (hours < 1) return `${Math.round(hours * 60)} min`;
+  if (hours < 48) return `${hours.toLocaleString('fr-FR')} h`;
+  return `${(hours / 24).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} j`;
+}
+
+function BreakdownList({ rows, total }: { rows: { label: string; count: number }[]; total: number }) {
+  if (!rows.length) return <EmptyState>Aucun signalement sur la période</EmptyState>;
+  return (
+    <ul className="space-y-3">
+      {rows.map((row) => {
+        const share = total > 0 ? (row.count / total) * 100 : 0;
+        return (
+          <li key={row.label} className="space-y-1">
+            <div className="flex items-baseline justify-between text-sm">
+              <span>{row.label}</span>
+              <span className="tabular-nums">
+                {formatNumber(row.count)} <span className="text-muted-foreground">({share.toFixed(0)} %)</span>
+              </span>
+            </div>
+            <div className="h-2 rounded-full bg-muted">
+              <div className="h-2 rounded-full" style={{ width: `${share}%`, background: VIZ[1] }} />
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export function ModerationStats() {
-  const { data: stats, isLoading } = useQuery({
-    queryKey: ['moderation-statistics'],
+  const [days, setDays] = useState('30');
+
+  const { data: stats, isLoading, isError } = useQuery({
+    queryKey: ['moderation-statistics', days],
     queryFn: async () => {
-      const response = await adminApi.getStats();
-      const platform = response.data;
-      const total = platform?.reports?.total || 0;
-      const pending = platform?.reports?.pending || 0;
-      return {
-        totalReports: total,
-        resolutionRate: total > 0 ? Math.round(((total - pending) / total) * 100) : 0,
-        avgProcessingTime: 0,
-      };
+      const response = await adminApi.getModerationStats(Number(days));
+      return response.data as ModerationStatsResponse;
     },
+    placeholderData: keepPreviousData,
   });
 
-  // Mock data for charts (replace with real data from API)
-  const reportsOverTimeData = [
-    { date: 'Lun', reports: 12 },
-    { date: 'Mar', reports: 19 },
-    { date: 'Mer', reports: 8 },
-    { date: 'Jeu', reports: 15 },
-    { date: 'Ven', reports: 22 },
-    { date: 'Sam', reports: 10 },
-    { date: 'Dim', reports: 7 },
-  ];
-
-  const reportsByTypeData = [
-    { name: 'Spam', value: 45, color: '#fbbf24' },
-    { name: 'Harcèlement', value: 30, color: '#ef4444' },
-    { name: 'Contenu inapproprié', value: 20, color: '#f97316' },
-    { name: 'Autre', value: 5, color: '#94a3b8' },
-  ];
-
-  const actionsByDayData = [
-    { day: 'Lun', approved: 25, rejected: 8, dismissed: 5 },
-    { day: 'Mar', approved: 30, rejected: 10, dismissed: 3 },
-    { day: 'Mer', approved: 20, rejected: 5, dismissed: 7 },
-    { day: 'Jeu', approved: 28, rejected: 12, dismissed: 4 },
-    { day: 'Ven', approved: 35, rejected: 15, dismissed: 6 },
-    { day: 'Sam', approved: 18, rejected: 6, dismissed: 2 },
-    { day: 'Dim', approved: 15, rejected: 4, dismissed: 3 },
-  ];
-
   if (isLoading) {
-    return <div>Chargement des statistiques...</div>;
+    return <LoadingState label="Chargement des statistiques..." />;
+  }
+
+  if (isError || !stats) {
+    return <EmptyState>Impossible de charger les statistiques de modération</EmptyState>;
   }
 
   return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Total des signalements
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{stats?.totalReports || 0}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Ce mois-ci
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Taux de résolution
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">
-              {stats?.resolutionRate || 0}%
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Moyenne sur 7 jours
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Temps moyen de traitement
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">
-              {stats?.avgProcessingTime || 0}h
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Par signalement
-            </p>
-          </CardContent>
-        </Card>
+    <div className="space-y-6" data-testid="moderation-stats">
+      <div className="flex justify-end">
+        <Select value={days} onValueChange={setDays}>
+          <SelectTrigger className="w-48" aria-label="Période">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7">7 derniers jours</SelectItem>
+            <SelectItem value="30">30 derniers jours</SelectItem>
+            <SelectItem value="90">90 derniers jours</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
-      {/* Reports Over Time */}
+      {/* Summary */}
+      <div className="grid gap-4 md:grid-cols-4">
+        <StatTile
+          title="Signalements reçus"
+          value={formatNumber(stats.totals.received)}
+          description={`${stats.period.days} derniers jours • ${formatNumber(stats.totals.pending)} en attente`}
+        />
+        <StatTile
+          title="Taux de résolution"
+          value={`${stats.totals.resolutionRate} %`}
+          description="Signalements reçus déjà tranchés"
+        />
+        <StatTile
+          title="Temps moyen de traitement"
+          value={formatHours(stats.totals.avgHandlingHours)}
+          description={`Médiane : ${formatHours(stats.totals.medianHandlingHours)} • ${formatNumber(stats.totals.handled)} traité(s)`}
+        />
+        <StatTile
+          title="Actions de modération"
+          value={formatNumber(stats.totals.actions)}
+          description={`dont ${formatNumber(stats.totals.todayActions)} aujourd'hui`}
+        />
+      </div>
+
+      {/* Reports over time */}
       <Card>
         <CardHeader>
-          <CardTitle>Signalements cette semaine</CardTitle>
-          <CardDescription>
-            Évolution des signalements reçus
-          </CardDescription>
+          <CardTitle>Signalements reçus et traités</CardTitle>
+          <CardDescription>Par jour, sur la période sélectionnée</CardDescription>
         </CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={reportsOverTimeData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="reports"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={{ fill: '#3b82f6' }}
+        <CardContent className="space-y-3">
+          <ChartLegend
+            items={[
+              { label: 'Reçus', color: VIZ[1] },
+              { label: 'Traités', color: VIZ[2] },
+            ]}
+          />
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={stats.overTime} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid {...gridProps} />
+              <XAxis dataKey="date" tickFormatter={dayLabel} minTickGap={24} {...axisProps} />
+              <YAxis allowDecimals={false} width={40} {...axisProps} />
+              <Tooltip
+                cursor={{ stroke: 'hsl(var(--muted-foreground))', strokeDasharray: '3 3' }}
+                content={<ChartTooltip labelFormatter={dayLabel} />}
               />
+              <Line type="monotone" dataKey="received" name="Reçus" stroke={VIZ[1]} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              <Line type="monotone" dataKey="handled" name="Traités" stroke={VIZ[2]} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
 
-      {/* Reports by Type and Actions */}
-      <div className="grid gap-4 md:grid-cols-2">
+      {/* Breakdowns */}
+      <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader>
-            <CardTitle>Signalements par type</CardTitle>
-            <CardDescription>Répartition par catégorie</CardDescription>
+            <CardTitle>Par motif</CardTitle>
+            <CardDescription>Raisons invoquées</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={reportsByTypeData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) =>
-                    `${name}: ${(percent * 100).toFixed(0)}%`
-                  }
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {reportsByTypeData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+            <BreakdownList
+              total={stats.totals.received}
+              rows={stats.byReason.map((r) => ({ label: REASON_LABELS[r.reason] || r.reason, count: r.count }))}
+            />
           </CardContent>
         </Card>
-
         <Card>
           <CardHeader>
-            <CardTitle>Actions de modération</CardTitle>
-            <CardDescription>Par jour cette semaine</CardDescription>
+            <CardTitle>Par type</CardTitle>
+            <CardDescription>Éléments signalés</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={actionsByDayData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="day" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="approved" stackId="a" fill="#10b981" name="Approuvés" />
-                <Bar dataKey="rejected" stackId="a" fill="#ef4444" name="Rejetés" />
-                <Bar dataKey="dismissed" stackId="a" fill="#94a3b8" name="Rejetés" />
-              </BarChart>
-            </ResponsiveContainer>
+            <BreakdownList
+              total={stats.totals.received}
+              rows={stats.byType.map((r) => ({ label: TYPE_LABELS[r.type] || r.type, count: r.count }))}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Par statut</CardTitle>
+            <CardDescription>Signalements reçus sur la période</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <BreakdownList
+              total={stats.totals.received}
+              rows={stats.byStatus
+                .filter((r) => r.count > 0)
+                .map((r) => ({ label: STATUS_LABELS[r.status] || r.status, count: r.count }))}
+            />
           </CardContent>
         </Card>
       </div>
+
+      {/* Actions */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Actions de modération</CardTitle>
+          <CardDescription>Décisions enregistrées dans le journal d&apos;audit, par jour</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <ChartLegend items={ACTION_SERIES.map(({ label, color }) => ({ label, color }))} />
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={stats.actionsByDay} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid {...gridProps} />
+              <XAxis dataKey="date" tickFormatter={dayLabel} minTickGap={24} {...axisProps} />
+              <YAxis allowDecimals={false} width={40} {...axisProps} />
+              <Tooltip cursor={{ fill: 'hsl(var(--muted))' }} content={<ChartTooltip labelFormatter={dayLabel} />} />
+              {ACTION_SERIES.map(({ key, label, color }, index) => (
+                <Bar
+                  key={key}
+                  dataKey={key}
+                  name={label}
+                  stackId="actions"
+                  fill={color}
+                  stroke="hsl(var(--card))"
+                  strokeWidth={1}
+                  maxBarSize={24}
+                  radius={index === ACTION_SERIES.length - 1 ? [4, 4, 0, 0] : undefined}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
 
       {/* Recent Activity */}
       <Card>
@@ -204,29 +300,26 @@ export function ModerationStats() {
           <CardDescription>Dernières actions de modération</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between p-3 border rounded-lg"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <div>
-                    <p className="text-sm font-medium">
-                      Signalement #{1000 + i} traité
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Il y a {i * 15} minutes
+          {!stats.recentActions.length ? (
+            <EmptyState>Aucune action de modération enregistrée</EmptyState>
+          ) : (
+            <ul className="space-y-3">
+              {stats.recentActions.map((log) => (
+                <li key={log.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{ACTION_LABELS[log.action] || log.action}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {log.resource}
+                      {log.resourceId ? ` • ${log.resourceId.slice(0, 8)}` : ''} • {timeAgo(log.createdAt)}
                     </p>
                   </div>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  Admin #{i}
-                </span>
-              </div>
-            ))}
-          </div>
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {log.actor ? `@${log.actor.username}` : 'Système'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
     </div>

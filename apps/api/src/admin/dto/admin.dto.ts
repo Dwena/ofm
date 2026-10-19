@@ -212,3 +212,32 @@ export class GetAuditLogsDto {
   @IsOptional()
   limit?: number = 50;
 }
+
+export enum AnalyticsInterval {
+  DAY = 'day',
+  WEEK = 'week',
+  MONTH = 'month',
+}
+
+export class GetAnalyticsDto {
+  @IsDateString()
+  @IsOptional()
+  startDate?: string;
+
+  @IsDateString()
+  @IsOptional()
+  endDate?: string;
+
+  @IsEnum(AnalyticsInterval)
+  @IsOptional()
+  interval?: AnalyticsInterval = AnalyticsInterval.DAY;
+}
+
+export class GetModerationStatsDto {
+  @IsNumber()
+  @Type(() => Number)
+  @Min(1)
+  @Max(365)
+  @IsOptional()
+  days?: number = 30;
+}

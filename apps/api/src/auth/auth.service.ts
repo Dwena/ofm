@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -27,6 +28,7 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { Enable2FaDto } from './dto/enable-2fa.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
 import { ResetPasswordDto } from './dto/email-token.dto';
+import { SettingsService } from '../settings/settings.service';
 
 /** Redis key holding the unix time (s) of the user's last password change. */
 export const PASSWORD_CHANGED_KEY = (userId: string) => `auth:pwd-changed:${userId}`;
@@ -43,10 +45,15 @@ export class AuthService {
     private configService: ConfigService,
     private usersService: UsersService,
     private mailService: MailService,
+    private settingsService: SettingsService,
   ) {}
 
   async register(registerDto: RegisterDto) {
     const { email, username, password, role } = registerDto;
+
+    if (!(await this.settingsService.isRegistrationOpen())) {
+      throw new ForbiddenException('Les inscriptions sont actuellement fermées');
+    }
 
     // Check if user exists
     const existingUser = await this.prisma.user.findFirst({

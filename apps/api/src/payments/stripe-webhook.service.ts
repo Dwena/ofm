@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
 import { SubscriptionSyncService } from './subscription-sync.service';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class StripeWebhookService {
@@ -16,6 +17,7 @@ export class StripeWebhookService {
     private stripeService: StripeService,
     private configService: ConfigService,
     private subscriptionSync: SubscriptionSyncService,
+    private settingsService: SettingsService,
   ) {
     const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (!stripeKey) {
@@ -514,9 +516,7 @@ export class StripeWebhookService {
 
     // Amounts are stored in currency units, like the rest of the transactions
     const amount = invoice.amount_paid / 100;
-    const platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
+    const platformFeePercentage = await this.settingsService.getPlatformFeePercentage();
     const platformFee = Math.round(amount * platformFeePercentage) / 100;
     const netAmount = amount - platformFee;
 

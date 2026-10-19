@@ -6,6 +6,7 @@ import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { FilterTransactionsDto, GetStatsDto, StatsInterval } from './dto/payments.dto';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class PaymentsService {
@@ -16,6 +17,7 @@ export class PaymentsService {
     private stripeService: StripeService,
     private configService: ConfigService,
     private stripeWebhookService: StripeWebhookService,
+    private settingsService: SettingsService,
   ) {}
 
   /**
@@ -326,7 +328,7 @@ export class PaymentsService {
   async processAutomatedPayouts() {
     this.logger.log('Running automated payouts...');
 
-    const minPayoutAmount = 50; // Minimum 50 EUR for payout
+    const minPayoutAmount = await this.settingsService.getMinimumPayoutAmount(); // EUR, see /admin/settings
 
     // Get all creators with Stripe accounts
     const creators = await this.prisma.user.findMany({
@@ -982,9 +984,7 @@ export class PaymentsService {
     }
 
     // Calculate platform fee (15% default)
-    const platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
+    const platformFeePercentage = await this.settingsService.getPlatformFeePercentage();
     const platformFee = (amount * platformFeePercentage) / 100;
     const netAmount = amount - platformFee;
 

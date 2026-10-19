@@ -1,174 +1,129 @@
 import { test, expect } from './fixtures/auth.fixture';
-import { DashboardPage } from './pages/dashboard.page';
 
-test.describe('Creator Dashboard', () => {
-  test.use({ authenticatedCreator: undefined });
+test.describe('Dashboard créateur', () => {
+  test.beforeEach(async ({ asCreator }) => {});
 
-  test('should display dashboard with stats', async ({ page, dashboardPage }) => {
+  test('affiche le dashboard et ses statistiques', async ({ dashboardPage }) => {
     await dashboardPage.goto();
     await dashboardPage.expectToBeOnDashboard();
 
-    // Check that main stats cards are visible
     await dashboardPage.expectEarningsVisible();
     await dashboardPage.expectSubscribersVisible();
     await dashboardPage.expectContentVisible();
+    await expect(dashboardPage.page.getByRole('heading', { name: 'Solde Disponible', exact: true })).toBeVisible();
   });
 
-  test('should display navigation menu', async ({ page }) => {
-    await page.goto('/creator/dashboard');
+  test('affiche le menu de navigation créateur', async ({ dashboardPage }) => {
+    await dashboardPage.goto();
 
-    // Check navigation items
-    await expect(page.locator('a:has-text("Dashboard")')).toBeVisible();
-    await expect(page.locator('a:has-text("Upload")')).toBeVisible();
-    await expect(page.locator('a:has-text("Abonnés")')).toBeVisible();
-    await expect(page.locator('a:has-text("Revenus")')).toBeVisible();
-    await expect(page.locator('a:has-text("Analytics")')).toBeVisible();
+    for (const [href, label] of [
+      ['/creator/dashboard', 'Dashboard'],
+      ['/creator/upload', 'Upload'],
+      ['/creator/subscriptions', 'Abonnés'],
+      ['/creator/earnings', 'Revenus'],
+      ['/creator/analytics', 'Analytics'],
+      ['/messages', 'Messages'],
+    ]) {
+      await expect(dashboardPage.navLink(href)).toHaveText(label);
+    }
   });
 
-  test('should navigate to upload page', async ({ page, dashboardPage }) => {
+  test("navigue vers la page d'upload", async ({ page, dashboardPage }) => {
     await dashboardPage.goto();
     await dashboardPage.navigateToUpload();
 
-    await expect(page).toHaveURL(/\/creator\/upload/);
-    await expect(page.locator('h1:has-text("Nouveau Contenu")')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Nouveau Contenu' })).toBeVisible();
   });
 
-  test('should navigate to analytics page', async ({ page, dashboardPage }) => {
+  test('navigue vers les analytics', async ({ page, dashboardPage }) => {
     await dashboardPage.goto();
     await dashboardPage.navigateToAnalytics();
 
-    await expect(page).toHaveURL(/\/creator\/analytics/);
-    await expect(page.locator('h1:has-text("Analytics")')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Analytics' })).toBeVisible();
   });
 
-  test('should navigate to messages page', async ({ page, dashboardPage }) => {
+  test('navigue vers les messages', async ({ page, dashboardPage }) => {
     await dashboardPage.goto();
     await dashboardPage.navigateToMessages();
 
-    await expect(page).toHaveURL(/\/messages/);
-    await expect(page.locator('h2:has-text("Messages")')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'Messages' })).toBeVisible();
   });
 
-  test('should display recent content section', async ({ page }) => {
-    await page.goto('/creator/dashboard');
+  test('affiche les contenus récents', async ({ page, dashboardPage }) => {
+    await dashboardPage.goto();
 
-    // Check for recent content section
-    await expect(page.locator('text=Contenus Récents')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Contenus Récents' })).toBeVisible();
   });
 
-  test('should display recent transactions section', async ({ page }) => {
-    await page.goto('/creator/dashboard');
+  test('affiche les transactions récentes', async ({ page, dashboardPage }) => {
+    await dashboardPage.goto();
 
-    // Check for recent transactions section
-    await expect(page.locator('text=Transactions Récentes')).toBeVisible();
-  });
-
-  test('should show loading state while fetching data', async ({ page }) => {
-    // Navigate and check for loading indicator
-    const navigationPromise = page.goto('/creator/dashboard');
-
-    // Should show loading state (spinner or skeleton)
-    await expect(page.locator('text=Chargement').or(page.locator('.animate-spin'))).toBeVisible({ timeout: 1000 }).catch(() => {
-      // Loading might be too fast, that's okay
-    });
-
-    await navigationPromise;
+    await expect(page.getByRole('heading', { name: 'Transactions Récentes' })).toBeVisible();
   });
 });
 
-test.describe('Creator Analytics', () => {
-  test.use({ authenticatedCreator: undefined });
-
-  test('should display analytics dashboard', async ({ page }) => {
+test.describe('Analytics créateur', () => {
+  test.beforeEach(async ({ asCreator, page }) => {
     await page.goto('/creator/analytics');
-
-    await expect(page.locator('h1:has-text("Analytics")')).toBeVisible();
-    await expect(page.locator('text=Suivez vos performances')).toBeVisible();
   });
 
-  test('should display stats cards', async ({ page }) => {
-    await page.goto('/creator/analytics');
-
-    // Check for main stats
-    await expect(page.locator('text=Revenus Totaux')).toBeVisible();
-    await expect(page.locator('text=Abonnés')).toBeVisible();
-    await expect(page.locator('text=Engagement')).toBeVisible();
+  test('affiche la page analytics', async ({ page }) => {
+    await expect(page.getByRole('heading', { level: 1, name: 'Analytics' })).toBeVisible();
+    await expect(page.getByText('Suivez vos performances et optimisez votre contenu')).toBeVisible();
   });
 
-  test('should have period selector', async ({ page }) => {
-    await page.goto('/creator/analytics');
-
-    // Check for period selector
-    const selector = page.locator('select, [role="combobox"]').first();
-    await expect(selector).toBeVisible();
+  test('affiche les cartes de statistiques', async ({ page }) => {
+    for (const title of ['Revenus ce mois', 'Abonnés Actifs', 'Vues Totales', 'Engagement']) {
+      await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+    }
   });
 
-  test('should display analytics tabs', async ({ page }) => {
-    await page.goto('/creator/analytics');
-
-    // Check for tabs
-    await expect(page.locator('text=Revenus')).toBeVisible();
-    await expect(page.locator('text=Abonnés')).toBeVisible();
-    await expect(page.locator('text=Contenu')).toBeVisible();
-    await expect(page.locator('text=Tiers')).toBeVisible();
+  test('propose un sélecteur de période', async ({ page }) => {
+    await expect(page.getByRole('combobox').first()).toBeVisible();
   });
 
-  test('should switch between analytics tabs', async ({ page }) => {
-    await page.goto('/creator/analytics');
+  test('affiche et change les onglets', async ({ page }) => {
+    const tabs = ['Revenus', 'Abonnés', 'Engagement', 'Contenu'];
+    for (const name of tabs) {
+      await expect(page.getByRole('tab', { name, exact: true })).toBeVisible();
+    }
 
-    // Click on subscribers tab
-    await page.click('text=Abonnés');
-    await expect(page.locator('text=Croissance des Abonnés')).toBeVisible();
+    await page.getByRole('tab', { name: 'Abonnés', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Croissance des Abonnés' })).toBeVisible();
 
-    // Click on content tab
-    await page.click('text=Contenu');
-    await expect(page.locator('text=Performance du Contenu')).toBeVisible();
+    await page.getByRole('tab', { name: 'Engagement', exact: true }).click();
+    await expect(page.getByRole('heading', { name: "Statistiques d'Engagement" })).toBeVisible();
 
-    // Click on tiers tab
-    await page.click('text=Tiers');
-    await expect(page.locator('text=Distribution des Tiers')).toBeVisible();
+    await page.getByRole('tab', { name: 'Contenu', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Performance du Contenu' })).toBeVisible();
   });
 });
 
-test.describe('Creator Subscriptions Management', () => {
-  test.use({ authenticatedCreator: undefined });
-
-  test('should display subscriptions page', async ({ page }) => {
+test.describe('Abonnements créateur', () => {
+  test.beforeEach(async ({ asCreator, page }) => {
     await page.goto('/creator/subscriptions');
-
-    await expect(page.locator('h1:has-text("Abonnements")')).toBeVisible();
-    await expect(page.locator('text=Gérez vos tiers')).toBeVisible();
   });
 
-  test('should display subscription tiers', async ({ page }) => {
-    await page.goto('/creator/subscriptions');
-
-    // Should show tier cards
-    await expect(page.locator('text=FREE')).toBeVisible();
-    await expect(page.locator('text=BASIC')).toBeVisible();
-    await expect(page.locator('text=PREMIUM')).toBeVisible();
-    await expect(page.locator('text=VIP')).toBeVisible();
+  test('affiche la page de gestion des abonnements', async ({ page }) => {
+    await expect(page.getByRole('heading', { level: 1, name: 'Abonnements' })).toBeVisible();
+    await expect(page.getByText("Gérez vos tiers d'abonnement et vos abonnés")).toBeVisible();
   });
 
-  test('should display stats cards', async ({ page }) => {
-    await page.goto('/creator/subscriptions');
-
-    await expect(page.locator('text=Abonnés Totaux')).toBeVisible();
-    await expect(page.locator('text=Revenus Mensuels')).toBeVisible();
-    await expect(page.locator('text=Tiers Actifs')).toBeVisible();
+  test('affiche les cartes de statistiques', async ({ page }) => {
+    for (const title of ['Abonnés Totaux', 'Revenus Mensuels', 'Tiers Actifs']) {
+      await expect(page.getByRole('heading', { name: new RegExp(title) })).toBeVisible();
+    }
   });
 
-  test('should have tabs for tiers and subscribers', async ({ page }) => {
-    await page.goto('/creator/subscriptions');
-
-    await expect(page.locator('text=Tiers d\'Abonnement')).toBeVisible();
-    await expect(page.locator('text=Mes Abonnés')).toBeVisible();
+  test('affiche les tiers du créateur (seed : Bronze, Silver)', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'Bronze', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Silver', exact: true })).toBeVisible();
   });
 
-  test('should switch to subscribers tab', async ({ page }) => {
-    await page.goto('/creator/subscriptions');
+  test('bascule sur la liste des abonnés', async ({ page }) => {
+    await expect(page.getByRole('tab', { name: "Tiers d'Abonnement" })).toBeVisible();
+    await page.getByRole('tab', { name: 'Mes Abonnés' }).click();
 
-    await page.click('text=Mes Abonnés');
-    await expect(page.locator('text=Liste des Abonnés')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Liste des Abonnés' })).toBeVisible();
   });
 });

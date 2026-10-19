@@ -36,7 +36,7 @@ export function Navigation() {
     { href: '/creator/dashboard', label: 'Dashboard', icon: Home },
     { href: '/creator/upload', label: 'Upload', icon: Upload },
     { href: '/creator/live', label: 'Live', icon: Radio },
-    { href: '/creator/subscribers', label: 'Abonnés', icon: Users },
+    { href: '/creator/subscriptions', label: 'Abonnés', icon: Users },
     { href: '/creator/earnings', label: 'Revenus', icon: DollarSign },
     { href: '/creator/analytics', label: 'Analytics', icon: BarChart3 },
     { href: '/messages', label: 'Messages', icon: MessageSquare },
@@ -57,7 +57,7 @@ export function Navigation() {
   const links = [...(isAdmin ? adminLinks : []), ...(isCreator ? creatorLinks : subscriberLinks)]
 
   return (
-    <nav className="border-b bg-background">
+    <nav className="border-b bg-background" data-testid="main-nav">
       <div className="container mx-auto px-4">
         <div className="flex h-16 items-center justify-between">
           <div className="flex items-center space-x-8">
@@ -72,6 +72,7 @@ export function Navigation() {
                   <Link
                     key={link.href}
                     href={link.href}
+                    data-testid={`nav-link-${link.href.replace(/^\//, '').replace(/\//g, '-')}`}
                     className={`flex items-center space-x-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                       isActive
                         ? 'bg-primary text-primary-foreground'
@@ -94,7 +95,7 @@ export function Navigation() {
                 </AvatarFallback>
               </Avatar>
             </Link>
-            <Button variant="ghost" size="sm" onClick={handleLogout}>
+            <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-button">
               <LogOut className="h-4 w-4 mr-2" />
               Déconnexion
             </Button>

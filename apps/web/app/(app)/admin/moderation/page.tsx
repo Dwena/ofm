@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ReportsQueue } from '@/components/moderation/ReportsQueue';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ReportsQueue } from '@/components/admin/reports-queue';
 import { ContentModeration } from '@/components/moderation/ContentModeration';
 import { UserModeration } from '@/components/moderation/UserModeration';
 import { ModerationStats } from '@/components/moderation/ModerationStats';
@@ -18,16 +18,16 @@ export default function ModerationPage() {
   const { data: stats } = useQuery({
     queryKey: ['moderation-stats'],
     queryFn: async () => {
-      const [platform, flagged, suspended] = await Promise.all([
-        adminApi.getStats(),
+      const [moderation, flagged, suspended] = await Promise.all([
+        adminApi.getModerationStats(1),
         adminApi.getContent({ filter: 'FLAGGED', limit: 1 }),
         adminApi.getUsers({ status: 'SUSPENDED', limit: 1 }),
       ]);
       return {
-        pendingReports: platform.data?.reports?.pending || 0,
+        pendingReports: moderation.data?.totals?.pending || 0,
         contentUnderReview: flagged.data?.pagination?.total || 0,
         suspendedUsers: suspended.data?.pagination?.total || 0,
-        todayActions: 0,
+        todayActions: moderation.data?.totals?.todayActions || 0,
       };
     },
     refetchInterval: 30000, // Refresh every 30 seconds

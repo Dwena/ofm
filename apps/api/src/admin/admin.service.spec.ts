@@ -168,6 +168,33 @@ describe('AdminService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
+    it('refuses sanctions from moderators', async () => {
+      await expect(
+        service.handleReport(
+          'mod-1',
+          { reportId: 'r1', status: ReportStatus.RESOLVED, action: UserAction.BAN },
+          'MODERATOR',
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrismaService.report.update).not.toHaveBeenCalled();
+    });
+
+    it('notifies the reporter of the final decision', async () => {
+      mockPrismaService.report.findUnique.mockResolvedValue({
+        id: 'r1',
+        reporterId: 'reporter-1',
+        reportedType: 'USER',
+        reportedId: 'u1',
+      });
+      mockPrismaService.report.update.mockResolvedValue({ id: 'r1', status: 'dismissed' });
+
+      await service.handleReport('mod-1', { reportId: 'r1', status: ReportStatus.REJECTED }, 'MODERATOR');
+
+      expect(mockPrismaService.notification.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ userId: 'reporter-1', type: 'SYSTEM' }),
+      });
+    });
+
     it('stores the DB status and does not take action when rejected', async () => {
       mockPrismaService.report.findUnique.mockResolvedValue({ id: 'r1', reportedType: 'USER', reportedId: 'u1' });
       mockPrismaService.report.update.mockResolvedValue({ id: 'r1', status: 'dismissed' });

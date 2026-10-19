@@ -7,6 +7,7 @@ import {
   Query,
   UseGuards,
   Request,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -14,15 +15,28 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { ModerationService } from './moderation.service';
 import { CreateReportDto, ModerationDecisionDto } from './dto/moderation.dto';
 import { ThrottleAuth } from '../common/decorators/throttle.decorator';
+import { AdminService } from '../admin/admin.service';
+import { ReportStatus, ReportType } from '../admin/dto/admin.dto';
+import { normalizeReportStatus } from '../admin/report-status.util';
+
+const LEGACY_DECISION_TO_STATUS: Record<string, ReportStatus> = {
+  RESOLVE: ReportStatus.RESOLVED,
+  DISMISS: ReportStatus.REJECTED,
+  ESCALATE: ReportStatus.REVIEWING,
+};
 
 interface RequestWithUser {
-  user: { sub: string; email: string; role: string };
+  // JwtStrategy.validate returns the user row: the id is `id` (there is no `sub`)
+  user: { id: string; email: string; role: string };
 }
 
 @Controller('moderation')
 @UseGuards(JwtAuthGuard)
 export class ModerationController {
-  constructor(private moderationService: ModerationService) {}
+  constructor(
+    private moderationService: ModerationService,
+    private adminService: AdminService,
+  ) {}
 
   /**
    * User endpoint: Create a report
@@ -30,7 +44,7 @@ export class ModerationController {
   @Post('reports')
   @ThrottleAuth()
   async createReport(@Request() req: RequestWithUser, @Body() dto: CreateReportDto) {
-    return this.moderationService.createReport(req.user.sub, dto);
+    return this.moderationService.createReport(req.user.id, dto);
   }
 
   /**
@@ -43,7 +57,8 @@ export class ModerationController {
   }
 
   /**
-   * Admin endpoint: Get reports queue
+   * @deprecated Use GET /admin/reports. Kept as an alias returning the same
+   * format as the admin API (uppercase statuses, { items, pagination }).
    */
   @Get('reports/queue')
   @UseGuards(RolesGuard)
@@ -54,16 +69,17 @@ export class ModerationController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.moderationService.getReportsQueue({
-      status,
-      reportedType,
-      page: page ? parseInt(page) : undefined,
-      limit: limit ? parseInt(limit) : undefined,
+    return this.adminService.getReports({
+      status: status ? normalizeReportStatus(status) : undefined,
+      type: reportedType ? (reportedType.toUpperCase() as ReportType) : undefined,
+      page: page ? parseInt(page) : 1,
+      limit: limit ? Math.min(parseInt(limit), 100) : 20,
     });
   }
 
   /**
-   * Admin endpoint: Handle a report
+   * @deprecated Use POST /admin/reports/handle (decision RESOLVE/DISMISS/ESCALATE maps to
+   * RESOLVED/REJECTED/REVIEWING).
    */
   @Post('reports/:id/handle')
   @UseGuards(RolesGuard)
@@ -73,11 +89,14 @@ export class ModerationController {
     @Param('id') reportId: string,
     @Body() body: { decision: 'RESOLVE' | 'DISMISS' | 'ESCALATE'; resolution: string },
   ) {
-    return this.moderationService.handleReport(
-      req.user.sub,
-      reportId,
-      body.decision,
-      body.resolution,
+    const status = LEGACY_DECISION_TO_STATUS[body?.decision];
+    if (!status) {
+      throw new BadRequestException('decision must be RESOLVE, DISMISS or ESCALATE');
+    }
+    return this.adminService.handleReport(
+      req.user.id,
+      { reportId, status, adminNotes: body.resolution },
+      req.user.role,
     );
   }
 
@@ -92,7 +111,7 @@ export class ModerationController {
     @Param('id') userId: string,
     @Body() body: { reason: string },
   ) {
-    return this.moderationService.banUser(req.user.sub, userId, body.reason);
+    return this.moderationService.banUser(req.user.id, userId, body.reason);
   }
 
   /**
@@ -107,7 +126,7 @@ export class ModerationController {
     @Body() body: { reason: string; durationDays: number },
   ) {
     return this.moderationService.suspendUser(
-      req.user.sub,
+      req.user.id,
       userId,
       body.reason,
       body.durationDays,

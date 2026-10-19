@@ -11,15 +11,19 @@ import {
   FileText,
   Shield,
   ScrollText,
+  BarChart3,
+  Settings,
 } from 'lucide-react'
 
 const adminLinks = [
   { href: '/admin', label: 'Tableau de bord', icon: LayoutDashboard, exact: true },
+  { href: '/admin/analytics', label: 'Analytique', icon: BarChart3 },
   { href: '/admin/users', label: 'Utilisateurs', icon: Users },
   { href: '/admin/reports', label: 'Signalements', icon: AlertTriangle },
   { href: '/admin/content', label: 'Contenus', icon: FileText },
   { href: '/admin/moderation', label: 'Modération', icon: Shield },
   { href: '/admin/logs', label: 'Journaux', icon: ScrollText },
+  { href: '/admin/settings', label: 'Paramètres', icon: Settings },
 ]
 
 /**

@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Body, Query, Param, UseGuards } from '@nestjs/common';
 import { AdminService } from './admin.service';
+import { AdminAnalyticsService } from './admin-analytics.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -15,13 +16,18 @@ import {
   ModerateContentDto,
   DeleteUserDto,
   GetAuditLogsDto,
+  GetAnalyticsDto,
+  GetModerationStatsDto,
 } from './dto/admin.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('ADMIN')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly analyticsService: AdminAnalyticsService,
+  ) {}
 
   // ==================== User Management ====================
 
@@ -101,9 +107,10 @@ export class AdminController {
   // ==================== Reports Management ====================
 
   /**
-   * Get reports with filters
+   * Get reports with filters (moderators can triage reports too)
    */
   @Get('reports')
+  @Roles('ADMIN', 'MODERATOR')
   async getReports(@Query() dto: GetReportsDto) {
     return this.adminService.getReports(dto);
   }
@@ -112,11 +119,22 @@ export class AdminController {
    * Handle report (resolve, reject)
    */
   @Post('reports/handle')
+  @Roles('ADMIN', 'MODERATOR')
   async handleReport(
     @CurrentUser('id') adminId: string,
+    @CurrentUser('role') role: string,
     @Body() dto: HandleReportDto,
   ) {
-    return this.adminService.handleReport(adminId, dto);
+    return this.adminService.handleReport(adminId, dto, role);
+  }
+
+  /**
+   * Moderation statistics: reports over time, handling time, actions taken
+   */
+  @Get('moderation/stats')
+  @Roles('ADMIN', 'MODERATOR')
+  async getModerationStats(@Query() dto: GetModerationStatsDto) {
+    return this.analyticsService.getModerationStats(dto);
   }
 
   // ==================== Platform Statistics ====================
@@ -127,6 +145,14 @@ export class AdminController {
   @Get('stats/platform')
   async getPlatformStats(@Query() dto: GetPlatformStatsDto) {
     return this.adminService.getPlatformStats(dto);
+  }
+
+  /**
+   * Platform analytics time series (revenue, fees, users, content, subscriptions, top creators)
+   */
+  @Get('stats/analytics')
+  async getAnalytics(@Query() dto: GetAnalyticsDto) {
+    return this.analyticsService.getAnalytics(dto);
   }
 
   /**

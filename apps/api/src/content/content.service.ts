@@ -6,6 +6,7 @@ import { StorageService } from '../storage/storage.service';
 import { CreateContentDto } from './dto/create-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
 import { SearchContentDto, ContentSortBy } from './dto/search-content.dto';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class ContentService {
@@ -16,6 +17,7 @@ export class ContentService {
     private stripeService: StripeService,
     private storageService: StorageService,
     private configService: ConfigService,
+    private settingsService: SettingsService,
   ) {}
 
   private readonly contentInclude = {
@@ -620,9 +622,7 @@ export class ContentService {
     const amount = Number(content.ppvPrice);
 
     // Calculate platform fee (15% default)
-    const platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
+    const platformFeePercentage = await this.settingsService.getPlatformFeePercentage();
     const platformFee = (amount * platformFeePercentage) / 100;
     const netAmount = amount - platformFee;
 

@@ -64,13 +64,16 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
             {error && (
-              <div className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 rounded-md">
+              <div role="alert" data-testid="login-error" className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 rounded-md">
                 {error}
               </div>
             )}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+              <label className="text-sm font-medium" htmlFor="login-email">Email</label>
               <Input
+                id="login-email"
+                name="email"
+                data-testid="login-email"
                 type="email"
                 placeholder="email@example.com"
                 value={email}
@@ -81,12 +84,15 @@ export default function LoginPage() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">Mot de passe</label>
+                <label className="text-sm font-medium" htmlFor="login-password">Mot de passe</label>
                 <Link href="/forgot-password" className="text-sm text-primary hover:underline">
                   Mot de passe oublié ?
                 </Link>
               </div>
               <Input
+                id="login-password"
+                name="password"
+                data-testid="login-password"
                 type="password"
                 placeholder="••••••••"
                 value={password}
@@ -132,6 +138,7 @@ export default function LoginPage() {
           <CardFooter className="flex flex-col space-y-4">
             <Button
               type="submit"
+              data-testid="login-submit"
               className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg py-6"
               disabled={loading}
             >
@@ -139,7 +146,7 @@ export default function LoginPage() {
             </Button>
             <p className="text-sm text-center text-muted-foreground">
               Pas encore de compte ?{' '}
-              <Link href="/register" className="text-primary hover:underline">
+              <Link href="/register" className="text-primary hover:underline" data-testid="register-link">
                 S'inscrire
               </Link>
             </p>
