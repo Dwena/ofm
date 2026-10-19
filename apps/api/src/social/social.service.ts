@@ -1,18 +1,7 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { NotificationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 
-// Temporary local enum definition until Prisma client is regenerated
-enum NotificationType {
-  NEW_SUBSCRIBER = 'NEW_SUBSCRIBER',
-  NEW_MESSAGE = 'NEW_MESSAGE',
-  NEW_TIP = 'NEW_TIP',
-  NEW_COMMENT = 'NEW_COMMENT',
-  SUBSCRIPTION_RENEWAL = 'SUBSCRIPTION_RENEWAL',
-  PAYOUT_COMPLETED = 'PAYOUT_COMPLETED',
-  CONTENT_APPROVED = 'CONTENT_APPROVED',
-  CONTENT_REJECTED = 'CONTENT_REJECTED',
-  SYSTEM = 'SYSTEM',
-}
 import {
   CreateCommentDto,
   UpdateCommentDto,
@@ -215,7 +204,9 @@ export class SocialService {
   }
 
   /**
-   * Follow a creator
+   * Follow a creator (free). Idempotent: following twice keeps a single row.
+   * Following never changes CreatorProfile.totalSubscribers, which only counts
+   * paid subscriptions (see SubscriptionSyncService).
    */
   async followCreator(userId: string, dto: FollowCreatorDto) {
     const { creatorId } = dto;
@@ -225,118 +216,181 @@ export class SocialService {
       throw new BadRequestException('You cannot follow yourself');
     }
 
-    // Check if creator exists
-    const creator = await this.prisma.user.findUnique({
-      where: { id: creatorId },
+    await this.findCreatorOrFail(creatorId);
+
+    const existing = await this.prisma.follow.findUnique({
+      where: { followerId_creatorId: { followerId: userId, creatorId } },
     });
 
-    if (!creator || creator.role !== 'CREATOR') {
-      throw new NotFoundException('Creator not found');
+    let created = false;
+    if (!existing) {
+      try {
+        await this.prisma.follow.create({
+          data: { followerId: userId, creatorId },
+        });
+        created = true;
+      } catch (error: any) {
+        // Concurrent follow: the unique constraint already holds the row
+        if (error?.code !== 'P2002') {
+          throw error;
+        }
+      }
     }
 
-    // Check if already following (using Report table as example, you'd want a Follow table)
-    // For now, we'll use creatorProfile's follower count
-    // In production, create a dedicated Follow table
+    if (created) {
+      const follower = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true, displayName: true },
+      });
 
-    // Update follower count on creator profile
-    await this.prisma.creatorProfile.update({
-      where: { userId: creatorId },
-      data: {
-        totalSubscribers: {
-          increment: 1,
-        },
-      },
-    });
+      await this.createNotification({
+        userId: creatorId,
+        type: NotificationType.NEW_FOLLOWER,
+        title: 'Nouveau follower',
+        message: `${follower?.displayName || follower?.username || "Quelqu'un"} vous suit maintenant`,
+        linkUrl: follower?.username ? `/${follower.username}` : undefined,
+        metadata: { kind: 'NEW_FOLLOWER', followerId: userId },
+      });
 
-    // Create notification
-    await this.createNotification({
-      userId: creatorId,
-      type: NotificationType.NEW_SUBSCRIBER,
-      title: 'Nouveau follower',
-      message: `Quelqu'un vous suit maintenant`,
-      linkUrl: `/profile/${userId}`,
-    });
+      this.logger.log(`User ${userId} followed creator ${creatorId}`);
+    }
 
-    this.logger.log(`User ${userId} followed creator ${creatorId}`);
+    const followersCount = await this.countFollowers(creatorId);
 
     return {
       success: true,
       message: 'Successfully followed creator',
       creatorId,
+      isFollowing: true,
+      followersCount,
     };
   }
 
   /**
-   * Unfollow a creator
+   * Unfollow a creator. Idempotent: unfollowing a creator you don't follow is a no-op.
    */
   async unfollowCreator(userId: string, creatorId: string) {
-    // Check if creator exists
-    const creator = await this.prisma.user.findUnique({
-      where: { id: creatorId },
+    await this.findCreatorOrFail(creatorId);
+
+    const { count } = await this.prisma.follow.deleteMany({
+      where: { followerId: userId, creatorId },
     });
 
-    if (!creator || creator.role !== 'CREATOR') {
-      throw new NotFoundException('Creator not found');
+    if (count > 0) {
+      this.logger.log(`User ${userId} unfollowed creator ${creatorId}`);
     }
 
-    // Decrement follower count
-    await this.prisma.creatorProfile.update({
-      where: { userId: creatorId },
-      data: {
-        totalSubscribers: {
-          decrement: 1,
-        },
-      },
-    });
-
-    this.logger.log(`User ${userId} unfollowed creator ${creatorId}`);
+    const followersCount = await this.countFollowers(creatorId);
 
     return {
       success: true,
       message: 'Successfully unfollowed creator',
       creatorId,
+      isFollowing: false,
+      followersCount,
     };
   }
 
   /**
-   * Get following list
+   * Follow status of the current user for a creator
+   */
+  async getFollowStatus(userId: string, creatorId: string) {
+    const [follow, followersCount] = await Promise.all([
+      this.prisma.follow.findUnique({
+        where: { followerId_creatorId: { followerId: userId, creatorId } },
+        select: { createdAt: true },
+      }),
+      this.countFollowers(creatorId),
+    ]);
+
+    return {
+      creatorId,
+      isFollowing: !!follow,
+      followedAt: follow?.createdAt ?? null,
+      followersCount,
+    };
+  }
+
+  /**
+   * Creators followed by the user (most recent first)
    */
   async getFollowing(userId: string) {
-    // Get creators user has subscriptions with
-    const subscriptions = await this.prisma.subscription.findMany({
+    const follows = await this.prisma.follow.findMany({
       where: {
-        subscriberId: userId,
-        status: 'ACTIVE',
+        followerId: userId,
+        creator: { deletedAt: null },
       },
+      orderBy: { createdAt: 'desc' },
       include: {
-        tier: {
-          include: {
-            creator: {
+        creator: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatar: true,
+            coverImage: true,
+            bio: true,
+            creatorProfile: {
               select: {
-                id: true,
-                username: true,
-                displayName: true,
-                avatar: true,
-                coverImage: true,
-                creatorProfile: {
-                  select: {
-                    totalSubscribers: true,
-                    totalContent: true,
-                  },
-                },
+                totalSubscribers: true,
+                totalContent: true,
               },
+            },
+            _count: {
+              select: { followers: true },
             },
           },
         },
       },
     });
 
+    const creatorIds = follows.map((f: any) => f.creatorId);
+    const subscriptions = creatorIds.length
+      ? await this.prisma.subscription.findMany({
+          where: {
+            subscriberId: userId,
+            status: 'ACTIVE',
+            tier: { creatorId: { in: creatorIds } },
+          },
+          select: { tier: { select: { creatorId: true } } },
+        })
+      : [];
+    const subscribedIds = new Set(subscriptions.map((s: any) => s.tier.creatorId));
+
+    const items = follows
+      .filter((f: any) => f.creator)
+      .map((f: any) => {
+        const { _count, ...creator } = f.creator;
+        return {
+          ...creator,
+          followersCount: _count?.followers ?? 0,
+          followedAt: f.createdAt,
+          isFollowing: true,
+          isSubscribed: subscribedIds.has(creator.id),
+        };
+      });
+
     return {
-      items: subscriptions
-        .filter((sub: any) => sub.tier?.creator)
-        .map((sub: any) => sub.tier.creator),
-      total: subscriptions.length,
+      items,
+      total: items.length,
     };
+  }
+
+  private async findCreatorOrFail(creatorId: string) {
+    const creator = await this.prisma.user.findUnique({
+      where: { id: creatorId },
+      select: { id: true, role: true, deletedAt: true },
+    });
+
+    if (!creator || creator.role !== 'CREATOR' || creator.deletedAt) {
+      throw new NotFoundException('Creator not found');
+    }
+
+    return creator;
+  }
+
+  private countFollowers(creatorId: string) {
+    return this.prisma.follow.count({ where: { creatorId } });
   }
 
   /**
@@ -437,12 +491,22 @@ export class SocialService {
       },
     });
 
-    const followingIds = new Set(userSubscriptions.map((s: any) => s.tier.creatorId));
+    const userFollows = await this.prisma.follow.findMany({
+      where: {
+        followerId: userId,
+        creatorId: { in: creators.map((c: any) => c.id) },
+      },
+      select: { creatorId: true },
+    });
+
+    const subscribedIds = new Set(userSubscriptions.map((s: any) => s.tier.creatorId));
+    const followingIds = new Set(userFollows.map((f: any) => f.creatorId));
 
     const creatorsWithFollowStatus = creators.map(({ subscriptionTiers, ...creator }: any) => ({
       ...creator,
       // Cheapest active tier, so the discover page can display/filter by price
       subscriptionPrice: subscriptionTiers[0] ? Number(subscriptionTiers[0].price) : null,
+      isSubscribed: subscribedIds.has(creator.id),
       isFollowing: followingIds.has(creator.id),
     }));
 
@@ -510,6 +574,7 @@ export class SocialService {
     title: string;
     message: string;
     linkUrl?: string;
+    metadata?: Prisma.InputJsonObject;
   }) {
     try {
       await this.prisma.notification.create({
@@ -519,6 +584,7 @@ export class SocialService {
           title: data.title,
           message: data.message,
           linkUrl: data.linkUrl,
+          metadata: data.metadata,
         },
       });
     } catch (error) {

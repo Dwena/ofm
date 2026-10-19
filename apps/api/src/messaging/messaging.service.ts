@@ -1,9 +1,134 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
+
+const PARTICIPANT_SELECT = {
+  id: true,
+  username: true,
+  displayName: true,
+  avatar: true,
+} as const;
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class MessagingService {
   constructor(private prisma: PrismaService) {}
+
+  /**
+   * Whether `senderId` may send a direct message to `recipientId`.
+   * A creator who disabled messages (CreatorProfile.allowMessages = false) can
+   * only be messaged back by people they already wrote to; admins are exempt.
+   */
+  async canMessage(senderId: string, recipientId: string): Promise<boolean> {
+    const recipient = await this.prisma.user.findUnique({
+      where: { id: recipientId },
+      select: { role: true, creatorProfile: { select: { allowMessages: true } } },
+    });
+
+    if (!recipient || recipient.role !== 'CREATOR' || recipient.creatorProfile?.allowMessages !== false) {
+      return true;
+    }
+
+    const sender = await this.prisma.user.findUnique({
+      where: { id: senderId },
+      select: { role: true },
+    });
+    if (sender?.role === 'ADMIN') {
+      return true;
+    }
+
+    const creatorWroteFirst = await this.prisma.message.count({
+      where: { senderId: recipientId, receiverId: senderId },
+    });
+    return creatorWroteFirst > 0;
+  }
+
+  /**
+   * Open the conversation with a user (by id or username), creating it if needed.
+   * Used by the "Message" button of profiles (/messages?user=...).
+   */
+  async startConversation(userId: string, userRef: string) {
+    const ref = userRef.trim().replace(/^@/, '');
+    if (!ref) {
+      throw new BadRequestException('User is required');
+    }
+
+    const partner = await this.prisma.user.findFirst({
+      where: {
+        deletedAt: null,
+        OR: UUID_REGEX.test(ref) ? [{ id: ref }, { username: ref }] : [{ username: ref }],
+      },
+      select: {
+        ...PARTICIPANT_SELECT,
+        role: true,
+        status: true,
+        creatorProfile: { select: { allowMessages: true } },
+      },
+    });
+
+    if (!partner || partner.status === 'BANNED') {
+      throw new NotFoundException('User not found');
+    }
+    if (partner.id === userId) {
+      throw new BadRequestException('You cannot message yourself');
+    }
+
+    let conversation = await this.prisma.conversation.findFirst({
+      where: {
+        OR: [
+          { participant1Id: userId, participant2Id: partner.id },
+          { participant1Id: partner.id, participant2Id: userId },
+        ],
+      },
+      include: {
+        lastMessage: {
+          select: { id: true, content: true, createdAt: true, status: true, senderId: true },
+        },
+      },
+    });
+
+    const canMessage = await this.canMessage(userId, partner.id);
+
+    if (!conversation) {
+      if (!canMessage) {
+        throw new ForbiddenException("Ce créateur n'accepte pas les messages");
+      }
+      try {
+        conversation = await this.prisma.conversation.create({
+          data: { participant1Id: userId, participant2Id: partner.id },
+          include: {
+            lastMessage: {
+              select: { id: true, content: true, createdAt: true, status: true, senderId: true },
+            },
+          },
+        });
+      } catch (error: any) {
+        // Created concurrently (unique pair): reuse it
+        if (error?.code !== 'P2002') {
+          throw error;
+        }
+        conversation = await this.prisma.conversation.findFirst({
+          where: { participant1Id: userId, participant2Id: partner.id },
+          include: {
+            lastMessage: {
+              select: { id: true, content: true, createdAt: true, status: true, senderId: true },
+            },
+          },
+        });
+      }
+    }
+
+    const { id, username, displayName, avatar } = partner;
+
+    return {
+      id: conversation!.id,
+      participant: { id, username, displayName, avatar },
+      lastMessage: conversation!.lastMessage ?? null,
+      updatedAt: conversation!.updatedAt,
+      unreadCount: 0,
+      canMessage,
+    };
+  }
 
   async getConversations(userId: string) {
     const conversations = await this.prisma.conversation.findMany({
@@ -119,6 +244,13 @@ export class MessagingService {
     content: string,
     attachmentUrl?: string,
   ) {
+    if (senderId === receiverId) {
+      throw new BadRequestException('You cannot message yourself');
+    }
+    if (!(await this.canMessage(senderId, receiverId))) {
+      throw new ForbiddenException("Ce créateur n'accepte pas les messages");
+    }
+
     const message = await this.prisma.message.create({
       data: {
         senderId,

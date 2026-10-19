@@ -266,6 +266,8 @@ export const contentApi = {
 
 export const messagesApi = {
   getConversations: () => api.get('/messages/conversations'),
+  // Open (or create) the conversation with a user, by id or username
+  startConversation: (user: string) => api.post('/messages/conversations', { user }),
   getMessages: (partnerId: string, params: { page?: number; limit?: number } = {}) =>
     api.get(`/messages/${partnerId}`, { params }),
   deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
@@ -295,6 +297,8 @@ export const socialApi = {
     api.post('/social/follow', { creatorId }),
   unfollowCreator: (creatorId: string) =>
     api.delete(`/social/follow/${creatorId}`),
+  getFollowStatus: (creatorId: string) =>
+    api.get(`/social/follow/${creatorId}`),
   getFollowing: () =>
     api.get('/social/following'),
 

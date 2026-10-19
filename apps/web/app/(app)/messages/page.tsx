@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { Suspense, useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { messagesApi, mediaApi } from '@/lib/api'
 import { useSocket } from '@/hooks/use-socket'
@@ -13,6 +14,7 @@ import { Send, Loader2, Image as ImageIcon, X, FileVideo } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import { useAuth } from '@/contexts/auth-context'
+import { toast } from '@/hooks/use-toast'
 
 interface Conversation {
   id: string
@@ -29,6 +31,8 @@ interface Conversation {
   }
   unreadCount: number
   updatedAt: string
+  // Only returned when opening a conversation (POST /messages/conversations)
+  canMessage?: boolean
 }
 
 interface Message {
@@ -48,7 +52,23 @@ interface Message {
 }
 
 export default function MessagesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin" />
+        </div>
+      }
+    >
+      <MessagesView />
+    </Suspense>
+  )
+}
+
+function MessagesView() {
   const { user } = useAuth()
+  const searchParams = useSearchParams()
+  const targetUser = searchParams.get('user')
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null)
   const [messageInput, setMessageInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -58,6 +78,9 @@ export default function MessagesPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout>()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const composerRef = useRef<HTMLInputElement>(null)
+  const openedTargetRef = useRef<string | null>(null)
+  const [openingTarget, setOpeningTarget] = useState(false)
   const queryClient = useQueryClient()
 
   const {
@@ -90,6 +113,55 @@ export default function MessagesPage() {
     },
     enabled: !!selectedConversation,
   })
+
+  // /messages?user=<username or id>: open (or create) the conversation and focus the composer
+  useEffect(() => {
+    if (!targetUser || openedTargetRef.current === targetUser) return
+    openedTargetRef.current = targetUser
+
+    setOpeningTarget(true)
+    messagesApi
+      .startConversation(targetUser)
+      .then((response) => {
+        const conversation = response.data as Conversation
+        queryClient.setQueryData<Conversation[]>(['conversations'], (current) => {
+          if (!current) return current
+          return current.some((c) => c.id === conversation.id) ? current : [conversation, ...current]
+        })
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+        setSelectedConversation(conversation)
+        if (conversation.canMessage === false) {
+          toast({
+            title: 'Messages désactivés',
+            description: "Ce créateur n'accepte pas les messages pour le moment.",
+          })
+        }
+      })
+      .catch((error: any) => {
+        const status = error?.response?.status
+        toast({
+          title: 'Impossible d\'ouvrir la conversation',
+          description:
+            status === 403
+              ? "Ce créateur n'accepte pas les messages."
+              : status === 404
+                ? 'Utilisateur introuvable.'
+                : error?.response?.data?.message || 'Une erreur est survenue.',
+          variant: 'destructive',
+        })
+      })
+      .finally(() => setOpeningTarget(false))
+  }, [targetUser, queryClient])
+
+  // Focus the composer when a conversation is opened
+  const selectedConversationId = selectedConversation?.id
+  useEffect(() => {
+    if (!selectedConversationId) return
+    const timer = setTimeout(() => composerRef.current?.focus(), 0)
+    return () => clearTimeout(timer)
+  }, [selectedConversationId, connected])
+
+  const composerBlocked = selectedConversation?.canMessage === false
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -158,8 +230,13 @@ export default function MessagesPage() {
       setMessageInput('')
       setSelectedMedia(null)
       setTyping(selectedConversation.participant.id, false)
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to send message:', error)
+      toast({
+        title: 'Message non envoyé',
+        description: error?.message || 'Une erreur est survenue.',
+        variant: 'destructive',
+      })
     } finally {
       setSending(false)
     }
@@ -252,6 +329,13 @@ export default function MessagesPage() {
             <Badge variant="secondary">Hors ligne</Badge>
           )}
         </div>
+
+        {openingTarget && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Ouverture de la conversation...
+          </div>
+        )}
 
         {conversationsLoading ? (
           <div className="flex justify-center py-8">
@@ -461,7 +545,7 @@ export default function MessagesPage() {
                   variant="outline"
                   size="icon"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadingMedia || sending || !connected}
+                  disabled={uploadingMedia || sending || !connected || composerBlocked}
                 >
                   {uploadingMedia ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -470,15 +554,16 @@ export default function MessagesPage() {
                   )}
                 </Button>
                 <Input
-                  placeholder="Tapez votre message..."
+                  ref={composerRef}
+                  placeholder={composerBlocked ? "Ce créateur n'accepte pas les messages" : 'Tapez votre message...'}
                   value={messageInput}
                   onChange={(e) => handleInputChange(e.target.value)}
-                  disabled={sending || !connected}
+                  disabled={sending || !connected || composerBlocked}
                   className="flex-1"
                 />
                 <Button
                   type="submit"
-                  disabled={sending || !connected || (!messageInput.trim() && !selectedMedia)}
+                  disabled={sending || !connected || composerBlocked || (!messageInput.trim() && !selectedMedia)}
                 >
                   {sending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

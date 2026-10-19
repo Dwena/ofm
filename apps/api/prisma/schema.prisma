@@ -103,6 +103,7 @@ enum NotificationType {
   CONTENT_APPROVED
   CONTENT_REJECTED
   SYSTEM
+  NEW_FOLLOWER
 }
 
 enum PayoutStatus {
@@ -206,6 +207,8 @@ model User {
   liveStreams             LiveStream[]    @relation("CreatorStreams")
   streamViews             StreamViewer[]  @relation("StreamViews")
   streamMessages          StreamMessage[] @relation("StreamMessages")
+  following               Follow[]        @relation("FollowsAsFollower")
+  followers               Follow[]        @relation("FollowsAsCreator")
 
   @@index([email])
   @@index([username])
@@ -424,6 +427,23 @@ model ContentLike {
   @@unique([contentId, userId])
   @@index([userId])
   @@index([contentId])
+}
+
+// A user following a creator (free, independent from paid subscriptions)
+model Follow {
+  id         String   @id @default(uuid())
+
+  followerId String
+  follower   User     @relation("FollowsAsFollower", fields: [followerId], references: [id], onDelete: Cascade)
+
+  creatorId  String
+  creator    User     @relation("FollowsAsCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  createdAt  DateTime @default(now())
+
+  @@unique([followerId, creatorId])
+  @@index([followerId])
+  @@index([creatorId])
 }
 
 model Comment {

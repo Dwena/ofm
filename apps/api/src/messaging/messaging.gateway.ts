@@ -200,7 +200,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   // Utility method to send notification to user
   sendNotificationToUser(userId: string, notification: any) {
-    this.server.to(`user:${userId}`).emit('notification:new', notification);
+    this.server?.to(`user:${userId}`).emit('notification:new', notification);
   }
 
   // Check if user is online

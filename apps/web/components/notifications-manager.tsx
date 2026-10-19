@@ -6,6 +6,7 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { usePushNotifications } from '@/hooks/use-push-notifications';
 import { useToast } from '@/hooks/use-toast';
+import { useSocket } from '@/hooks/use-socket';
 
 export function NotificationsManager() {
   const {
@@ -18,6 +19,8 @@ export function NotificationsManager() {
     showLocalNotification,
   } = usePushNotifications();
   const { toast } = useToast();
+  // In-app notifications arrive in realtime over the socket (notification:new)
+  const { connected: realtimeConnected } = useSocket();
 
   const handleSubscribe = async () => {
     try {
@@ -93,6 +96,21 @@ export function NotificationsManager() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex items-center justify-between p-4 border rounded-lg">
+          <div className="space-y-1">
+            <p className="font-medium">Notifications en temps réel</p>
+            <p className="text-sm text-muted-foreground">
+              {realtimeConnected
+                ? 'Les nouvelles notifications s\'affichent instantanément dans l\'application'
+                : 'Connexion en cours... les notifications seront synchronisées automatiquement'}
+            </p>
+          </div>
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${realtimeConnected ? 'bg-green-500' : 'bg-muted-foreground'}`}
+            aria-label={realtimeConnected ? 'Connecté' : 'Déconnecté'}
+          />
+        </div>
+
         <div className="flex items-center justify-between p-4 border rounded-lg">
           <div className="space-y-1">
             <p className="font-medium">

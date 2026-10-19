@@ -85,7 +85,18 @@ export class SocialController {
   }
 
   /**
-   * Get following list
+   * Follow status for a creator
+   */
+  @Get('follow/:creatorId')
+  async getFollowStatus(
+    @CurrentUser('id') userId: string,
+    @Param('creatorId') creatorId: string,
+  ) {
+    return this.socialService.getFollowStatus(userId, creatorId);
+  }
+
+  /**
+   * Get following list (creators followed by the current user)
    */
   @Get('following')
   async getFollowing(@CurrentUser('id') userId: string) {

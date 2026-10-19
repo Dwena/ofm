@@ -1,10 +1,12 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Notification, Prisma } from '@prisma/client';
 import * as webpush from 'web-push';
 
 import { PrismaService } from '../common/database/prisma.service';
+import { MessagingGateway } from '../messaging/messaging.gateway';
 import { CreatePushSubscriptionDto } from './dto/push-subscription.dto';
+import { normalizeNotificationData } from './notification-kind';
 
 export interface PushPayload {
   title: string;
@@ -25,6 +27,7 @@ export class PushNotificationsService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    @Optional() private messagingGateway?: MessagingGateway,
   ) {
     const publicKey = this.configService.get<string>('VAPID_PUBLIC_KEY');
     const privateKey = this.configService.get<string>('VAPID_PRIVATE_KEY');
@@ -46,8 +49,11 @@ export class PushNotificationsService implements OnModuleInit {
   }
 
   /**
-   * Every Notification row created anywhere in the app (NotificationsService.create
-   * or direct prisma.notification.create calls) is also delivered as a web push.
+   * Single hook for every Notification row created anywhere in the app
+   * (NotificationsService.create or direct prisma.notification.create calls):
+   * - the data is normalized (valid enum type, `metadata.kind` marker);
+   * - the created row is pushed in realtime (`notification:new` on the socket)
+   *   and delivered as a web push.
    */
   onModuleInit() {
     const prisma = this.prisma as any;
@@ -55,12 +61,29 @@ export class PushNotificationsService implements OnModuleInit {
       return;
     }
     prisma.$use(async (params: Prisma.MiddlewareParams, next: (p: Prisma.MiddlewareParams) => Promise<any>) => {
+      const isNotificationCreate = params.model === 'Notification' && params.action === 'create';
+      if (isNotificationCreate && params.args?.data) {
+        normalizeNotificationData(params.args.data);
+      }
       const result = await next(params);
-      if (params.model === 'Notification' && params.action === 'create' && result?.userId) {
+      if (isNotificationCreate && result?.userId) {
+        this.emitRealtime(result as Notification);
         void this.sendForNotification(result as Notification);
       }
       return result;
     });
+  }
+
+  /** Push the notification to the recipient's socket room (no-op when offline) */
+  emitRealtime(notification: Notification) {
+    if (!this.messagingGateway) {
+      return;
+    }
+    try {
+      this.messagingGateway.sendNotificationToUser(notification.userId, notification);
+    } catch (error: any) {
+      this.logger.warn(`Failed to emit realtime notification ${notification.id}: ${error?.message ?? error}`);
+    }
   }
 
   get isEnabled(): boolean {
