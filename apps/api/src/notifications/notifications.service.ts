@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 
 @Injectable()
@@ -44,6 +44,25 @@ export class NotificationsService {
         readAt: new Date(),
       },
     });
+  }
+
+  async deleteNotification(userId: string, notificationId: string) {
+    const notification = await this.prisma.notification.findFirst({
+      where: {
+        id: notificationId,
+        userId,
+      },
+    });
+
+    if (!notification) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    await this.prisma.notification.delete({
+      where: { id: notificationId },
+    });
+
+    return { message: 'Notification deleted' };
   }
 
   async create(data: {

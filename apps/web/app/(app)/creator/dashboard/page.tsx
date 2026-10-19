@@ -135,11 +135,11 @@ export default function CreatorDashboard() {
                   <div className="flex-1">
                     <div className="flex items-center space-x-3">
                       <h3 className="font-medium">{item.title}</h3>
-                      <Badge variant={item.isPublished ? 'success' : 'secondary'}>
-                        {item.isPublished ? 'Publié' : 'Brouillon'}
+                      <Badge variant={item.status === 'PUBLISHED' ? 'success' : 'secondary'}>
+                        {item.status === 'PUBLISHED' ? 'Publié' : 'Brouillon'}
                       </Badge>
                       <Badge variant="outline">
-                        {item.tier}
+                        {item.isPpv ? 'PPV' : item.visibility}
                       </Badge>
                     </div>
                     {item.description && (

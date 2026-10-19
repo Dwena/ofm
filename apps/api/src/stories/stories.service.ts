@@ -2,12 +2,18 @@ import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestEx
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { CreateStoryDto } from './dto/create-story.dto';
+import { MessagingService } from '../messaging/messaging.service';
+import { MessagingGateway } from '../messaging/messaging.gateway';
 
 @Injectable()
 export class StoriesService {
   private readonly logger = new Logger(StoriesService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private messagingService: MessagingService,
+    private messagingGateway: MessagingGateway,
+  ) {}
 
   /**
    * Create a new story (expires in 24h)
@@ -110,6 +116,7 @@ export class StoriesService {
         _count: {
           select: {
             views: true,
+            likes: true,
           },
         },
       },
@@ -158,6 +165,7 @@ export class StoriesService {
         _count: {
           select: {
             views: true,
+            likes: true,
           },
         },
       },
@@ -166,7 +174,7 @@ export class StoriesService {
       },
     });
 
-    return stories;
+    return this.withLikeStatus(stories, userId);
   }
 
   /**
@@ -187,6 +195,7 @@ export class StoriesService {
         _count: {
           select: {
             views: true,
+            likes: true,
           },
         },
       },
@@ -200,7 +209,8 @@ export class StoriesService {
       throw new NotFoundException('Story has expired');
     }
 
-    return story;
+    const [withStatus] = await this.withLikeStatus([story], userId);
+    return withStatus;
   }
 
   /**
@@ -255,6 +265,75 @@ export class StoriesService {
     }
 
     return { message: 'Story view tracked' };
+  }
+
+  /**
+   * Like or unlike a story
+   */
+  async toggleLike(userId: string, storyId: string) {
+    await this.getActiveStory(storyId);
+
+    const existingLike = await this.prisma.storyLike.findUnique({
+      where: {
+        storyId_userId: {
+          storyId,
+          userId,
+        },
+      },
+    });
+
+    if (existingLike) {
+      await this.prisma.storyLike.delete({
+        where: { id: existingLike.id },
+      });
+    } else {
+      await this.prisma.storyLike.create({
+        data: {
+          storyId,
+          userId,
+        },
+      });
+    }
+
+    const likesCount = await this.prisma.storyLike.count({ where: { storyId } });
+
+    this.logger.log(`Story ${existingLike ? 'unliked' : 'liked'}: ${storyId} by user ${userId}`);
+    return { liked: !existingLike, likesCount };
+  }
+
+  /**
+   * Reply to a story: delivered to the creator as a direct message
+   */
+  async replyToStory(userId: string, storyId: string, text: string) {
+    const story = await this.getActiveStory(storyId);
+
+    if (story.creatorId === userId) {
+      throw new BadRequestException('You cannot reply to your own story');
+    }
+
+    const creatorProfile = await this.prisma.creatorProfile.findUnique({
+      where: { userId: story.creatorId },
+      select: { allowMessages: true },
+    });
+
+    if (creatorProfile && !creatorProfile.allowMessages) {
+      throw new ForbiddenException('This creator does not accept messages');
+    }
+
+    const message = await this.messagingService.sendMessage(
+      userId,
+      story.creatorId,
+      `[Réponse à votre story] ${text.trim()}`,
+    );
+
+    // Real-time delivery if the creator is connected
+    this.messagingGateway.emitNewMessage(
+      story.creatorId,
+      this.messagingGateway.toMessagePayload(message),
+    );
+
+    this.logger.log(`Story reply: ${storyId} by user ${userId}`);
+    return message;
   }
 
   /**
@@ -334,6 +413,46 @@ export class StoriesService {
 
     this.logger.log(`Story deleted: ${storyId} by user ${userId}`);
     return { message: 'Story deleted successfully' };
+  }
+
+  /**
+   * Load a story that is neither deleted nor expired
+   */
+  private async getActiveStory(storyId: string) {
+    const story = await this.prisma.story.findUnique({
+      where: { id: storyId },
+      select: { id: true, expiresAt: true, deletedAt: true, creatorId: true },
+    });
+
+    if (!story || story.deletedAt) {
+      throw new NotFoundException('Story not found');
+    }
+
+    if (story.expiresAt < new Date()) {
+      throw new NotFoundException('Story has expired');
+    }
+
+    return story;
+  }
+
+  /**
+   * Attach whether the viewer liked each story
+   */
+  private async withLikeStatus<T extends { id: string }>(stories: T[], userId?: string) {
+    if (!userId || stories.length === 0) {
+      return stories.map((story) => ({ ...story, isLiked: false }));
+    }
+
+    const likes = await this.prisma.storyLike.findMany({
+      where: {
+        userId,
+        storyId: { in: stories.map((story) => story.id) },
+      },
+      select: { storyId: true },
+    });
+
+    const likedIds = new Set(likes.map((like: any) => like.storyId));
+    return stories.map((story) => ({ ...story, isLiked: likedIds.has(story.id) }));
   }
 
   /**

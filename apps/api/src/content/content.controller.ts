@@ -26,6 +26,19 @@ export class ContentController {
     );
   }
 
+  @Get('feed/subscriptions')
+  async getSubscriptionsFeed(
+    @CurrentUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.contentService.getSubscriptionsFeed(
+      userId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 20,
+    );
+  }
+
   @Get('my-content')
   async getMyContent(
     @CurrentUser('id') userId: string,
@@ -129,6 +142,15 @@ export class ContentController {
     @Param('id') contentId: string,
   ) {
     return this.contentService.toggleLike(userId, contentId);
+  }
+
+  // PPV endpoints
+  @Post(':id/unlock')
+  async unlockContent(
+    @CurrentUser('id') userId: string,
+    @Param('id') contentId: string,
+  ) {
+    return this.contentService.unlockContent(userId, contentId);
   }
 
   @Get(':id/likes')

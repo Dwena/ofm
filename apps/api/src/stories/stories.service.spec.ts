@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { StoriesService } from './stories.service';
 import { PrismaService } from '../common/database/prisma.service';
+import { MessagingService } from '../messaging/messaging.service';
+import { MessagingGateway } from '../messaging/messaging.gateway';
 import { ForbiddenException, BadRequestException, NotFoundException } from '@nestjs/common';
 
 describe('StoriesService', () => {
@@ -24,10 +26,29 @@ describe('StoriesService', () => {
       findMany: jest.fn(),
       count: jest.fn(),
     },
+    storyLike: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      create: jest.fn(),
+      delete: jest.fn(),
+      count: jest.fn(),
+    },
+    creatorProfile: {
+      findUnique: jest.fn(),
+    },
     subscription: {
       findMany: jest.fn(),
     },
     $transaction: jest.fn(),
+  };
+
+  const mockMessagingService = {
+    sendMessage: jest.fn(),
+  };
+
+  const mockMessagingGateway = {
+    toMessagePayload: jest.fn(),
+    emitNewMessage: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -38,6 +59,8 @@ describe('StoriesService', () => {
           provide: PrismaService,
           useValue: mockPrismaService,
         },
+        { provide: MessagingService, useValue: mockMessagingService },
+        { provide: MessagingGateway, useValue: mockMessagingGateway },
       ],
     }).compile();
 
@@ -217,6 +240,109 @@ describe('StoriesService', () => {
       mockPrismaService.story.findUnique.mockResolvedValue(null);
 
       await expect(service.deleteStory(userId, storyId)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('toggleLike', () => {
+    const userId = 'user-123';
+    const storyId = 'story-456';
+    const activeStory = {
+      id: storyId,
+      creatorId: 'creator-1',
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      deletedAt: null,
+    };
+
+    it('should like a story that is not yet liked', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue(activeStory);
+      mockPrismaService.storyLike.findUnique.mockResolvedValue(null);
+      mockPrismaService.storyLike.count.mockResolvedValue(1);
+
+      const result = await service.toggleLike(userId, storyId);
+
+      expect(mockPrismaService.storyLike.create).toHaveBeenCalledWith({
+        data: { storyId, userId },
+      });
+      expect(result).toEqual({ liked: true, likesCount: 1 });
+    });
+
+    it('should unlike a story that is already liked', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue(activeStory);
+      mockPrismaService.storyLike.findUnique.mockResolvedValue({ id: 'like-1' });
+      mockPrismaService.storyLike.count.mockResolvedValue(0);
+
+      const result = await service.toggleLike(userId, storyId);
+
+      expect(mockPrismaService.storyLike.delete).toHaveBeenCalledWith({
+        where: { id: 'like-1' },
+      });
+      expect(result).toEqual({ liked: false, likesCount: 0 });
+    });
+
+    it('should throw NotFoundException if story is expired', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue({
+        ...activeStory,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      await expect(service.toggleLike(userId, storyId)).rejects.toThrow(NotFoundException);
+      expect(mockPrismaService.storyLike.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('replyToStory', () => {
+    const userId = 'user-123';
+    const storyId = 'story-456';
+    const activeStory = {
+      id: storyId,
+      creatorId: 'creator-1',
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      deletedAt: null,
+    };
+
+    it('should send the reply as a direct message to the creator', async () => {
+      const message = { id: 'msg-1', senderId: userId, receiverId: 'creator-1' };
+      mockPrismaService.story.findUnique.mockResolvedValue(activeStory);
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ allowMessages: true });
+      mockMessagingService.sendMessage.mockResolvedValue(message);
+      mockMessagingGateway.toMessagePayload.mockReturnValue({ id: 'msg-1' });
+
+      const result = await service.replyToStory(userId, storyId, '  Super story !  ');
+
+      expect(mockMessagingService.sendMessage).toHaveBeenCalledWith(
+        userId,
+        'creator-1',
+        '[Réponse à votre story] Super story !',
+      );
+      expect(mockMessagingGateway.emitNewMessage).toHaveBeenCalledWith('creator-1', { id: 'msg-1' });
+      expect(result).toBe(message);
+    });
+
+    it('should not allow replying to own story', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue(activeStory);
+
+      await expect(service.replyToStory('creator-1', storyId, 'hi')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockMessagingService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('should respect creators who disabled messages', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue(activeStory);
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ allowMessages: false });
+
+      await expect(service.replyToStory(userId, storyId, 'hi')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockMessagingService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('should throw NotFoundException if story not found', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue(null);
+
+      await expect(service.replyToStory(userId, storyId, 'hi')).rejects.toThrow(
         NotFoundException,
       );
     });

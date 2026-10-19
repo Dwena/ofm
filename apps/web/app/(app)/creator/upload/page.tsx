@@ -113,19 +113,27 @@ export default function UploadPage() {
       // Determine content type based on files
       const hasVideo = uploadedFiles.some(f => f.type === 'VIDEO')
       const hasImage = uploadedFiles.some(f => f.type === 'IMAGE')
-      const contentType = hasVideo ? 'VIDEO' : hasImage ? 'IMAGE' : 'POST'
+      const contentType = uploadedFiles.length > 1 ? 'ALBUM' : hasVideo ? 'VIDEO' : hasImage ? 'PHOTO' : 'TEXT'
+      const visibilityByTier = {
+        FREE: 'PUBLIC',
+        BASIC: 'SUBSCRIBERS_ONLY',
+        PREMIUM: 'PREMIUM_SUBSCRIBERS',
+        VIP: 'PREMIUM_SUBSCRIBERS',
+      } as const
 
       const response = await contentApi.create({
         title,
         description,
-        tier,
+        visibility: visibilityByTier[tier],
         fileIds: uploadedFiles.map(f => f.mediaId!),
         type: contentType,
-        isPPV,
-        ppvPrice: isPPV ? Math.round(parseFloat(price) * 100) : undefined,
+        isPpv: isPPV,
+        ppvPrice: isPPV ? Math.round(parseFloat(price) * 100) / 100 : undefined,
       })
 
-      return response.data
+      // Content is created as a draft; publish it right away
+      const published = await contentApi.publish(response.data.id)
+      return published.data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['creator-content'] })

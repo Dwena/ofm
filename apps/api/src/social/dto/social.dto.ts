@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsNumber, Min, Max, IsEnum } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Min, Max, IsEnum, MaxLength } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateCommentDto {
@@ -60,7 +60,15 @@ export class DiscoverCreatorsDto {
   limit?: number = 20;
 }
 
-export class MarkNotificationReadDto {
+export class SearchCreatorsDto {
   @IsString()
-  notificationId: string;
+  @MaxLength(100)
+  q: string;
+
+  @IsNumber()
+  @Type(() => Number)
+  @Min(1)
+  @Max(50)
+  @IsOptional()
+  limit?: number = 10;
 }

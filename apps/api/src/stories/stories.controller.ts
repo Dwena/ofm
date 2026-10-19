@@ -5,6 +5,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateStoryDto } from './dto/create-story.dto';
+import { ReplyStoryDto } from './dto/reply-story.dto';
 
 @Controller('stories')
 @UseGuards(JwtAuthGuard)
@@ -63,6 +64,29 @@ export class StoriesController {
     @Param('id') storyId: string,
   ) {
     return this.storiesService.viewStory(userId, storyId);
+  }
+
+  /**
+   * Like or unlike a story
+   */
+  @Post(':id/like')
+  async toggleLike(
+    @CurrentUser('id') userId: string,
+    @Param('id') storyId: string,
+  ) {
+    return this.storiesService.toggleLike(userId, storyId);
+  }
+
+  /**
+   * Reply to a story (sent as a direct message to the creator)
+   */
+  @Post(':id/reply')
+  async replyToStory(
+    @CurrentUser('id') userId: string,
+    @Param('id') storyId: string,
+    @Body() dto: ReplyStoryDto,
+  ) {
+    return this.storiesService.replyToStory(userId, storyId, dto.message);
   }
 
   /**

@@ -19,6 +19,7 @@ import {
   GetCommentsDto,
   FollowCreatorDto,
   DiscoverCreatorsDto,
+  SearchCreatorsDto,
 } from './dto/social.dto';
 
 @Injectable()
@@ -366,7 +367,7 @@ export class SocialService {
       case 'POPULAR':
         orderBy = {
           creatorProfile: {
-            subscribersCount: 'desc',
+            totalSubscribers: 'desc',
           },
         };
         break;
@@ -377,7 +378,7 @@ export class SocialService {
         // For recommended, we could use ML or just popular for now
         orderBy = {
           creatorProfile: {
-            subscribersCount: 'desc',
+            totalSubscribers: 'desc',
           },
         };
         break;
@@ -396,12 +397,20 @@ export class SocialService {
           bio: true,
           avatar: true,
           coverImage: true,
+          location: true,
+          kycStatus: true,
           createdAt: true,
           creatorProfile: {
             select: {
               totalSubscribers: true,
               totalContent: true,
             },
+          },
+          subscriptionTiers: {
+            where: { isActive: true },
+            select: { price: true },
+            orderBy: { price: 'asc' },
+            take: 1,
           },
         },
       }),
@@ -430,8 +439,10 @@ export class SocialService {
 
     const followingIds = new Set(userSubscriptions.map((s: any) => s.tier.creatorId));
 
-    const creatorsWithFollowStatus = creators.map((creator: any) => ({
+    const creatorsWithFollowStatus = creators.map(({ subscriptionTiers, ...creator }: any) => ({
       ...creator,
+      // Cheapest active tier, so the discover page can display/filter by price
+      subscriptionPrice: subscriptionTiers[0] ? Number(subscriptionTiers[0].price) : null,
       isFollowing: followingIds.has(creator.id),
     }));
 
@@ -447,103 +458,47 @@ export class SocialService {
   }
 
   /**
-   * Get notifications for user
+   * Search creators by username or display name
    */
-  async getNotifications(userId: string, page: number = 1, limit: number = 20) {
-    const skip = (page - 1) * limit;
+  async searchCreators(dto: SearchCreatorsDto) {
+    const { q, limit = 10 } = dto;
+    const query = q.trim();
 
-    const [notifications, total, unreadCount] = await Promise.all([
-      this.prisma.notification.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      this.prisma.notification.count({ where: { userId } }),
-      this.prisma.notification.count({
-        where: {
-          userId,
-          isRead: false,
-        },
-      }),
-    ]);
-
-    return {
-      items: notifications,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-      unreadCount,
-    };
-  }
-
-  /**
-   * Mark notification as read
-   */
-  async markNotificationRead(userId: string, notificationId: string) {
-    const notification = await this.prisma.notification.findUnique({
-      where: { id: notificationId },
-    });
-
-    if (!notification) {
-      throw new NotFoundException('Notification not found');
+    if (!query) {
+      return [];
     }
 
-    if (notification.userId !== userId) {
-      throw new ForbiddenException('Not your notification');
-    }
-
-    return this.prisma.notification.update({
-      where: { id: notificationId },
-      data: {
-        isRead: true,
-        readAt: new Date(),
-      },
-    });
-  }
-
-  /**
-   * Mark all notifications as read
-   */
-  async markAllNotificationsRead(userId: string) {
-    await this.prisma.notification.updateMany({
+    return this.prisma.user.findMany({
       where: {
-        userId,
-        isRead: false,
+        role: 'CREATOR',
+        status: 'ACTIVE',
+        deletedAt: null,
+        OR: [
+          { username: { contains: query, mode: 'insensitive' } },
+          { displayName: { contains: query, mode: 'insensitive' } },
+        ],
       },
-      data: {
-        isRead: true,
-        readAt: new Date(),
+      orderBy: {
+        creatorProfile: {
+          totalSubscribers: 'desc',
+        },
+      },
+      take: limit,
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        avatar: true,
+        bio: true,
+        role: true,
+        creatorProfile: {
+          select: {
+            totalSubscribers: true,
+            totalContent: true,
+          },
+        },
       },
     });
-
-    return { message: 'All notifications marked as read' };
-  }
-
-  /**
-   * Delete notification
-   */
-  async deleteNotification(userId: string, notificationId: string) {
-    const notification = await this.prisma.notification.findUnique({
-      where: { id: notificationId },
-    });
-
-    if (!notification) {
-      throw new NotFoundException('Notification not found');
-    }
-
-    if (notification.userId !== userId) {
-      throw new ForbiddenException('Not your notification');
-    }
-
-    await this.prisma.notification.delete({
-      where: { id: notificationId },
-    });
-
-    return { message: 'Notification deleted' };
   }
 
   /**

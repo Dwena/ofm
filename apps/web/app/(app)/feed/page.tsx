@@ -20,32 +20,51 @@ import {
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
+import CommentsSection from '@/components/social/comments-section'
 
+// Shape returned by /content/feed and /content/feed/subscriptions
 interface ContentItem {
   id: string
-  title: string
-  description?: string
-  tier: string
-  isPPV: boolean
-  ppvPrice?: number
+  type: 'PHOTO' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'ALBUM'
+  visibility: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
+  title?: string | null
+  description?: string | null
+  caption?: string | null
+  isPpv: boolean
+  ppvPrice: number | null // euros
   isLocked: boolean
+  hasUnlocked: boolean
+  isLiked: boolean
+  mediaCount: number
   creator: {
     id: string
     username: string
-    displayName?: string
-    profilePicture?: string
+    displayName?: string | null
+    avatar?: string | null
   }
-  media: Array<{
+  files: Array<{
     id: string
-    type: string
-    thumbnailUrl?: string
-    url?: string
+    type: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE'
+    url: string
+    thumbnailUrl?: string | null
   }>
-  likesCount: number
-  commentsCount: number
-  isLiked: boolean
+  _count: {
+    likes: number
+    comments: number
+  }
+  publishedAt?: string | null
   createdAt: string
 }
+
+const visibilityLabels: Record<ContentItem['visibility'], string> = {
+  PUBLIC: 'Public',
+  SUBSCRIBERS_ONLY: 'Abonnés',
+  PREMIUM_SUBSCRIBERS: 'Premium',
+  PPV: 'PPV',
+  PRIVATE: 'Privé',
+}
+
+const formatPrice = (price: number | null) => `${(price ?? 0).toFixed(2)}€`
 
 export default function FeedPage() {
   const [page, setPage] = useState(1)
@@ -85,15 +104,18 @@ export default function FeedPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['feed'] })
     },
+    onError: (error: any) => {
+      alert(error?.response?.data?.message || 'Impossible de débloquer ce contenu')
+    },
   })
 
   const handleLike = (contentId: string) => {
     likeMutation.mutate(contentId)
   }
 
-  const handleUnlock = (contentId: string) => {
-    if (confirm('Débloquer ce contenu payant?')) {
-      unlockMutation.mutate(contentId)
+  const handleUnlock = (content: ContentItem) => {
+    if (confirm(`Débloquer ce contenu pour ${formatPrice(content.ppvPrice)} ?`)) {
+      unlockMutation.mutate(content.id)
     }
   }
 
@@ -185,17 +207,19 @@ function ContentCard({
 }: {
   content: ContentItem
   onLike: (id: string) => void
-  onUnlock: (id: string) => void
+  onUnlock: (content: ContentItem) => void
 }) {
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0)
-  const currentMedia = content.media[currentMediaIndex]
+  const [showComments, setShowComments] = useState(false)
+  const media = content.files
+  const currentMedia = media[currentMediaIndex]
 
   const nextMedia = () => {
-    setCurrentMediaIndex(i => (i + 1) % content.media.length)
+    setCurrentMediaIndex(i => (i + 1) % media.length)
   }
 
   const prevMedia = () => {
-    setCurrentMediaIndex(i => (i - 1 + content.media.length) % content.media.length)
+    setCurrentMediaIndex(i => (i - 1 + media.length) % media.length)
   }
 
   return (
@@ -204,7 +228,7 @@ function ContentCard({
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <Avatar>
-              <AvatarImage src={content.creator.profilePicture} />
+              <AvatarImage src={content.creator.avatar ?? undefined} />
               <AvatarFallback>
                 {content.creator.username.substring(0, 2).toUpperCase()}
               </AvatarFallback>
@@ -214,7 +238,7 @@ function ContentCard({
                 {content.creator.displayName || content.creator.username}
               </p>
               <p className="text-xs text-muted-foreground">
-                {formatDistanceToNow(new Date(content.createdAt), {
+                {formatDistanceToNow(new Date(content.publishedAt || content.createdAt), {
                   addSuffix: true,
                   locale: fr,
                 })}
@@ -222,10 +246,10 @@ function ContentCard({
             </div>
           </div>
           <div className="flex items-center space-x-2">
-            <Badge variant="outline">{content.tier}</Badge>
-            {content.isPPV && (
+            <Badge variant="outline">{visibilityLabels[content.visibility] ?? content.visibility}</Badge>
+            {content.isPpv && (
               <Badge variant="secondary">
-                PPV {(content.ppvPrice! / 100).toFixed(2)}€
+                PPV {formatPrice(content.ppvPrice)}
               </Badge>
             )}
           </div>
@@ -235,7 +259,7 @@ function ContentCard({
       <CardContent className="space-y-4">
         {/* Title and description */}
         <div>
-          <h3 className="font-semibold text-lg">{content.title}</h3>
+          {content.title && <h3 className="font-semibold text-lg">{content.title}</h3>}
           {content.description && (
             <p className="text-sm text-muted-foreground mt-1">
               {content.description}
@@ -244,7 +268,7 @@ function ContentCard({
         </div>
 
         {/* Media viewer */}
-        {content.media.length > 0 && (
+        {(content.isLocked || media.length > 0) && (
           <div className="relative bg-muted rounded-lg overflow-hidden">
             {content.isLocked ? (
               <div className="aspect-video flex items-center justify-center">
@@ -253,13 +277,18 @@ function ContentCard({
                   <div>
                     <p className="font-semibold">Contenu verrouillé</p>
                     <p className="text-sm text-muted-foreground">
-                      {content.isPPV
-                        ? `Débloquez pour ${(content.ppvPrice! / 100).toFixed(2)}€`
-                        : `Abonnez-vous au tier ${content.tier}`}
+                      {content.isPpv
+                        ? `Débloquez pour ${formatPrice(content.ppvPrice)}`
+                        : 'Abonnez-vous à ce créateur pour voir ce contenu'}
                     </p>
+                    {content.mediaCount > 0 && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {content.mediaCount} média{content.mediaCount > 1 ? 's' : ''}
+                      </p>
+                    )}
                   </div>
-                  {content.isPPV && (
-                    <Button onClick={() => onUnlock(content.id)}>
+                  {content.isPpv && (
+                    <Button onClick={() => onUnlock(content)}>
                       Débloquer maintenant
                     </Button>
                   )}
@@ -270,7 +299,7 @@ function ContentCard({
                 {currentMedia.type === 'IMAGE' ? (
                   <img
                     src={currentMedia.url}
-                    alt={content.title}
+                    alt={content.title || 'Contenu'}
                     className="w-full aspect-video object-cover"
                   />
                 ) : currentMedia.type === 'VIDEO' ? (
@@ -291,7 +320,7 @@ function ContentCard({
                 )}
 
                 {/* Media navigation */}
-                {content.media.length > 1 && (
+                {media.length > 1 && (
                   <>
                     <Button
                       variant="ghost"
@@ -310,7 +339,7 @@ function ContentCard({
                       <ChevronRight className="h-4 w-4" />
                     </Button>
                     <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-background/80 px-3 py-1 rounded-full text-xs">
-                      {currentMediaIndex + 1} / {content.media.length}
+                      {currentMediaIndex + 1} / {media.length}
                     </div>
                   </>
                 )}
@@ -329,14 +358,20 @@ function ContentCard({
             className={content.isLiked ? 'text-red-500' : ''}
           >
             <Heart className={`h-4 w-4 mr-2 ${content.isLiked ? 'fill-current' : ''}`} />
-            {content.likesCount}
+            {content._count.likes}
           </Button>
-          <Button variant="ghost" size="sm">
+          <Button variant="ghost" size="sm" onClick={() => setShowComments(v => !v)}>
             <MessageCircle className="h-4 w-4 mr-2" />
-            {content.commentsCount}
+            {content._count.comments}
           </Button>
         </div>
       </CardFooter>
+
+      {showComments && (
+        <div className="px-6 pb-6">
+          <CommentsSection contentId={content.id} initialCount={content._count.comments} />
+        </div>
+      )}
     </Card>
   )
 }

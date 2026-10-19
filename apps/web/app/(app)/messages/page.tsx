@@ -19,10 +19,8 @@ interface Conversation {
   participant: {
     id: string
     username: string
-    creatorProfile?: {
-      displayName?: string
-      profilePicture?: string
-    }
+    displayName?: string | null
+    avatar?: string | null
   }
   lastMessage?: {
     id: string
@@ -37,17 +35,15 @@ interface Message {
   id: string
   content: string
   senderId: string
-  recipientId: string
+  receiverId: string
   createdAt: string
   hasAttachment?: boolean
   attachmentUrl?: string
   sender: {
     id: string
     username: string
-    creatorProfile?: {
-      displayName?: string
-      profilePicture?: string
-    }
+    displayName?: string | null
+    avatar?: string | null
   }
 }
 
@@ -265,7 +261,7 @@ export default function MessagesPage() {
           <div className="space-y-2">
             {conversations.map((conv) => {
               const isOnline = onlineUsers.has(conv.participant.id)
-              const displayName = conv.participant.creatorProfile?.displayName || conv.participant.username
+              const displayName = conv.participant.displayName || conv.participant.username
 
               return (
                 <div
@@ -280,7 +276,7 @@ export default function MessagesPage() {
                   <div className="flex items-center space-x-3">
                     <div className="relative">
                       <Avatar>
-                        <AvatarImage src={conv.participant.creatorProfile?.profilePicture} />
+                        <AvatarImage src={conv.participant.avatar ?? undefined} />
                         <AvatarFallback>
                           {displayName.substring(0, 2).toUpperCase()}
                         </AvatarFallback>
@@ -324,9 +320,9 @@ export default function MessagesPage() {
             <div className="p-4 border-b flex items-center space-x-3">
               <div className="relative">
                 <Avatar>
-                  <AvatarImage src={selectedConversation.participant.creatorProfile?.profilePicture} />
+                  <AvatarImage src={selectedConversation.participant.avatar ?? undefined} />
                   <AvatarFallback>
-                    {(selectedConversation.participant.creatorProfile?.displayName || selectedConversation.participant.username).substring(0, 2).toUpperCase()}
+                    {(selectedConversation.participant.displayName || selectedConversation.participant.username).substring(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 {onlineUsers.has(selectedConversation.participant.id) && (
@@ -335,7 +331,7 @@ export default function MessagesPage() {
               </div>
               <div>
                 <p className="font-semibold">
-                  {selectedConversation.participant.creatorProfile?.displayName || selectedConversation.participant.username}
+                  {selectedConversation.participant.displayName || selectedConversation.participant.username}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {onlineUsers.has(selectedConversation.participant.id) ? 'En ligne' : 'Hors ligne'}

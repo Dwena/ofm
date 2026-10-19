@@ -445,7 +445,7 @@ export default function CreatorProfilePage() {
 
         <TabsContent value="images" className="mt-6">
           <ContentGallery
-            content={content?.filter((c: any) => c.type === 'IMAGE')}
+            content={content?.filter((c: any) => c.type === 'PHOTO' || c.type === 'ALBUM')}
             isLoading={loadingContent}
             isOwnProfile={isOwnProfile}
           />
@@ -514,14 +514,14 @@ function ContentGallery({
             {/* Thumbnail */}
             {item.files && item.files[0] && (
               <>
-                {item.type === 'IMAGE' && (
+                {item.files[0].type === 'IMAGE' && (
                   <img
                     src={item.files[0].thumbnailUrl || item.files[0].url}
                     alt={item.title || 'Content'}
                     className="w-full h-full object-cover"
                   />
                 )}
-                {item.type === 'VIDEO' && (
+                {item.files[0].type === 'VIDEO' && (
                   <div className="relative w-full h-full">
                     <img
                       src={item.files[0].thumbnailUrl || '/placeholder-video.jpg'}
@@ -536,12 +536,14 @@ function ContentGallery({
               </>
             )}
 
-            {/* PPV Lock Overlay */}
-            {item.isPpv && !isOwnProfile && (
+            {/* Lock Overlay (PPV not unlocked, or subscribers-only) */}
+            {item.isLocked && (
               <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
                 <div className="text-center text-white">
                   <Lock className="h-8 w-8 mx-auto mb-2" />
-                  <p className="text-sm font-medium">{(item.ppvPrice / 100).toFixed(2)}€</p>
+                  <p className="text-sm font-medium">
+                    {item.isPpv ? `${Number(item.ppvPrice ?? 0).toFixed(2)}€` : 'Abonnés'}
+                  </p>
                 </div>
               </div>
             )}

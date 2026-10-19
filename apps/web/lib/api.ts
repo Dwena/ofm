@@ -111,13 +111,14 @@ export const usersApi = {
   getByUsername: (username: string) => api.get(`/users/${username}`),
   updateProfile: (data: any) => api.put('/users/profile', data),
   getStats: () => api.get('/users/stats'),
-  discover: (params: { search?: string; category?: string; sortBy?: string; page?: number; limit?: number } = {}) => {
+  // Maps the /social/discover/creators response to the discover page's creator shape
+  discover: async (params: { search?: string; category?: string; sortBy?: string; page?: number; limit?: number } = {}) => {
     const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED'> = {
       popular: 'POPULAR',
       subscribers: 'POPULAR',
       recent: 'NEW',
     }
-    return api.get('/social/discover/creators', {
+    const response = await api.get('/social/discover/creators', {
       params: {
         query: params.search || undefined,
         sortBy: params.sortBy ? sortMap[params.sortBy] ?? 'RECOMMENDED' : undefined,
@@ -125,6 +126,18 @@ export const usersApi = {
         limit: params.limit,
       },
     })
+    const items: any[] = Array.isArray(response.data?.items) ? response.data.items : []
+    return {
+      ...response,
+      data: items.map((creator) => ({
+        ...creator,
+        subscriberCount: creator.creatorProfile?.totalSubscribers ?? 0,
+        postCount: creator.creatorProfile?.totalContent ?? 0,
+        subscriptionPrice: creator.subscriptionPrice ?? undefined,
+        isVerified: creator.kycStatus === 'VERIFIED',
+        categories: [],
+      })),
+    }
   },
 }
 
@@ -232,16 +245,19 @@ export const contentApi = {
     api.get(`/content/creator/${creatorId}`),
   getMyContent: (params: { page?: number; limit?: number } = {}) =>
     api.get('/content/my-content', { params }),
+  getById: (id: string) => api.get(`/content/${id}`),
+  // Created as a draft; call publish() to make it visible
   create: (data: {
-    title: string
+    type: 'PHOTO' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'ALBUM'
+    visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
+    title?: string
     description?: string
-    tier: string
-    type: string
-    mediaIds?: string[]
+    caption?: string
     fileIds?: string[]
-    isPPV?: boolean
-    ppvPrice?: number
+    isPpv?: boolean
+    ppvPrice?: number // euros
   }) => api.post('/content', data),
+  publish: (id: string) => api.post(`/content/${id}/publish`),
   update: (id: string, data: any) => api.put(`/content/${id}`, data),
   delete: (id: string) => api.delete(`/content/${id}`),
   likeContent: (id: string) => api.post(`/content/${id}/like`),
@@ -250,12 +266,14 @@ export const contentApi = {
 
 export const messagesApi = {
   getConversations: () => api.get('/messages/conversations'),
-  getMessages: (partnerId: string) => api.get(`/messages/${partnerId}`),
+  getMessages: (partnerId: string, params: { page?: number; limit?: number } = {}) =>
+    api.get(`/messages/${partnerId}`, { params }),
+  deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
 }
 
 export const notificationsApi = {
   getAll: (unreadOnly: boolean = false) =>
-    api.get(`/notifications?unreadOnly=${unreadOnly}`),
+    api.get('/notifications', { params: { unreadOnly } }),
   markAsRead: (id: string) => api.put(`/notifications/${id}/read`),
   markAllAsRead: () => api.put('/notifications/read-all'),
   deleteNotification: (id: string) => api.delete(`/notifications/${id}`),
@@ -264,7 +282,7 @@ export const notificationsApi = {
 export const socialApi = {
   // Comments
   getComments: (contentId: string, page: number = 1, limit: number = 20) =>
-    api.get(`/social/comments/${contentId}?page=${page}&limit=${limit}`),
+    api.get('/social/comments', { params: { contentId, page, limit } }),
   createComment: (contentId: string, text: string) =>
     api.post('/social/comments', { contentId, text }),
   updateComment: (commentId: string, text: string) =>
@@ -274,7 +292,7 @@ export const socialApi = {
 
   // Follow/Unfollow
   followCreator: (creatorId: string) =>
-    api.post(`/social/follow/${creatorId}`),
+    api.post('/social/follow', { creatorId }),
   unfollowCreator: (creatorId: string) =>
     api.delete(`/social/follow/${creatorId}`),
   getFollowing: () =>
@@ -282,15 +300,15 @@ export const socialApi = {
 
   // Discover
   discoverCreators: (params?: {
-    search?: string
+    query?: string
+    sortBy?: 'POPULAR' | 'NEW' | 'RECOMMENDED'
     page?: number
     limit?: number
-    sort?: string
   }) => api.get('/social/discover/creators', { params }),
 
   // Search
-  searchCreators: (query: string) =>
-    api.get(`/social/search?q=${encodeURIComponent(query)}`),
+  searchCreators: (query: string, limit?: number) =>
+    api.get('/social/search', { params: { q: query, limit } }),
 }
 
 export const analyticsApi = {
@@ -394,7 +412,13 @@ export const storiesApi = {
         userId: creatorId,
         user: creator,
         stories: stories
-          .map((story) => ({ ...story, user: story.creator, views: story._count?.views ?? 0 }))
+          .map((story) => ({
+            ...story,
+            user: story.creator,
+            mediaType: story.type === 'VIDEO' ? 'VIDEO' : story.type === 'TEXT' ? 'TEXT' : 'IMAGE',
+            views: story._count?.views ?? 0,
+            likes: story._count?.likes ?? 0,
+          }))
           .reverse(),
       },
     }
@@ -402,8 +426,9 @@ export const storiesApi = {
   getStory: (storyId: string) => api.get(`/stories/${storyId}`),
   markAsViewed: (storyId: string) => api.post(`/stories/${storyId}/view`),
   getViewers: (storyId: string) => api.get(`/stories/${storyId}/viewers`),
-  // TODO: backend endpoints for story likes and replies don't exist yet
+  // Toggles the like; resolves to { liked, likesCount }
   like: (storyId: string) => api.post(`/stories/${storyId}/like`),
+  // Delivered to the creator as a direct message
   reply: (storyId: string, message: string) =>
     api.post(`/stories/${storyId}/reply`, { message }),
   delete: (storyId: string) => api.delete(`/stories/${storyId}`),
