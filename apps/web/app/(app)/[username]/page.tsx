@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { formatRelativeTime } from '@/lib/utils'
+import { toast } from '@/hooks/use-toast'
 
 export default function CreatorProfilePage() {
   const params = useParams()
@@ -54,6 +55,99 @@ export default function CreatorProfilePage() {
     enabled: !!creator?.id,
   })
 
+  const isOwnProfile = currentUser?.username === username
+
+  // Fetch my subscription to this creator
+  const { data: subscriptionStatus } = useQuery({
+    queryKey: ['subscription-status', creator?.id],
+    queryFn: async () => {
+      const response = await subscriptionsApi.getStatusForCreator(creator.id)
+      return response.data as { isSubscribed: boolean; subscription: any | null }
+    },
+    enabled: !!creator?.id && !!currentUser && !isOwnProfile,
+  })
+
+  const refreshSubscription = () => {
+    queryClient.invalidateQueries({ queryKey: ['subscription-status', creator?.id] })
+    queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
+    queryClient.invalidateQueries({ queryKey: ['creator-profile', username] })
+    queryClient.invalidateQueries({ queryKey: ['creator-content', creator?.id] })
+  }
+
+  const onSubscriptionError = (error: any) => {
+    toast({
+      title: 'Erreur',
+      description: error.response?.data?.message || 'Une erreur est survenue',
+      variant: 'destructive',
+    })
+  }
+
+  // Free tiers are activated directly; paid tiers go through checkout
+  const subscribeMutation = useMutation({
+    mutationFn: (tierId: string) => subscriptionsApi.subscribe({ tierId }),
+    onSuccess: () => {
+      refreshSubscription()
+      toast({ title: 'Abonnement activé' })
+    },
+    onError: onSubscriptionError,
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (subscriptionId: string) => subscriptionsApi.cancel(subscriptionId),
+    onSuccess: () => {
+      refreshSubscription()
+      toast({ title: 'Abonnement annulé' })
+    },
+    onError: onSubscriptionError,
+  })
+
+  const resumeMutation = useMutation({
+    mutationFn: (subscriptionId: string) => subscriptionsApi.resume(subscriptionId),
+    onSuccess: () => {
+      refreshSubscription()
+      toast({ title: 'Abonnement repris' })
+    },
+    onError: onSubscriptionError,
+  })
+
+  const currentSubscription =
+    subscriptionStatus?.subscription &&
+    ['ACTIVE', 'PAST_DUE'].includes(subscriptionStatus.subscription.status)
+      ? subscriptionStatus.subscription
+      : null
+
+  const handleSubscribe = (tier: any) => {
+    if (!currentUser) {
+      router.push('/login')
+      return
+    }
+
+    const price = Number(tier.price)
+    if (price <= 0) {
+      subscribeMutation.mutate(tier.id)
+      return
+    }
+
+    const params = new URLSearchParams({
+      type: 'subscription',
+      itemId: tier.id,
+      amount: String(Math.round(price * 100)),
+      description: `${tier.name} - @${username}`,
+      returnUrl: `/${username}`,
+    })
+    router.push(`/checkout?${params.toString()}`)
+  }
+
+  const handleCancel = (subscription: any) => {
+    const message =
+      subscription.stripeSubscriptionId
+        ? `Votre abonnement restera actif jusqu'au ${new Date(subscription.currentPeriodEnd).toLocaleDateString('fr-FR')}. Confirmer l'annulation ?`
+        : 'Confirmer l\'annulation de votre abonnement ?'
+    if (window.confirm(message)) {
+      cancelMutation.mutate(subscription.id)
+    }
+  }
+
   // Fetch creator's content
   const { data: content, isLoading: loadingContent } = useQuery({
     queryKey: ['creator-content', creator?.id],
@@ -64,8 +158,6 @@ export default function CreatorProfilePage() {
     },
     enabled: !!creator?.id,
   })
-
-  const isOwnProfile = currentUser?.username === username
 
   if (loadingCreator) {
     return (
@@ -208,8 +300,19 @@ export default function CreatorProfilePage() {
               </Button>
             ) : (
               <>
-                <Button size="lg" onClick={() => document.getElementById('tiers-section')?.scrollIntoView({ behavior: 'smooth' })}>
-                  S'abonner
+                <Button
+                  size="lg"
+                  variant={currentSubscription ? 'outline' : 'default'}
+                  onClick={() => document.getElementById('tiers-section')?.scrollIntoView({ behavior: 'smooth' })}
+                >
+                  {currentSubscription ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Abonné
+                    </>
+                  ) : (
+                    'S\'abonner'
+                  )}
                 </Button>
                 {creator.creatorProfile?.allowMessages && (
                   <Button variant="outline" size="lg" onClick={() => router.push(`/messages?user=${creator.id}`)}>
@@ -248,9 +351,9 @@ export default function CreatorProfilePage() {
                 <CardContent className="space-y-4">
                   <div>
                     <p className="text-3xl font-bold">
-                      {tier.price === 0 ? 'Gratuit' : `${(tier.price / 100).toFixed(2)}€`}
+                      {Number(tier.price) === 0 ? 'Gratuit' : `${Number(tier.price).toFixed(2)}€`}
                     </p>
-                    {tier.price > 0 && (
+                    {Number(tier.price) > 0 && (
                       <p className="text-sm text-muted-foreground">
                         par {tier.interval === 'year' ? 'an' : 'mois'}
                       </p>
@@ -271,13 +374,56 @@ export default function CreatorProfilePage() {
                     </div>
                   )}
                 </CardContent>
-                <CardFooter>
-                  <Button
-                    className="w-full"
-                    variant={selectedTier === tier.id ? 'default' : 'outline'}
-                  >
-                    {tier.price === 0 ? 'Suivre' : 'S\'abonner'}
-                  </Button>
+                <CardFooter className="flex-col gap-2">
+                  {currentSubscription?.tierId === tier.id ? (
+                    <>
+                      <p className="text-xs text-muted-foreground text-center">
+                        {currentSubscription.status === 'PAST_DUE'
+                          ? 'Paiement en échec : mettez à jour votre moyen de paiement'
+                          : currentSubscription.cancelAtPeriodEnd
+                            ? `Se termine le ${new Date(currentSubscription.currentPeriodEnd).toLocaleDateString('fr-FR')}`
+                            : 'Vous êtes abonné'}
+                      </p>
+                      {currentSubscription.cancelAtPeriodEnd ? (
+                        <Button
+                          className="w-full"
+                          disabled={resumeMutation.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            resumeMutation.mutate(currentSubscription.id)
+                          }}
+                        >
+                          Reprendre l'abonnement
+                        </Button>
+                      ) : (
+                        <Button
+                          className="w-full"
+                          variant="outline"
+                          disabled={cancelMutation.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleCancel(currentSubscription)
+                          }}
+                        >
+                          Se désabonner
+                        </Button>
+                      )}
+                    </>
+                  ) : (
+                    <Button
+                      className="w-full"
+                      variant={selectedTier === tier.id ? 'default' : 'outline'}
+                      disabled={!!currentSubscription || subscribeMutation.isPending}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleSubscribe(tier)
+                      }}
+                    >
+                      {currentSubscription
+                        ? 'Abonné à une autre offre'
+                        : Number(tier.price) === 0 ? 'Suivre' : 'S\'abonner'}
+                    </Button>
+                  )}
                 </CardFooter>
               </Card>
             ))}

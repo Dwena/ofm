@@ -2,6 +2,7 @@
 
 import { useSearchParams, useRouter } from 'next/navigation'
 import StripeCheckout from '@/components/checkout/stripe-checkout'
+import SubscriptionCheckout from '@/components/checkout/subscription-checkout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
@@ -53,19 +54,33 @@ export default function CheckoutPage() {
         </p>
       </div>
 
-      <StripeCheckout
-        amount={amount}
-        currency="EUR"
-        description={description}
-        itemType={type}
-        itemId={itemId}
-        onSuccess={() => {
-          router.push(returnUrl)
-        }}
-        onCancel={() => {
-          router.back()
-        }}
-      />
+      {type === 'subscription' && itemId ? (
+        <SubscriptionCheckout
+          tierId={itemId}
+          amount={amount}
+          description={description}
+          onSuccess={() => {
+            router.push(returnUrl)
+          }}
+          onCancel={() => {
+            router.back()
+          }}
+        />
+      ) : (
+        <StripeCheckout
+          amount={amount}
+          currency="EUR"
+          description={description}
+          itemType={type}
+          itemId={itemId}
+          onSuccess={() => {
+            router.push(returnUrl)
+          }}
+          onCancel={() => {
+            router.back()
+          }}
+        />
+      )}
     </div>
   )
 }

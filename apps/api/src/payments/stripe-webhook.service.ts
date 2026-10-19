@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
+import { SubscriptionSyncService } from './subscription-sync.service';
 
 @Injectable()
 export class StripeWebhookService {
@@ -14,6 +15,7 @@ export class StripeWebhookService {
     private prisma: PrismaService,
     private stripeService: StripeService,
     private configService: ConfigService,
+    private subscriptionSync: SubscriptionSyncService,
   ) {
     const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (!stripeKey) {
@@ -413,75 +415,24 @@ export class StripeWebhookService {
   private async handleSubscriptionCreated(subscription: Stripe.Subscription) {
     this.logger.log(`Subscription created: ${subscription.id}`);
 
-    // Subscription should already be created in our DB when user subscribes
-    // This webhook confirms it's active in Stripe
-    const dbSubscription = await this.prisma.subscription.findUnique({
-      where: { stripeSubscriptionId: subscription.id },
-    });
-
-    if (dbSubscription) {
-      // Map Stripe status to our status
-      let dbStatus: 'ACTIVE' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE' | 'PAUSED' = 'ACTIVE';
-      if (subscription.status === 'active') dbStatus = 'ACTIVE';
-      else if (subscription.status === 'canceled') dbStatus = 'CANCELLED';
-      else if (subscription.status === 'past_due') dbStatus = 'PAST_DUE';
-      else if (subscription.status === 'unpaid') dbStatus = 'PAST_DUE';
-      else if (subscription.status === 'paused') dbStatus = 'PAUSED';
-
-      await this.prisma.subscription.update({
-        where: { id: dbSubscription.id },
-        data: {
-          status: dbStatus,
-          currentPeriodStart: new Date(subscription.current_period_start * 1000),
-          currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-        },
-      });
-    }
+    // Usually still `incomplete` here (first payment pending): the sync only
+    // creates the row once the subscription is active
+    await this.subscriptionSync.syncFromStripe(subscription);
   }
 
   private async handleSubscriptionUpdated(subscription: Stripe.Subscription) {
     this.logger.log(`Subscription updated: ${subscription.id}`);
 
-    const dbSubscription = await this.prisma.subscription.findUnique({
+    const before = await this.prisma.subscription.findUnique({
       where: { stripeSubscriptionId: subscription.id },
     });
 
-    if (!dbSubscription) return;
-
-    let status: 'ACTIVE' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE' | 'PAUSED';
-    switch (subscription.status) {
-      case 'active':
-        status = 'ACTIVE';
-        break;
-      case 'canceled':
-        status = 'CANCELLED';
-        break;
-      case 'past_due':
-      case 'unpaid':
-        status = 'PAST_DUE';
-        break;
-      case 'paused':
-        status = 'PAUSED';
-        break;
-      default:
-        status = dbSubscription.status;
-    }
-
-    await this.prisma.subscription.update({
-      where: { id: dbSubscription.id },
-      data: {
-        status,
-        currentPeriodStart: new Date(subscription.current_period_start * 1000),
-        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-        cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        cancelledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
-      },
-    });
+    const synced = await this.subscriptionSync.syncFromStripe(subscription);
 
     // Notify user of status change
-    if (status === 'CANCELLED') {
+    if (synced && before && synced.status === 'CANCELLED' && before.status !== 'CANCELLED') {
       await this.createNotification({
-        userId: dbSubscription.subscriberId,
+        userId: synced.subscriberId,
         type: 'SUBSCRIPTION_CANCELLED',
         title: 'Abonnement annulé',
         message: 'Votre abonnement a été annulé',
@@ -492,19 +443,8 @@ export class StripeWebhookService {
   private async handleSubscriptionDeleted(subscription: Stripe.Subscription) {
     this.logger.log(`Subscription deleted: ${subscription.id}`);
 
-    const dbSubscription = await this.prisma.subscription.findUnique({
-      where: { stripeSubscriptionId: subscription.id },
-    });
-
-    if (!dbSubscription) return;
-
-    await this.prisma.subscription.update({
-      where: { id: dbSubscription.id },
-      data: {
-        status: 'CANCELLED',
-        cancelledAt: new Date(),
-      },
-    });
+    // The deleted event carries status `canceled`
+    await this.subscriptionSync.syncFromStripe(subscription);
   }
 
   private async handleSubscriptionTrialWillEnd(subscription: Stripe.Subscription) {
@@ -542,37 +482,77 @@ export class StripeWebhookService {
 
     if (!invoice.subscription) return;
 
+    const stripeSubscriptionId =
+      typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription.id;
+
+    // invoice.paid may arrive before customer.subscription.updated: sync from
+    // Stripe so the row exists and its period is up to date
+    const stripeSubscription = await this.stripe.subscriptions.retrieve(stripeSubscriptionId);
+    await this.subscriptionSync.syncFromStripe(stripeSubscription);
+
     const subscription = await this.prisma.subscription.findUnique({
-      where: { stripeSubscriptionId: invoice.subscription as string },
+      where: { stripeSubscriptionId },
       include: { tier: true },
     });
 
-    if (!subscription) return;
+    if (!subscription || invoice.amount_paid <= 0) return;
+
+    // Webhooks can be delivered more than once
+    const chargeId = typeof invoice.charge === 'string' ? invoice.charge : invoice.charge?.id;
+    const alreadyRecorded = await this.prisma.transaction.findFirst({
+      where: {
+        type: 'SUBSCRIPTION',
+        subscriptionId: subscription.id,
+        OR: [
+          ...(chargeId ? [{ stripeChargeId: chargeId }] : []),
+          { metadata: { path: ['invoiceId'], equals: invoice.id } },
+        ],
+      },
+    });
+
+    if (alreadyRecorded) return;
+
+    // Amounts are stored in currency units, like the rest of the transactions
+    const amount = invoice.amount_paid / 100;
+    const platformFeePercentage = parseFloat(
+      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
+    );
+    const platformFee = Math.round(amount * platformFeePercentage) / 100;
+    const netAmount = amount - platformFee;
 
     // Create transaction for subscription payment
     await this.prisma.transaction.create({
       data: {
         fromUserId: subscription.subscriberId,
-        toUserId: subscription.tier ? subscription.tier.creatorId : null,
+        toUserId: subscription.tier.creatorId,
         type: 'SUBSCRIPTION',
         status: 'COMPLETED',
-        amount: invoice.amount_paid,
-        currency: invoice.currency,
-        platformFee: Math.floor(invoice.amount_paid * 0.1), // 10% platform fee
-        netAmount: Math.floor(invoice.amount_paid * 0.9),
-        stripeChargeId: invoice.charge as string,
+        amount,
+        currency: invoice.currency.toUpperCase(),
+        platformFee,
+        netAmount,
+        stripeChargeId: chargeId,
         subscriptionId: subscription.id,
+        metadata: {
+          invoiceId: invoice.id,
+          billingReason: invoice.billing_reason,
+        },
         processedAt: new Date(),
       },
     });
 
-    // Notify creator of new payment
-    if (subscription.tier && subscription.tier.creatorId) {
+    await this.prisma.creatorProfile.updateMany({
+      where: { userId: subscription.tier.creatorId },
+      data: { totalEarnings: { increment: netAmount } },
+    });
+
+    // Notify creator of renewals (new subscribers are notified by the sync)
+    if (invoice.billing_reason === 'subscription_cycle') {
       await this.createNotification({
         userId: subscription.tier.creatorId,
         type: 'SUBSCRIPTION_RENEWAL',
         title: 'Renouvellement d\'abonnement',
-        message: `Un abonnement a été renouvelé pour ${(invoice.amount_paid / 100).toFixed(2)}€`,
+        message: `Un abonnement a été renouvelé pour ${amount.toFixed(2)}€`,
       });
     }
   }
@@ -583,10 +563,21 @@ export class StripeWebhookService {
     if (!invoice.subscription) return;
 
     const subscription = await this.prisma.subscription.findUnique({
-      where: { stripeSubscriptionId: invoice.subscription as string },
+      where: {
+        stripeSubscriptionId:
+          typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription.id,
+      },
     });
 
+    // No row yet means the very first payment failed: the fan simply never got access
     if (!subscription) return;
+
+    if (subscription.status === 'ACTIVE') {
+      await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { status: 'PAST_DUE' },
+      });
+    }
 
     // Notify subscriber
     await this.createNotification({
