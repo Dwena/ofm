@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PrismaService } from '../common/database/prisma.service';
+import { toCents } from '../common/utils/money';
 
 @Injectable()
 export class StripeService {
@@ -65,6 +66,48 @@ export class StripeService {
     }
 
     return this.stripe.paymentIntents.create(paymentIntentData);
+  }
+
+  /**
+   * Create a one-off card payment (tip, PPV) as a destination charge on the
+   * creator's connected account. Amounts are in euros and converted to cents
+   * here. With a saved card the intent is confirmed immediately (it may still
+   * require 3D Secure); otherwise the client confirms it with Stripe Elements.
+   */
+  async createOneTimePaymentIntent(params: {
+    amount: number;
+    platformFee: number;
+    customerId: string;
+    connectedAccountId: string;
+    paymentMethodId?: string;
+    description?: string;
+    metadata: Record<string, string>;
+  }) {
+    return this.stripe.paymentIntents.create({
+      amount: toCents(params.amount),
+      currency: 'eur',
+      customer: params.customerId,
+      payment_method_types: ['card'],
+      application_fee_amount: toCents(params.platformFee),
+      transfer_data: {
+        destination: params.connectedAccountId,
+      },
+      ...(params.description && { description: params.description }),
+      ...(params.paymentMethodId
+        ? { payment_method: params.paymentMethodId, confirm: true }
+        : { setup_future_usage: 'on_session' as const }),
+      metadata: {
+        ...params.metadata,
+        platform: 'ofm',
+      },
+    });
+  }
+
+  /**
+   * Retrieve a payment intent
+   */
+  async retrievePaymentIntent(paymentIntentId: string) {
+    return this.stripe.paymentIntents.retrieve(paymentIntentId);
   }
 
   /**
@@ -318,13 +361,13 @@ export class StripeService {
   /**
    * Create payout to connected account
    * @param accountId Stripe connected account ID
-   * @param amount Amount in cents
+   * @param amountCents Amount in cents (use toCents() on euro amounts)
    * @param currency Currency code (default: eur)
    */
-  async createPayout(accountId: string, amount: number, currency: string = 'eur') {
+  async createPayout(accountId: string, amountCents: number, currency: string = 'eur') {
     return this.stripe.payouts.create(
       {
-        amount: Math.round(amount), // Already in cents
+        amount: Math.round(amountCents),
         currency,
       },
       {

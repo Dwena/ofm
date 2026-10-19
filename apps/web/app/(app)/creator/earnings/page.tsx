@@ -19,7 +19,7 @@ import {
   Wallet,
   ArrowDownToLine
 } from 'lucide-react'
-import { formatCurrency, formatDateTime } from '@/lib/utils'
+import { formatDateTime, formatEuros } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 
 export default function CreatorEarningsPage() {
@@ -111,7 +111,7 @@ export default function CreatorEarningsPage() {
       return
     }
 
-    requestPayoutMutation.mutate(Math.round(amount * 100)) // Convert to cents
+    requestPayoutMutation.mutate(Math.round(amount * 100) / 100) // euros
   }
 
   const handleSetupStripe = async () => {
@@ -199,7 +199,7 @@ export default function CreatorEarningsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-green-600">
-              {formatCurrency(earnings?.availableBalance || 0, 'EUR')}
+              {formatEuros(earnings?.availableBalance)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               Prêt à être retiré
@@ -216,7 +216,7 @@ export default function CreatorEarningsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-yellow-600">
-              {formatCurrency(earnings?.pendingBalance || 0, 'EUR')}
+              {formatEuros(earnings?.pendingBalance)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               En cours de traitement
@@ -233,7 +233,7 @@ export default function CreatorEarningsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">
-              {formatCurrency(earnings?.totalEarnings || 0, 'EUR')}
+              {formatEuros(earnings?.totalEarnings)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               Depuis le début
@@ -255,7 +255,7 @@ export default function CreatorEarningsPage() {
             {!showPayoutForm ? (
               <Button
                 onClick={() => setShowPayoutForm(true)}
-                disabled={!earnings || earnings.availableBalance < 1000} // Min 10€
+                disabled={!earnings || earnings.availableBalance < 10} // Min 10€
                 size="lg"
                 className="w-full"
               >
@@ -272,13 +272,13 @@ export default function CreatorEarningsPage() {
                     type="number"
                     step="0.01"
                     min="10"
-                    max={(earnings?.availableBalance || 0) / 100}
+                    max={earnings?.availableBalance || 0}
                     placeholder="100.00"
                     value={payoutAmount}
                     onChange={(e) => setPayoutAmount(e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Montant minimum: 10€ • Disponible: {formatCurrency(earnings?.availableBalance || 0, 'EUR')}
+                    Montant minimum: 10€ • Disponible: {formatEuros(earnings?.availableBalance)}
                   </p>
                 </div>
 
@@ -375,7 +375,7 @@ export default function CreatorEarningsPage() {
 
                   <div className="text-right">
                     <p className="text-lg font-bold">
-                      -{formatCurrency(Number(payout.amount), payout.currency || 'EUR')}
+                      -{formatEuros(payout.amount)}
                     </p>
                     <Badge
                       variant={payout.status === 'COMPLETED' ? 'default' : 'secondary'}

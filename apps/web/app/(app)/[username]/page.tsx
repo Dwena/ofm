@@ -23,8 +23,9 @@ import {
   ExternalLink
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
-import { formatRelativeTime } from '@/lib/utils'
+import { formatEuros, formatRelativeTime } from '@/lib/utils'
 import { toast } from '@/hooks/use-toast'
+import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 
 export default function CreatorProfilePage() {
   const params = useParams()
@@ -131,7 +132,7 @@ export default function CreatorProfilePage() {
     const params = new URLSearchParams({
       type: 'subscription',
       itemId: tier.id,
-      amount: String(Math.round(price * 100)),
+      amount: String(price), // euros
       description: `${tier.name} - @${username}`,
       returnUrl: `/${username}`,
     })
@@ -146,6 +147,16 @@ export default function CreatorProfilePage() {
     if (window.confirm(message)) {
       cancelMutation.mutate(subscription.id)
     }
+  }
+
+  // PPV content is paid in a dialog; access is granted once the payment is confirmed
+  const [unlocking, setUnlocking] = useState<any | null>(null)
+  const handleUnlock = (item: any) => {
+    if (!currentUser) {
+      router.push('/login')
+      return
+    }
+    setUnlocking({ ...item, creator: { username } })
   }
 
   // Fetch creator's content
@@ -431,6 +442,12 @@ export default function CreatorProfilePage() {
         </div>
       )}
 
+      <PpvUnlockDialog
+        content={unlocking}
+        onClose={() => setUnlocking(null)}
+        onUnlocked={() => queryClient.invalidateQueries({ queryKey: ['creator-content', creator?.id] })}
+      />
+
       {/* Content Gallery */}
       <Tabs defaultValue="all" className="w-full">
         <TabsList>
@@ -440,7 +457,7 @@ export default function CreatorProfilePage() {
         </TabsList>
 
         <TabsContent value="all" className="mt-6">
-          <ContentGallery content={content} isLoading={loadingContent} isOwnProfile={isOwnProfile} />
+          <ContentGallery content={content} isLoading={loadingContent} isOwnProfile={isOwnProfile} onUnlock={handleUnlock} />
         </TabsContent>
 
         <TabsContent value="images" className="mt-6">
@@ -448,6 +465,7 @@ export default function CreatorProfilePage() {
             content={content?.filter((c: any) => c.type === 'PHOTO' || c.type === 'ALBUM')}
             isLoading={loadingContent}
             isOwnProfile={isOwnProfile}
+            onUnlock={handleUnlock}
           />
         </TabsContent>
 
@@ -456,6 +474,7 @@ export default function CreatorProfilePage() {
             content={content?.filter((c: any) => c.type === 'VIDEO')}
             isLoading={loadingContent}
             isOwnProfile={isOwnProfile}
+            onUnlock={handleUnlock}
           />
         </TabsContent>
       </Tabs>
@@ -466,11 +485,13 @@ export default function CreatorProfilePage() {
 function ContentGallery({
   content,
   isLoading,
-  isOwnProfile
+  isOwnProfile,
+  onUnlock,
 }: {
   content: any[] | undefined
   isLoading: boolean
   isOwnProfile: boolean
+  onUnlock: (item: any) => void
 }) {
   const router = useRouter()
 
@@ -542,8 +563,20 @@ function ContentGallery({
                 <div className="text-center text-white">
                   <Lock className="h-8 w-8 mx-auto mb-2" />
                   <p className="text-sm font-medium">
-                    {item.isPpv ? `${Number(item.ppvPrice ?? 0).toFixed(2)}€` : 'Abonnés'}
+                    {item.isPpv ? formatEuros(item.ppvPrice) : 'Abonnés'}
                   </p>
+                  {item.isPpv && !isOwnProfile && (
+                    <Button
+                      size="sm"
+                      className="mt-2 relative z-10"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onUnlock(item)
+                      }}
+                    >
+                      Débloquer
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

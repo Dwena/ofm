@@ -171,14 +171,20 @@ export const paymentsApi = {
   createConnectAccount: () => api.post('/payments/connect/create'),
   getOnboardingLink: () => api.get('/payments/connect/onboarding-link'),
   getOnboardingStatus: () => api.get('/payments/connect/status'),
+  // Amounts are in euros everywhere (requests and responses)
   requestPayout: (amount: number) => api.post('/payments/payout/request', { amount }),
   getEarnings: () => api.get('/payments/earnings'),
   getCreatorEarnings: () => api.get('/payments/creator/earnings'),
   getTransactions: (page: number = 1, limit: number = 20) =>
     api.get(`/payments/transactions?page=${page}&limit=${limit}`),
   getPayouts: () => api.get('/payments/payouts'),
-  sendTip: (creatorId: string, amount: number, message?: string) =>
-    api.post(`/payments/tip/${creatorId}`, { amount, message }),
+  // Tips stay pending until the payment is confirmed (saved card or Stripe Elements)
+  sendTip: (
+    creatorId: string,
+    data: { amount: number; message?: string; streamId?: string; paymentMethodId?: string },
+  ) => api.post(`/payments/tip/${creatorId}`, data),
+  confirmTip: (creatorId: string, paymentIntentId: string) =>
+    api.post(`/payments/tip/${creatorId}/confirm`, { paymentIntentId }),
   createPaymentIntent: (data: { amount: number; currency?: string }) =>
     api.post('/payments/create-intent', data),
   getFilteredTransactions: (filters: any) =>
@@ -261,7 +267,11 @@ export const contentApi = {
   update: (id: string, data: any) => api.put(`/content/${id}`, data),
   delete: (id: string) => api.delete(`/content/${id}`),
   likeContent: (id: string) => api.post(`/content/${id}/like`),
-  unlockPPV: (id: string) => api.post(`/content/${id}/unlock`),
+  // PPV access is granted once the payment is confirmed (saved card or Stripe Elements)
+  unlockPPV: (id: string, paymentMethodId?: string) =>
+    api.post(`/content/${id}/unlock`, paymentMethodId ? { paymentMethodId } : {}),
+  confirmUnlock: (id: string, paymentIntentId: string) =>
+    api.post(`/content/${id}/unlock/confirm`, { paymentIntentId }),
 }
 
 export const messagesApi = {
@@ -432,9 +442,20 @@ export const liveApi = {
   delete: (streamId: string) => api.delete(`/streaming/${streamId}`),
   join: (streamId: string) => api.post(`/streaming/${streamId}/join`),
   leave: (streamId: string) => api.post(`/streaming/${streamId}/leave`),
-  // Tips go to the stream's creator through the payments endpoint
-  sendTip: (creatorId: string, amount: number, message?: string) =>
-    paymentsApi.sendTip(creatorId, amount, message),
+  // PPV streams: access is granted once the payment is confirmed
+  purchase: (streamId: string, paymentMethodId?: string) =>
+    api.post(`/streaming/${streamId}/purchase`, paymentMethodId ? { paymentMethodId } : {}),
+  confirmPurchase: (streamId: string, paymentIntentId: string) =>
+    api.post(`/streaming/${streamId}/purchase/confirm`, { paymentIntentId }),
+  // Tips go to the stream's creator through the payments endpoint; once paid
+  // they are announced in the live chat
+  sendTip: (
+    creatorId: string,
+    amount: number,
+    options: { streamId?: string; message?: string; paymentMethodId?: string } = {},
+  ) => paymentsApi.sendTip(creatorId, { amount, ...options }),
+  confirmTip: (creatorId: string, paymentIntentId: string) =>
+    paymentsApi.confirmTip(creatorId, paymentIntentId),
 }
 
 export const storiesApi = {

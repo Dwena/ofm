@@ -6,6 +6,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
+import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
 
 @Controller('streaming')
 @UseGuards(JwtAuthGuard)
@@ -119,6 +120,30 @@ export class StreamingController {
     @Param('id') streamId: string,
   ) {
     return this.streamingService.leaveStream(userId, streamId);
+  }
+
+  /**
+   * Buy access to a PPV stream (pending until Stripe confirms the payment)
+   */
+  @Post(':id/purchase')
+  async purchaseStream(
+    @CurrentUser('id') userId: string,
+    @Param('id') streamId: string,
+    @Body() dto: OneTimePaymentDto,
+  ) {
+    return this.streamingService.purchaseStream(userId, streamId, dto?.paymentMethodId);
+  }
+
+  /**
+   * Re-check the PPV stream payment with Stripe and grant access once paid (idempotent)
+   */
+  @Post(':id/purchase/confirm')
+  async confirmStreamPurchase(
+    @CurrentUser('id') userId: string,
+    @Param('id') streamId: string,
+    @Body() dto: ConfirmPaymentDto,
+  ) {
+    return this.streamingService.confirmStreamPurchase(userId, streamId, dto.paymentIntentId);
   }
 
   /**

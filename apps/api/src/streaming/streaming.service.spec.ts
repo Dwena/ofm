@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { StreamingService } from './streaming.service';
 import { PrismaService } from '../common/database/prisma.service';
+import { OneTimePaymentService } from '../payments/one-time-payment.service';
 
 describe('StreamingService', () => {
   let service: StreamingService;
@@ -38,6 +39,11 @@ describe('StreamingService', () => {
     $transaction: jest.fn(),
   };
 
+  const mockOneTimePayments = {
+    startPayment: jest.fn(),
+    confirmPayment: jest.fn(),
+  };
+
   const baseStream = {
     id: 'stream-1',
     creatorId: 'creator-1',
@@ -51,6 +57,7 @@ describe('StreamingService', () => {
         StreamingService,
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: ConfigService, useValue: { get: jest.fn((_key: string, fallback?: string) => fallback) } },
+        { provide: OneTimePaymentService, useValue: mockOneTimePayments },
       ],
     }).compile();
 
@@ -286,6 +293,85 @@ describe('StreamingService', () => {
       expect(result.streamKey).toBeUndefined();
       expect(result.hasAccess).toBe(false);
       expect(result.accessDeniedReason).toBe('PRIVATE');
+    });
+  });
+
+  describe('purchaseStream', () => {
+    const ppvStream = {
+      ...baseStream,
+      title: 'Live PPV',
+      isPpv: true,
+      ppvPrice: 12.5,
+      status: 'LIVE',
+      creator: { username: 'creator' },
+    };
+
+    const pendingPayment = {
+      status: 'requires_payment_method',
+      completed: false,
+      transactionId: 'tx-1',
+      paymentIntentId: 'pi_1',
+      clientSecret: 'secret',
+      amount: 12.5,
+    };
+
+    it('starts a pending PPV_UNLOCK payment keyed by the stream id', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(ppvStream);
+      mockPrismaService.transaction.findFirst.mockResolvedValue(null);
+      mockOneTimePayments.startPayment.mockResolvedValue(pendingPayment);
+
+      const result = await service.purchaseStream('user-1', 'stream-1');
+
+      expect(mockOneTimePayments.startPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payerId: 'user-1',
+          creatorId: 'creator-1',
+          kind: 'stream_access',
+          amount: 12.5,
+          contentId: 'stream-1',
+        }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ purchased: false, alreadyPurchased: false, clientSecret: 'secret' }),
+      );
+    });
+
+    it('does not charge twice once access was bought', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(ppvStream);
+      mockPrismaService.transaction.findFirst.mockResolvedValue({ id: 'tx-paid' });
+
+      const result = await service.purchaseStream('user-1', 'stream-1');
+
+      expect(result).toEqual({ purchased: true, alreadyPurchased: true, streamId: 'stream-1' });
+      expect(mockOneTimePayments.startPayment).not.toHaveBeenCalled();
+    });
+
+    it('refuses when another requirement (subscription) is missing', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue({ ...ppvStream, visibility: 'SUBSCRIBERS_ONLY' });
+      mockPrismaService.subscription.findMany.mockResolvedValue([]);
+
+      await expect(service.purchaseStream('user-1', 'stream-1')).rejects.toThrow(ForbiddenException);
+      expect(mockOneTimePayments.startPayment).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-PPV streams and the creator', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue({ ...ppvStream, isPpv: false });
+      await expect(service.purchaseStream('user-1', 'stream-1')).rejects.toThrow(BadRequestException);
+
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(ppvStream);
+      await expect(service.purchaseStream('creator-1', 'stream-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('confirms through the one-time payment flow', async () => {
+      mockOneTimePayments.confirmPayment.mockResolvedValue({ ...pendingPayment, status: 'completed', completed: true });
+
+      const result = await service.confirmStreamPurchase('user-1', 'stream-1', 'pi_1');
+
+      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('user-1', 'pi_1', {
+        kind: 'stream_access',
+        contentId: 'stream-1',
+      });
+      expect(result.purchased).toBe(true);
     });
   });
 });

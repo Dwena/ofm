@@ -352,4 +352,51 @@ describe('StreamingGateway', () => {
       expect(gateway.getViewerCount('stream-1')).toBe(0);
     });
   });
+
+  describe('paid tips', () => {
+    const tip = {
+      transactionId: 'tx-1',
+      streamId: 'stream-1',
+      creatorId: 'creator-1',
+      fromUser: { id: 'user-1', username: 'fan', displayName: null, avatar: null },
+      amount: 10,
+      message: 'Bravo !',
+      completedAt: new Date('2026-10-19T12:00:00Z'),
+    };
+
+    it('announces the tip in the live chat', () => {
+      gateway.notifyTip(tip);
+
+      expect(eventsTo(streamRoom('stream-1'), 'chat-message')).toEqual([
+        expect.objectContaining({ id: 'tip-tx-1', type: 'TIP', tipAmount: 10, message: 'Bravo !', username: 'fan' }),
+      ]);
+      expect(eventsTo(streamRoom('stream-1'), 'tip')).toEqual([
+        expect.objectContaining({ transactionId: 'tx-1', amount: 10 }),
+      ]);
+    });
+
+    it('ignores tips that were not sent from a live', () => {
+      gateway.notifyTip({ ...tip, streamId: null });
+      expect(emitted).toEqual([]);
+    });
+
+    it('listens to completed tips from the payment flow', () => {
+      const { Subject } = jest.requireActual('rxjs');
+      const tipCompleted$ = new Subject();
+      const withPayments = new StreamingGateway(
+        mockPrismaService as any,
+        mockJwtService as any,
+        mockStreamingService as any,
+        { tipCompleted$ } as any,
+      );
+      withPayments.server = gateway.server;
+      withPayments.onModuleInit();
+
+      tipCompleted$.next(tip);
+      withPayments.onModuleDestroy();
+      tipCompleted$.next(tip);
+
+      expect(eventsTo(streamRoom('stream-1'), 'chat-message')).toHaveLength(1);
+    });
+  });
 });

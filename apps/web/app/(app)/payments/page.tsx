@@ -19,9 +19,9 @@ import {
   RefreshCw
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
-import { formatCurrency, formatDateTime } from '@/lib/utils'
+import { formatDateTime, formatEuros } from '@/lib/utils'
 
-type TransactionType = 'SUBSCRIPTION' | 'TIP' | 'PPV' | 'PAYOUT' | 'REFUND' | 'PLATFORM_FEE'
+type TransactionType = 'SUBSCRIPTION' | 'TIP' | 'PPV_UNLOCK' | 'PAYOUT' | 'REFUND' | 'PLATFORM_FEE'
 type TransactionStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'REFUNDED'
 
 interface Transaction {
@@ -59,7 +59,7 @@ export default function PaymentsPage() {
     },
   })
 
-  const transactions = transactionsData?.data || []
+  const transactions = transactionsData?.items || []
   const pagination = transactionsData?.pagination
 
   // Calculate summary stats
@@ -74,7 +74,7 @@ export default function PaymentsPage() {
   const typeColors: Record<TransactionType, string> = {
     SUBSCRIPTION: 'bg-blue-500',
     TIP: 'bg-green-500',
-    PPV: 'bg-purple-500',
+    PPV_UNLOCK: 'bg-purple-500',
     PAYOUT: 'bg-orange-500',
     REFUND: 'bg-red-500',
     PLATFORM_FEE: 'bg-gray-500',
@@ -98,7 +98,7 @@ export default function PaymentsPage() {
     const isReceived = transaction.toUser?.username === user?.username
     const amount = isReceived ? (transaction.netAmount || transaction.amount) : transaction.amount
     const sign = isReceived ? '+' : '-'
-    return `${sign}${formatCurrency(Number(amount), transaction.currency)}`
+    return `${sign}${formatEuros(amount)}`
   }
 
   if (isLoading) {
@@ -132,7 +132,7 @@ export default function PaymentsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">
-              +{formatCurrency(totalReceived, 'EUR')}
+              +{formatEuros(totalReceived)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               Montant total reçu
@@ -149,7 +149,7 @@ export default function PaymentsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-red-600">
-              -{formatCurrency(totalSent, 'EUR')}
+              -{formatEuros(totalSent)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               Montant total dépensé
@@ -210,7 +210,7 @@ export default function PaymentsPage() {
                   <SelectItem value="all">Tous les types</SelectItem>
                   <SelectItem value="SUBSCRIPTION">Abonnements</SelectItem>
                   <SelectItem value="TIP">Pourboires</SelectItem>
-                  <SelectItem value="PPV">Pay-Per-View</SelectItem>
+                  <SelectItem value="PPV_UNLOCK">Pay-Per-View</SelectItem>
                   <SelectItem value="PAYOUT">Retraits</SelectItem>
                   <SelectItem value="REFUND">Remboursements</SelectItem>
                 </SelectContent>
@@ -274,7 +274,7 @@ export default function PaymentsPage() {
 
                       {transaction.platformFee && transaction.platformFee > 0 && (
                         <p className="text-xs text-muted-foreground mt-1">
-                          Frais plateforme: {formatCurrency(Number(transaction.platformFee), transaction.currency)}
+                          Frais plateforme: {formatEuros(transaction.platformFee)}
                         </p>
                       )}
                     </div>

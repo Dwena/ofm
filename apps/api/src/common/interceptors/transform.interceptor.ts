@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { serializeDecimals } from '../utils/money';
 
 export interface Response<T> {
   success: boolean;
@@ -29,7 +30,8 @@ export class TransformInterceptor<T>
       map((data) => ({
         success: true,
         statusCode: response.statusCode,
-        data,
+        // Prisma Decimals (money in euros) are returned as numbers
+        data: serializeDecimals(data),
         timestamp: new Date().toISOString(),
       })),
     );

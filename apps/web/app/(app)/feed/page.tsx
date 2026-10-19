@@ -21,6 +21,8 @@ import {
 import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import CommentsSection from '@/components/social/comments-section'
+import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
+import { formatEuros } from '@/lib/utils'
 
 // Shape returned by /content/feed and /content/feed/subscriptions
 interface ContentItem {
@@ -64,11 +66,12 @@ const visibilityLabels: Record<ContentItem['visibility'], string> = {
   PRIVATE: 'Privé',
 }
 
-const formatPrice = (price: number | null) => `${(price ?? 0).toFixed(2)}€`
+const formatPrice = (price: number | null) => formatEuros(price)
 
 export default function FeedPage() {
   const [page, setPage] = useState(1)
   const [selectedTab, setSelectedTab] = useState('all')
+  const [unlocking, setUnlocking] = useState<ContentItem | null>(null)
   const queryClient = useQueryClient()
 
   // Fetch feed
@@ -95,28 +98,13 @@ export default function FeedPage() {
     },
   })
 
-  // Unlock PPV mutation
-  const unlockMutation = useMutation({
-    mutationFn: async (contentId: string) => {
-      const response = await contentApi.unlockPPV(contentId)
-      return response.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
-    },
-    onError: (error: any) => {
-      alert(error?.response?.data?.message || 'Impossible de débloquer ce contenu')
-    },
-  })
-
   const handleLike = (contentId: string) => {
     likeMutation.mutate(contentId)
   }
 
+  // PPV: pay in a dialog, the content unlocks once the payment is confirmed
   const handleUnlock = (content: ContentItem) => {
-    if (confirm(`Débloquer ce contenu pour ${formatPrice(content.ppvPrice)} ?`)) {
-      unlockMutation.mutate(content.id)
-    }
+    setUnlocking(content)
   }
 
   if (isLoading) {
@@ -135,6 +123,12 @@ export default function FeedPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Feed</h1>
       </div>
+
+      <PpvUnlockDialog
+        content={unlocking}
+        onClose={() => setUnlocking(null)}
+        onUnlocked={() => queryClient.invalidateQueries({ queryKey: ['feed'] })}
+      />
 
       {/* Tabs */}
       <Tabs value={selectedTab} onValueChange={setSelectedTab}>

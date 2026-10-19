@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/database/prisma.service';
-import { StripeService } from '../payments/stripe.service';
+import { OneTimePaymentService } from '../payments/one-time-payment.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateContentDto } from './dto/create-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
@@ -13,7 +13,7 @@ export class ContentService {
 
   constructor(
     private prisma: PrismaService,
-    private stripeService: StripeService,
+    private oneTimePayments: OneTimePaymentService,
     private storageService: StorageService,
     private configService: ConfigService,
   ) {}
@@ -552,7 +552,12 @@ export class ContentService {
   }
 
   // PPV methods
-  async unlockContent(userId: string, contentId: string) {
+
+  /**
+   * Start a PPV purchase. Access is granted only once the payment succeeds:
+   * through the Stripe webhook or confirmUnlock(), whichever comes first.
+   */
+  async unlockContent(userId: string, contentId: string, paymentMethodId?: string) {
     const content = await this.prisma.content.findUnique({
       where: { id: contentId },
       include: {
@@ -560,8 +565,6 @@ export class ContentService {
           select: {
             id: true,
             username: true,
-            stripeAccountId: true,
-            stripeOnboarded: true,
           },
         },
       },
@@ -593,108 +596,39 @@ export class ContentService {
       return { unlocked: true, alreadyUnlocked: true, contentId };
     }
 
-    if (!content.creator.stripeAccountId || !content.creator.stripeOnboarded) {
-      throw new BadRequestException('Creator payment account is not ready');
-    }
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+    const payment = await this.oneTimePayments.startPayment({
+      payerId: userId,
+      creatorId: content.creatorId,
+      kind: 'content_unlock',
+      amount: Number(content.ppvPrice),
+      contentId,
+      paymentMethodId,
+      description: `Contenu PPV de @${content.creator.username}`,
     });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    // Create or get Stripe customer
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await this.stripeService.createCustomer(user.email, user.username);
-      customerId = customer.id;
-
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { stripeCustomerId: customerId },
-      });
-    }
-
-    const amount = Number(content.ppvPrice);
-
-    // Calculate platform fee (15% default)
-    const platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
-    const platformFee = (amount * platformFeePercentage) / 100;
-    const netAmount = amount - platformFee;
-
-    // Create Stripe payment intent on the creator's connected account
-    const paymentIntent = await this.stripeService.createPaymentIntent(
-      amount,
-      'EUR',
-      customerId,
-      content.creator.stripeAccountId,
-    );
-
-    // Record the transaction, grant access and credit the creator atomically
-    const [transaction] = await this.prisma.$transaction([
-      this.prisma.transaction.create({
-        data: {
-          fromUserId: userId,
-          toUserId: content.creatorId,
-          type: 'PPV_UNLOCK',
-          status: 'COMPLETED',
-          amount,
-          currency: 'EUR',
-          platformFee,
-          netAmount,
-          stripePaymentIntentId: paymentIntent.id,
-          contentId,
-          metadata: {
-            type: 'ppv_unlock',
-          },
-        },
-      }),
-      this.prisma.contentUnlock.create({
-        data: {
-          contentId,
-          userId,
-          paidAmount: amount,
-        },
-      }),
-      this.prisma.creatorProfile.updateMany({
-        where: { userId: content.creatorId },
-        data: {
-          totalEarnings: {
-            increment: netAmount,
-          },
-        },
-      }),
-    ]);
-
-    // Notify creator
-    await this.prisma.notification.create({
-      data: {
-        userId: content.creatorId,
-        type: 'SYSTEM',
-        title: 'Contenu débloqué',
-        message: `${user.displayName || user.username} a débloqué votre contenu pour ${amount.toFixed(2)}€`,
-        linkUrl: `/content/${contentId}`,
-        metadata: {
-          fromUserId: userId,
-          contentId,
-          amount,
-          transactionId: transaction.id,
-        },
-      },
-    });
-
-    this.logger.log(`Content unlocked: ${contentId} by user ${userId} for €${amount}`);
+    this.logger.log(`PPV unlock started: ${contentId} by user ${userId} (${payment.status})`);
 
     return {
-      unlocked: true,
+      ...payment,
+      unlocked: payment.completed,
       alreadyUnlocked: false,
       contentId,
-      transactionId: transaction.id,
-      paymentIntentClientSecret: paymentIntent.client_secret,
+    };
+  }
+
+  /**
+   * Re-check a PPV payment with Stripe after client-side confirmation (idempotent)
+   */
+  async confirmUnlock(userId: string, contentId: string, paymentIntentId: string) {
+    const payment = await this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+      kind: 'content_unlock',
+      contentId,
+    });
+
+    return {
+      ...payment,
+      unlocked: payment.completed,
+      contentId,
     };
   }
 

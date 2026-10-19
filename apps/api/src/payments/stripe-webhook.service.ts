@@ -1,9 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
+import { NotificationType } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
 import { SubscriptionSyncService } from './subscription-sync.service';
+import { OneTimePaymentService } from './one-time-payment.service';
+import { fromCents } from '../common/utils/money';
 
 @Injectable()
 export class StripeWebhookService {
@@ -16,6 +19,7 @@ export class StripeWebhookService {
     private stripeService: StripeService,
     private configService: ConfigService,
     private subscriptionSync: SubscriptionSyncService,
+    private oneTimePayments: OneTimePaymentService,
   ) {
     const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (!stripeKey) {
@@ -143,6 +147,11 @@ export class StripeWebhookService {
   private async handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
     this.logger.log(`Payment succeeded: ${paymentIntent.id}`);
 
+    // Tips and PPV: grant access / credit the creator (idempotent with the confirm endpoints)
+    if (await this.oneTimePayments.handlePaymentIntentSucceeded(paymentIntent)) {
+      return;
+    }
+
     const transaction = await this.prisma.transaction.findFirst({
       where: { stripePaymentIntentId: paymentIntent.id },
     });
@@ -151,6 +160,8 @@ export class StripeWebhookService {
       this.logger.warn(`Transaction not found for payment intent: ${paymentIntent.id}`);
       return;
     }
+
+    if (transaction.status === 'COMPLETED') return;
 
     // Update transaction status
     await this.prisma.transaction.update({
@@ -166,7 +177,7 @@ export class StripeWebhookService {
       userId: transaction.fromUserId,
       type: 'PAYMENT_SUCCESS',
       title: 'Paiement réussi',
-      message: `Votre paiement de ${(Number(transaction.amount) / 100).toFixed(2)}€ a été traité avec succès`,
+      message: `Votre paiement de ${Number(transaction.amount).toFixed(2)}€ a été traité avec succès`,
     });
 
     this.logger.log(`Transaction ${transaction.id} marked as COMPLETED`);
@@ -232,9 +243,12 @@ export class StripeWebhookService {
       return;
     }
 
-    // Check if full or partial refund
-    const refundAmount = charge.amount_refunded;
-    const isFullRefund = refundAmount === charge.amount;
+    // Already refunded through POST /payments/refund, which records the refund itself
+    if (transaction.status === 'REFUNDED') return;
+
+    // Check if full or partial refund (Stripe amounts are in cents, transactions in euros)
+    const isFullRefund = charge.amount_refunded === charge.amount;
+    const refundAmount = fromCents(charge.amount_refunded);
 
     // Create refund transaction
     await this.prisma.transaction.create({
@@ -275,7 +289,7 @@ export class StripeWebhookService {
       userId: transaction.fromUserId,
       type: 'REFUND_PROCESSED',
       title: 'Remboursement effectué',
-      message: `Un remboursement de ${(refundAmount / 100).toFixed(2)}€ a été traité`,
+      message: `Un remboursement de ${refundAmount.toFixed(2)}€ a été traité`,
     });
 
     if (transaction.toUserId) {
@@ -283,7 +297,7 @@ export class StripeWebhookService {
         userId: transaction.toUserId,
         type: 'REFUND_ISSUED',
         title: 'Remboursement émis',
-        message: `Un remboursement de ${(refundAmount / 100).toFixed(2)}€ a été émis pour une transaction`,
+        message: `Un remboursement de ${refundAmount.toFixed(2)}€ a été émis pour une transaction`,
       });
     }
 
@@ -308,7 +322,7 @@ export class StripeWebhookService {
       data: {
         stripeDisputeId: dispute.id,
         transactionId: transaction.id,
-        amount: dispute.amount,
+        amount: dispute.amount, // cents, as sent by Stripe
         currency: dispute.currency,
         reason: dispute.reason,
         status: dispute.status,
@@ -649,7 +663,7 @@ export class StripeWebhookService {
       userId: dbPayout.creatorId,
       type: 'PAYOUT_COMPLETED',
       title: 'Paiement effectué',
-      message: `Votre paiement de ${(Number(dbPayout.amount) / 100).toFixed(2)}€ a été transféré sur votre compte bancaire.`,
+      message: `Votre paiement de ${Number(dbPayout.amount).toFixed(2)}€ a été transféré sur votre compte bancaire.`,
     });
   }
 
@@ -674,7 +688,7 @@ export class StripeWebhookService {
       userId: dbPayout.creatorId,
       type: 'PAYOUT_FAILED',
       title: 'Échec du paiement',
-      message: `Le transfert de ${(Number(dbPayout.amount) / 100).toFixed(2)}€ a échoué. ${payout.failure_message || ''}`,
+      message: `Le transfert de ${Number(dbPayout.amount).toFixed(2)}€ a échoué. ${payout.failure_message || ''}`,
     });
   }
 
@@ -687,10 +701,14 @@ export class StripeWebhookService {
     message: string;
   }) {
     try {
+      // Types missing from the NotificationType enum (PAYMENT_SUCCESS...) are stored as SYSTEM
+      const type = (Object.values(NotificationType) as string[]).includes(data.type)
+        ? (data.type as NotificationType)
+        : NotificationType.SYSTEM;
       await this.prisma.notification.create({
         data: {
           userId: data.userId,
-          type: data.type as any,
+          type,
           title: data.title,
           message: data.message,
         },

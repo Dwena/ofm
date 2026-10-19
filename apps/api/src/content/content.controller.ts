@@ -7,6 +7,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateContentDto } from './dto/create-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
 import { SearchContentDto } from './dto/search-content.dto';
+import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
 
 @Controller('content')
 @UseGuards(JwtAuthGuard)
@@ -145,12 +146,29 @@ export class ContentController {
   }
 
   // PPV endpoints
+  /**
+   * Start a PPV purchase: returns a pending payment (clientSecret) to confirm
+   * client-side, or completes right away with a saved card
+   */
   @Post(':id/unlock')
   async unlockContent(
     @CurrentUser('id') userId: string,
     @Param('id') contentId: string,
+    @Body() dto: OneTimePaymentDto,
   ) {
-    return this.contentService.unlockContent(userId, contentId);
+    return this.contentService.unlockContent(userId, contentId, dto?.paymentMethodId);
+  }
+
+  /**
+   * Re-check the PPV payment with Stripe and grant access once paid (idempotent)
+   */
+  @Post(':id/unlock/confirm')
+  async confirmUnlock(
+    @CurrentUser('id') userId: string,
+    @Param('id') contentId: string,
+    @Body() dto: ConfirmPaymentDto,
+  ) {
+    return this.contentService.confirmUnlock(userId, contentId, dto.paymentIntentId);
   }
 
   @Get(':id/likes')

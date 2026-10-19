@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/database/prisma.service';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { nanoid } from 'nanoid';
+import { OneTimePaymentService } from '../payments/one-time-payment.service';
 
 export type StreamAccessDeniedReason =
   | 'PRIVATE'
@@ -32,6 +33,7 @@ export class StreamingService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private oneTimePayments: OneTimePaymentService,
   ) {}
 
   /**
@@ -636,6 +638,81 @@ export class StreamingService {
         tier: { select: { price: true } },
       },
     });
+  }
+
+  /**
+   * Buy access to a PPV stream. Returns a pending payment to confirm
+   * client-side; access is granted once Stripe confirms it (webhook or
+   * confirmStreamPurchase), through a COMPLETED PPV_UNLOCK transaction whose
+   * contentId is the stream id.
+   */
+  async purchaseStream(userId: string, streamId: string, paymentMethodId?: string) {
+    const stream = await this.prisma.liveStream.findUnique({
+      where: { id: streamId },
+      select: {
+        id: true,
+        title: true,
+        creatorId: true,
+        visibility: true,
+        isPpv: true,
+        ppvPrice: true,
+        status: true,
+        creator: { select: { username: true } },
+      },
+    });
+
+    if (!stream) {
+      throw new NotFoundException('Stream not found');
+    }
+
+    if (!stream.isPpv || !stream.ppvPrice || Number(stream.ppvPrice) <= 0) {
+      throw new BadRequestException('This stream is not pay-per-view');
+    }
+
+    if (stream.creatorId === userId) {
+      throw new BadRequestException('You cannot buy your own stream');
+    }
+
+    if (stream.status === 'ENDED' || stream.status === 'CANCELLED') {
+      throw new BadRequestException('This stream is over');
+    }
+
+    const access = await this.checkViewAccess(userId, stream);
+    if (access.allowed) {
+      return { purchased: true, alreadyPurchased: true, streamId };
+    }
+
+    // Other requirements (subscription, private) cannot be bought here
+    if (access.reason !== 'PPV_PURCHASE_REQUIRED') {
+      throw new ForbiddenException(access.reason ?? 'Access denied');
+    }
+
+    const payment = await this.oneTimePayments.startPayment({
+      payerId: userId,
+      creatorId: stream.creatorId,
+      kind: 'stream_access',
+      amount: Number(stream.ppvPrice),
+      contentId: stream.id,
+      paymentMethodId,
+      description: `Live PPV de @${stream.creator.username} : ${stream.title}`,
+      metadata: { streamId: stream.id },
+    });
+
+    this.logger.log(`Stream purchase started: ${streamId} by user ${userId} (${payment.status})`);
+
+    return { ...payment, purchased: payment.completed, alreadyPurchased: false, streamId };
+  }
+
+  /**
+   * Re-check a PPV stream payment with Stripe after client-side confirmation (idempotent)
+   */
+  async confirmStreamPurchase(userId: string, streamId: string, paymentIntentId: string) {
+    const payment = await this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+      kind: 'stream_access',
+      contentId: streamId,
+    });
+
+    return { ...payment, purchased: payment.completed, streamId };
   }
 
   /**

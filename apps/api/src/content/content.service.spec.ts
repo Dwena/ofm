@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ContentService } from './content.service';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/database/prisma.service';
-import { StripeService } from '../payments/stripe.service';
+import { OneTimePaymentService } from '../payments/one-time-payment.service';
 import { StorageService } from '../storage/storage.service';
 import { NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 
@@ -50,9 +50,9 @@ describe('ContentService', () => {
     $transaction: jest.fn(),
   };
 
-  const mockStripeService = {
-    createCustomer: jest.fn(),
-    createPaymentIntent: jest.fn(),
+  const mockOneTimePayments = {
+    startPayment: jest.fn(),
+    confirmPayment: jest.fn(),
   };
 
   const mockStorageService = {
@@ -71,7 +71,7 @@ describe('ContentService', () => {
           provide: PrismaService,
           useValue: mockPrismaService,
         },
-        { provide: StripeService, useValue: mockStripeService },
+        { provide: OneTimePaymentService, useValue: mockOneTimePayments },
         { provide: StorageService, useValue: mockStorageService },
         { provide: ConfigService, useValue: mockConfigService },
       ],
@@ -354,72 +354,63 @@ describe('ContentService', () => {
       creator: {
         id: 'creator-1',
         username: 'creator',
-        stripeAccountId: 'acct_123',
-        stripeOnboarded: true,
       },
     };
 
-    it('should charge via Stripe and create a ContentUnlock', async () => {
+    const pendingPayment = {
+      status: 'requires_payment_method',
+      completed: false,
+      transactionId: 'tx-1',
+      paymentIntentId: 'pi_123',
+      clientSecret: 'secret_123',
+      amount: 10,
+    };
+
+    it('should start a pending payment without granting access', async () => {
       mockPrismaService.content.findUnique.mockResolvedValue(ppvContent);
       mockPrismaService.contentUnlock.findUnique.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue({
-        id: userId,
-        email: 'fan@example.com',
-        username: 'fan',
-        stripeCustomerId: 'cus_123',
-      });
-      mockStripeService.createPaymentIntent.mockResolvedValue({
-        id: 'pi_123',
-        client_secret: 'secret_123',
-      });
-      mockPrismaService.$transaction.mockResolvedValue([{ id: 'tx-1' }, { id: 'unlock-1' }, { count: 1 }]);
+      mockOneTimePayments.startPayment.mockResolvedValue(pendingPayment);
 
       const result = await service.unlockContent(userId, contentId);
 
-      expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith(10, 'EUR', 'cus_123', 'acct_123');
-      expect(mockPrismaService.transaction.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          type: 'PPV_UNLOCK',
+      expect(mockOneTimePayments.startPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payerId: userId,
+          creatorId: 'creator-1',
+          kind: 'content_unlock',
           amount: 10,
-          platformFee: 1.5,
-          netAmount: 8.5,
-          stripePaymentIntentId: 'pi_123',
           contentId,
+          paymentMethodId: undefined,
         }),
-      });
-      expect(mockPrismaService.contentUnlock.create).toHaveBeenCalledWith({
-        data: { contentId, userId, paidAmount: 10 },
-      });
-      expect(mockPrismaService.notification.create).toHaveBeenCalled();
+      );
+      // Nothing is granted before Stripe confirms the payment
+      expect(mockPrismaService.contentUnlock.create).not.toHaveBeenCalled();
+      expect(mockPrismaService.transaction.create).not.toHaveBeenCalled();
+      expect(mockPrismaService.creatorProfile.updateMany).not.toHaveBeenCalled();
       expect(result).toEqual({
-        unlocked: true,
+        ...pendingPayment,
+        unlocked: false,
         alreadyUnlocked: false,
         contentId,
-        transactionId: 'tx-1',
-        paymentIntentClientSecret: 'secret_123',
       });
     });
 
-    it('should create a Stripe customer if the user has none', async () => {
+    it('should pass the saved card and report an immediate success', async () => {
       mockPrismaService.content.findUnique.mockResolvedValue(ppvContent);
       mockPrismaService.contentUnlock.findUnique.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue({
-        id: userId,
-        email: 'fan@example.com',
-        username: 'fan',
-        stripeCustomerId: null,
+      mockOneTimePayments.startPayment.mockResolvedValue({
+        ...pendingPayment,
+        status: 'completed',
+        completed: true,
+        clientSecret: null,
       });
-      mockStripeService.createCustomer.mockResolvedValue({ id: 'cus_new' });
-      mockStripeService.createPaymentIntent.mockResolvedValue({ id: 'pi_1', client_secret: 's' });
-      mockPrismaService.$transaction.mockResolvedValue([{ id: 'tx-1' }, {}, {}]);
 
-      await service.unlockContent(userId, contentId);
+      const result = await service.unlockContent(userId, contentId, 'pm_1');
 
-      expect(mockPrismaService.user.update).toHaveBeenCalledWith({
-        where: { id: userId },
-        data: { stripeCustomerId: 'cus_new' },
-      });
-      expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith(10, 'EUR', 'cus_new', 'acct_123');
+      expect(mockOneTimePayments.startPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentMethodId: 'pm_1' }),
+      );
+      expect(result.unlocked).toBe(true);
     });
 
     it('should not charge again if already unlocked', async () => {
@@ -429,7 +420,7 @@ describe('ContentService', () => {
       const result = await service.unlockContent(userId, contentId);
 
       expect(result).toEqual({ unlocked: true, alreadyUnlocked: true, contentId });
-      expect(mockStripeService.createPaymentIntent).not.toHaveBeenCalled();
+      expect(mockOneTimePayments.startPayment).not.toHaveBeenCalled();
     });
 
     it('should reject non-PPV content', async () => {
@@ -444,21 +435,31 @@ describe('ContentService', () => {
       await expect(service.unlockContent('creator-1', contentId)).rejects.toThrow(BadRequestException);
     });
 
-    it('should reject when the creator cannot receive payments', async () => {
-      mockPrismaService.content.findUnique.mockResolvedValue({
-        ...ppvContent,
-        creator: { ...ppvContent.creator, stripeOnboarded: false },
-      });
-      mockPrismaService.contentUnlock.findUnique.mockResolvedValue(null);
-
-      await expect(service.unlockContent(userId, contentId)).rejects.toThrow(BadRequestException);
-      expect(mockStripeService.createPaymentIntent).not.toHaveBeenCalled();
-    });
-
     it('should throw NotFoundException for missing content', async () => {
       mockPrismaService.content.findUnique.mockResolvedValue(null);
 
       await expect(service.unlockContent(userId, contentId)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('confirmUnlock', () => {
+    it('should confirm the payment for this content', async () => {
+      mockOneTimePayments.confirmPayment.mockResolvedValue({
+        status: 'completed',
+        completed: true,
+        transactionId: 'tx-1',
+        paymentIntentId: 'pi_123',
+        clientSecret: null,
+        amount: 10,
+      });
+
+      const result = await service.confirmUnlock('user-123', 'content-456', 'pi_123');
+
+      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('user-123', 'pi_123', {
+        kind: 'content_unlock',
+        contentId: 'content-456',
+      });
+      expect(result).toEqual(expect.objectContaining({ unlocked: true, contentId: 'content-456' }));
     });
   });
 });

@@ -19,6 +19,7 @@ import {
   Play,
   Trash2,
   ExternalLink,
+  Gift,
 } from 'lucide-react'
 import { liveApi } from '@/lib/api'
 import {
@@ -30,6 +31,7 @@ import {
   type StreamVisibility,
 } from '@/lib/live'
 import { useAuth } from '@/contexts/auth-context'
+import { formatEuros } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -46,6 +48,8 @@ interface CreatorStream {
   description?: string | null
   status: 'SCHEDULED' | 'LIVE' | 'ENDED' | 'CANCELLED'
   visibility: string
+  isPpv?: boolean
+  ppvPrice?: number | null // euros
   scheduledFor?: string | null
   startedAt?: string | null
   endedAt?: string | null
@@ -81,6 +85,8 @@ export default function CreatorLivePage() {
   const [description, setDescription] = useState('')
   const [visibility, setVisibility] = useState<StreamVisibility>('SUBSCRIBERS_ONLY')
   const [scheduledFor, setScheduledFor] = useState('')
+  const [isPpv, setIsPpv] = useState(false)
+  const [ppvPrice, setPpvPrice] = useState('')
 
   const [previewOn, setPreviewOn] = useState(false)
   const [cameraOn, setCameraOn] = useState(true)
@@ -100,6 +106,7 @@ export default function CreatorLivePage() {
   const peersRef = useRef(new Map<string, ViewerPeer>())
 
   const isCreator = user?.role === 'CREATOR'
+  const ppvPriceValid = !isPpv || parseFloat(ppvPrice) >= 1
 
   const { data: streams = [] } = useQuery({
     queryKey: ['creator-streams', user?.id],
@@ -303,6 +310,14 @@ export default function CreatorLivePage() {
       setChatMessages((prev) => [...prev.slice(-199), message])
     })
 
+    // Paid tips are also announced in the chat (chat-message of type TIP)
+    socket.on('tip', (tip: { amount: number; fromUser?: { username: string } }) => {
+      toast({
+        title: `Pourboire de ${formatEuros(tip.amount)}`,
+        description: tip.fromUser ? `Envoyé par @${tip.fromUser.username}` : undefined,
+      })
+    })
+
     socket.on('broadcast-replaced', () => {
       toast({
         title: 'Diffusion reprise ailleurs',
@@ -334,6 +349,9 @@ export default function CreatorLivePage() {
         title: title.trim(),
         description: description.trim() || undefined,
         visibility,
+        // Price in euros
+        isPpv,
+        ppvPrice: isPpv ? Math.round(parseFloat(ppvPrice) * 100) / 100 : undefined,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
       })
       return response.data as CreatorStream
@@ -343,6 +361,8 @@ export default function CreatorLivePage() {
       setTitle('')
       setDescription('')
       setScheduledFor('')
+      setIsPpv(false)
+      setPpvPrice('')
       if (stream.status === 'SCHEDULED') {
         toast({ title: 'Live programmé', description: 'Votre live a été programmé.' })
       } else {
@@ -554,7 +574,7 @@ export default function CreatorLivePage() {
                   className="space-y-4"
                   onSubmit={(e) => {
                     e.preventDefault()
-                    if (!title.trim()) return
+                    if (!title.trim() || !ppvPriceValid) return
                     createMutation.mutate()
                   }}
                 >
@@ -604,7 +624,40 @@ export default function CreatorLivePage() {
                       />
                     </div>
                   </div>
-                  <Button type="submit" disabled={!title.trim() || createMutation.isPending}>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isPpv}
+                        onChange={(e) => setIsPpv(e.target.checked)}
+                        className="h-4 w-4"
+                      />
+                      Live payant (pay-per-view)
+                    </label>
+                    {isPpv && (
+                      <div className="space-y-1">
+                        <Label htmlFor="live-ppv-price">Prix d&apos;accès (€)</Label>
+                        <Input
+                          id="live-ppv-price"
+                          type="number"
+                          min="1"
+                          step="0.01"
+                          value={ppvPrice}
+                          onChange={(e) => setPpvPrice(e.target.value)}
+                          placeholder="9.99"
+                          required
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Les spectateurs paient ce prix une fois pour regarder le live, en plus des
+                          conditions de visibilité. Un compte Stripe configuré est requis.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={!title.trim() || !ppvPriceValid || createMutation.isPending}
+                  >
                     {scheduledFor ? (
                       <>
                         <CalendarClock className="h-4 w-4 mr-2" /> Programmer le live
@@ -635,6 +688,9 @@ export default function CreatorLivePage() {
                           {stream.status === 'LIVE' ? 'En direct' : 'Programmé'}
                         </Badge>
                         <Badge variant="outline">{VISIBILITY_LABELS[stream.visibility] ?? stream.visibility}</Badge>
+                        {stream.isPpv && (
+                          <Badge variant="secondary">PPV {formatEuros(stream.ppvPrice)}</Badge>
+                        )}
                       </div>
                       {stream.scheduledFor && stream.status === 'SCHEDULED' && (
                         <p className="text-sm text-muted-foreground">
@@ -732,6 +788,12 @@ export default function CreatorLivePage() {
                     <span className="font-semibold text-sm">@{msg.username}</span>
                     {msg.isCreator && (
                       <Badge variant="destructive" className="text-xs">Vous</Badge>
+                    )}
+                    {msg.type === 'TIP' && (
+                      <Badge variant="secondary" className="text-xs">
+                        <Gift className="h-3 w-3 mr-1" />
+                        {formatEuros(msg.tipAmount)}
+                      </Badge>
                     )}
                   </div>
                   <p className="text-sm break-words">{msg.message}</p>
