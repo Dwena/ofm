@@ -845,6 +845,9 @@ describe('SubscriptionsService', () => {
         expect.objectContaining({ where: { tier: { creatorId }, status: 'ACTIVE' } }),
       );
       expect(mockPrismaService.transaction.groupBy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('retryPayment', () => {
     const pastDue = {
       id: 'sub-1',

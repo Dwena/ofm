@@ -31,7 +31,6 @@ describe('PaymentsService (money units)', () => {
     createPayout: jest.fn(),
     getAccount: jest.fn(),
     createConnectAccount: jest.fn(),
-    isConfigured: jest.fn(),
     createSetupIntent: jest.fn(),
     listPaymentMethods: jest.fn(),
     getCustomer: jest.fn(),

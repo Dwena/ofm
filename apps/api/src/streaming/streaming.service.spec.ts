@@ -18,7 +18,6 @@ describe('StreamingService', () => {
       findMany: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
-      findMany: jest.fn(),
     },
     streamViewer: {
       findUnique: jest.fn(),
@@ -456,7 +455,8 @@ describe('StreamingService', () => {
           where: expect.objectContaining({
             status: 'SCHEDULED',
             scheduledFor: { gte: expect.any(Date) },
-            visibility: { not: 'PRIVATE' },
+            // Anonymous listing: PRIVATE streams excluded
+            OR: [{ visibility: { not: 'PRIVATE' } }],
           }),
           orderBy: { scheduledFor: 'asc' },
         }),
