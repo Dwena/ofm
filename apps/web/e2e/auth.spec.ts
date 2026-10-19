@@ -86,7 +86,7 @@ test.describe('Authentification', () => {
       await authPage.fillRegistration('test@test.com', 'testuser', 'Password123!', 'DifferentPassword123!');
       await authPage.registerSubmitButton.click();
 
-      await expect(authPage.registerError).toHaveText('Les mots de passe ne correspondent pas');
+      await expect(page.getByTestId('register-password-confirm-error')).toHaveText('Les mots de passe ne correspondent pas');
     });
 
     test('refuse un mot de passe trop court', async ({ authPage, page }) => {
@@ -94,13 +94,9 @@ test.describe('Authentification', () => {
       await authPage.fillRegistration('test@test.com', 'testuser', 'weak');
       await authPage.registerSubmitButton.click();
 
-      // Either the native minLength check or the form's own message blocks the submission
-      const nativeInvalid = await authPage.registerPasswordInput.evaluate(
-        (el: HTMLInputElement) => !el.checkValidity(),
+      await expect(page.getByTestId('register-password-error')).toHaveText(
+        'Le mot de passe doit contenir au moins 8 caractères.',
       );
-      if (!nativeInvalid) {
-        await expect(authPage.registerError).toHaveText('Le mot de passe doit contenir au moins 8 caractères');
-      }
       await expect(page).toHaveURL(/\/register/);
     });
   });

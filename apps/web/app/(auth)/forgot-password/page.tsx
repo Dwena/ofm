@@ -6,13 +6,15 @@ import { authApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CardContent, CardFooter } from '@/components/ui/card'
-import { AuthMessage, AuthShell, getApiErrorMessage } from '@/components/auth-shell'
+import { Loader2 } from 'lucide-react'
+import { AuthMessage, AuthShell, getApiErrorMessage, useRedirectIfAuthenticated } from '@/components/auth-shell'
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
   const [error, setError] = useState('')
   const [sent, setSent] = useState(false)
   const [loading, setLoading] = useState(false)
+  const checkingSession = useRedirectIfAuthenticated()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -20,7 +22,7 @@ export default function ForgotPasswordPage() {
     setLoading(true)
 
     try {
-      await authApi.forgotPassword(email)
+      await authApi.forgotPassword(email.trim())
       setSent(true)
     } catch (err) {
       setError(getApiErrorMessage(err, "Impossible d'envoyer le lien de réinitialisation."))
@@ -30,10 +32,10 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <AuthShell description="Mot de passe oublié">
+    <AuthShell description="Mot de passe oublié" loading={checkingSession}>
       <form onSubmit={handleSubmit}>
         <CardContent className="space-y-4">
-          {error && <AuthMessage type="error">{error}</AuthMessage>}
+          {error && <AuthMessage type="error" testId="forgot-password-error">{error}</AuthMessage>}
           {sent ? (
             <AuthMessage type="success">
               Si un compte existe pour <strong>{email}</strong>, vous allez recevoir un e-mail contenant un
@@ -51,6 +53,8 @@ export default function ForgotPasswordPage() {
                 <Input
                   id="email"
                   type="email"
+                  autoComplete="email"
+                  autoFocus
                   placeholder="email@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -63,7 +67,15 @@ export default function ForgotPasswordPage() {
         </CardContent>
         <CardFooter className="flex flex-col space-y-4">
           {sent ? (
-            <Button type="button" variant="outline" className="w-full" onClick={() => setSent(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setSent(false)
+                setEmail('')
+              }}
+            >
               Utiliser une autre adresse
             </Button>
           ) : (
@@ -72,6 +84,7 @@ export default function ForgotPasswordPage() {
               className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg py-6"
               disabled={loading}
             >
+              {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
               {loading ? 'Envoi...' : 'Envoyer le lien'}
             </Button>
           )}

@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { CheckCircle, Loader2, XCircle } from 'lucide-react'
 import { authApi } from '@/lib/api'
-import { useAuth } from '@/contexts/auth-context'
+import { getHomePath, useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CardContent, CardFooter } from '@/components/ui/card'
@@ -25,6 +25,11 @@ function VerifyEmailContent() {
   const [resendMessage, setResendMessage] = useState('')
   const [resendError, setResendError] = useState('')
   const requested = useRef<string | null>(null)
+
+  // Logged-in users get their own address pre-filled in the resend form
+  useEffect(() => {
+    if (user?.email) setEmail((current) => current || user.email)
+  }, [user?.email])
 
   useEffect(() => {
     if (!token) {
@@ -56,7 +61,7 @@ function VerifyEmailContent() {
     setResendMessage('')
     setResendLoading(true)
     try {
-      await authApi.resendVerification(email)
+      await authApi.resendVerification(email.trim())
       setResendMessage(
         'Si un compte non vérifié existe pour cette adresse, un nouvel e-mail de vérification vient de vous être envoyé.'
       )
@@ -105,6 +110,8 @@ function VerifyEmailContent() {
             {resendError && <AuthMessage type="error">{resendError}</AuthMessage>}
             <Input
               type="email"
+              autoComplete="email"
+              aria-label="Adresse e-mail"
               placeholder="email@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -112,6 +119,7 @@ function VerifyEmailContent() {
               disabled={resendLoading}
             />
             <Button type="submit" variant="outline" className="w-full" disabled={resendLoading}>
+              {resendLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {resendLoading ? 'Envoi...' : 'Renvoyer le lien'}
             </Button>
           </form>
@@ -120,7 +128,7 @@ function VerifyEmailContent() {
       <CardFooter className="flex flex-col space-y-4">
         {status === 'success' ? (
           <Button asChild className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700">
-            <Link href={user ? '/feed' : '/login'}>{user ? 'Continuer' : 'Se connecter'}</Link>
+            <Link href={user ? getHomePath(user.role) : '/login'}>{user ? 'Continuer' : 'Se connecter'}</Link>
           </Button>
         ) : (
           <p className="text-sm text-center text-muted-foreground">
