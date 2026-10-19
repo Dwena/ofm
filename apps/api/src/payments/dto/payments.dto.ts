@@ -1,10 +1,11 @@
-import { IsNumber, IsString, IsEnum, IsOptional, IsUUID, Min, Max, MaxLength } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsNumber, IsString, IsEnum, IsOptional, IsUUID, IsPositive, Min, Max, MaxLength } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 
 export class RequestPayoutDto {
   // Euros
+  // The minimum is a platform setting (minimumPayoutAmount), checked by the service
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(10)
+  @IsPositive()
   amount: number;
 
   @IsString()
@@ -34,6 +35,8 @@ export enum StatsInterval {
 }
 
 export class GetStatsDto {
+  // The web app sends lowercase intervals (day, week...)
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   @IsEnum(StatsInterval)
   @IsOptional()
   interval?: StatsInterval = StatsInterval.MONTH;
