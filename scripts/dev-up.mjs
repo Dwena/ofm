@@ -63,25 +63,91 @@ function runOrFail(command, options, errorMessage) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitForPostgres() {
+  process.stdout.write('Attente de PostgreSQL');
+  const ready = () => run('docker exec ofm-postgres pg_isready -U ofm_user -d ofm_db', { quiet: true });
+  for (let i = 0; i < 60; i++) {
+    if (ready()) {
+      // pg_isready answers during the image's init restart: give it a moment
+      await sleep(1000);
+      console.log(' OK');
+      return;
+    }
+    process.stdout.write('.');
+    await sleep(1000);
+  }
+  fail('PostgreSQL ne répond pas (docker logs ofm-postgres)');
+}
+
+// Real login from the host, through the published port
+function canConnect(databaseUrl) {
+  const result = spawnSync(`npx prisma db execute --url "${databaseUrl}" --stdin`, {
+    cwd: API_DIR,
+    shell: true,
+    input: 'SELECT 1;',
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  return result.status === 0;
+}
+
+const API_ENV_PATH = join(API_DIR, '.env');
+
+function readEnvFile(path) {
+  if (!existsSync(path)) return {};
+  const values = {};
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^[ \t]*([A-Z0-9_]+)[ \t]*=[ \t]*(.*)$/);
+    if (match) values[match[1]] = match[2].replace(/^(["'])(.*)\1$/, '$2');
+  }
+  return values;
+}
+
+// Replace (or append) KEY=value lines, keeping the rest of the file as is
+function updateEnvFile(path, values) {
+  const current = readEnvFile(path);
+  let content = readFileSync(path, 'utf8');
+  for (const [key, value] of Object.entries(values)) {
+    if (current[key] === value) continue;
+    const line = `${key}=${value}`;
+    const pattern = new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, 'm');
+    content = pattern.test(content) ? content.replace(pattern, () => line) : `${content.replace(/\s*$/, '')}\n${line}\n`;
+    console.log(`apps/api/.env : ${key} mis à jour pour les services Docker`);
+  }
+  writeFileSync(path, content);
+}
+
+function dockerPortFromEnvFile() {
+  const url = readEnvFile(API_ENV_PATH).DATABASE_URL || '';
+  return url.match(/^postgresql:\/\/ofm_user:ofm_password_dev_only@localhost:(\d+)\/ofm_db$/)?.[1];
+}
+
 // Values matching docker-compose.dev.yml
-const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgresql://ofm_user:ofm_password_dev_only@localhost:5432/ofm_db';
+const PG_PASSWORD = 'ofm_password_dev_only';
+const dockerDatabaseUrl = (port) => `postgresql://ofm_user:${PG_PASSWORD}@localhost:${port}/ofm_db`;
+let DATABASE_URL = process.env.DATABASE_URL || dockerDatabaseUrl(5432);
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
 const REDIS_PORT = process.env.REDIS_PORT || '6379';
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD ?? 'redis_password_dev_only';
 const S3_ENDPOINT = process.env.AWS_S3_ENDPOINT || 'http://localhost:9000';
-const S3_ACCESS_KEY = process.env.AWS_ACCESS_KEY_ID || 'minioadmin';
-const S3_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY || 'minioadmin_dev_only';
+const SKIP_DOCKER = process.env.SKIP_DOCKER === '1';
+// With Docker, always the MinIO credentials (ignore any real AWS keys in the shell)
+const S3_ACCESS_KEY = (SKIP_DOCKER && process.env.AWS_ACCESS_KEY_ID) || 'minioadmin';
+const S3_SECRET_KEY = (SKIP_DOCKER && process.env.AWS_SECRET_ACCESS_KEY) || 'minioadmin_dev_only';
 const S3_BUCKET = process.env.AWS_S3_BUCKET || 'ofm-content-dev';
 const API_URL = 'http://localhost:3001';
 const WEB_URL = 'http://localhost:3000';
-const SKIP_DOCKER = process.env.SKIP_DOCKER === '1';
 
 // ---------- Prerequisites ----------
 step('Vérification des prérequis');
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 if (nodeMajor < 20) fail(`Node.js 20+ requis (version actuelle : ${process.version})`);
 console.log(`Node ${process.version}`);
+
+// ---------- Dependencies ----------
+if (!existsSync(join(ROOT, 'node_modules', '.bin'))) {
+  step('Installation des dépendances (npm install)');
+  runOrFail('npm install', {}, 'npm install a échoué');
+}
 
 if (!SKIP_DOCKER) {
   if (!run('docker --version', { quiet: true })) {
@@ -92,23 +158,38 @@ if (!SKIP_DOCKER) {
 
   // ---------- Services ----------
   step('Démarrage de PostgreSQL, Redis, MinIO et MailDev');
-  runOrFail(`${compose} -f docker-compose.dev.yml up -d`, {}, 'Impossible de démarrer les conteneurs Docker');
+  // Reuse the port chosen on a previous run (5433 when 5432 is taken by another Postgres)
+  let pgPort = process.env.POSTGRES_PORT || dockerPortFromEnvFile() || '5432';
+  const composeUp = () =>
+    runOrFail(
+      `${compose} -f docker-compose.dev.yml up -d`,
+      { env: { POSTGRES_PORT: pgPort } },
+      'Impossible de démarrer les conteneurs Docker',
+    );
+  composeUp();
+  await waitForPostgres();
 
-  process.stdout.write('Attente de PostgreSQL');
-  const pgReady = () => run('docker exec ofm-postgres pg_isready -U ofm_user -d ofm_db', { quiet: true });
-  let ready = false;
-  for (let i = 0; i < 60 && !(ready = pgReady()); i++) {
-    process.stdout.write('.');
-    await sleep(1000);
+  // A volume created by an older setup may hold another password: the
+  // container trusts local connections, so reset it to the expected one.
+  if (!run(`docker exec ofm-postgres psql -U ofm_user -d postgres -c "ALTER ROLE ofm_user WITH PASSWORD '${PG_PASSWORD}'"`, { quiet: true })) {
+    fail(
+      "Le volume Docker de PostgreSQL vient d'une ancienne configuration (utilisateur ofm_user absent).\n" +
+        '  Supprimez-le puis relancez :  docker compose -f docker-compose.dev.yml down -v  &&  npm run dev:up',
+    );
   }
-  if (!ready) fail('PostgreSQL ne répond pas (docker logs ofm-postgres)');
-  console.log(' OK');
-}
 
-// ---------- Dependencies ----------
-if (!existsSync(join(ROOT, 'node_modules', '.bin'))) {
-  step('Installation des dépendances (npm install)');
-  runOrFail('npm install', {}, 'npm install a échoué');
+  // The container accepts the password but the host does not: another
+  // PostgreSQL (installed on Windows/macOS) answers on that port.
+  if (!canConnect(dockerDatabaseUrl(pgPort))) {
+    if (pgPort !== '5432') fail(`Connexion à PostgreSQL impossible sur le port ${pgPort} (docker logs ofm-postgres)`);
+    console.log('Un autre PostgreSQL occupe déjà le port 5432 sur cette machine : passage du conteneur sur le port 5433');
+    pgPort = '5433';
+    composeUp();
+    await waitForPostgres();
+    if (!canConnect(dockerDatabaseUrl(pgPort))) fail('Connexion à PostgreSQL impossible sur le port 5433 (docker logs ofm-postgres)');
+  }
+  DATABASE_URL = dockerDatabaseUrl(pgPort);
+  console.log(`PostgreSQL prêt sur localhost:${pgPort}`);
 }
 
 const apiRequire = createRequire(join(API_DIR, 'package.json'));
@@ -116,7 +197,7 @@ const apiRequire = createRequire(join(API_DIR, 'package.json'));
 // ---------- Env files ----------
 const secret = () => randomBytes(32).toString('hex');
 
-const apiEnvPath = join(API_DIR, '.env');
+const apiEnvPath = API_ENV_PATH;
 if (!existsSync(apiEnvPath)) {
   step('Création de apps/api/.env');
   let vapid = { publicKey: '', privateKey: '' };
@@ -182,8 +263,21 @@ VAPID_SUBJECT=mailto:admin@ofm.local
 STREAM_BASE_URL=${API_URL}
 `,
   );
-} else {
+} else if (SKIP_DOCKER) {
   console.log('apps/api/.env existe déjà : conservé');
+} else {
+  console.log('apps/api/.env existe déjà : conservé (connexions alignées sur les services Docker)');
+  updateEnvFile(apiEnvPath, {
+    DATABASE_URL,
+    REDIS_HOST,
+    REDIS_PORT,
+    REDIS_PASSWORD,
+    AWS_S3_ENDPOINT: S3_ENDPOINT,
+    AWS_S3_FORCE_PATH_STYLE: 'true',
+    AWS_S3_BUCKET: S3_BUCKET,
+    AWS_ACCESS_KEY_ID: S3_ACCESS_KEY,
+    AWS_SECRET_ACCESS_KEY: S3_SECRET_KEY,
+  });
 }
 
 const webEnvPath = join(WEB_DIR, '.env.local');

@@ -33,6 +33,7 @@ Comptes de test (mot de passe `SecurePass123!`) : voir [docs/SEED_ACCOUNTS.md](d
 - `npm run dev:up -- --keep-db` relance sans toucher aux données.
 - Paiements : renseigner les clés Stripe **de test** dans `apps/api/.env` (`STRIPE_SECRET_KEY`) et `apps/web/.env.local` (`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`).
 - Windows : fonctionne directement depuis cmd ou PowerShell (Docker Desktop doit être lancé).
+- Le script aligne `apps/api/.env` sur les services Docker (base, Redis, MinIO). Si un autre PostgreSQL occupe déjà le port 5432 sur la machine, le conteneur passe automatiquement sur le port 5433.
 
 ## 🔧 Installation rapide
 
