@@ -967,8 +967,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         <DialogContent
           className={
             tipCheckout
-              ? 'max-w-md max-h-[90vh] overflow-y-auto bg-transparent border-0 shadow-none p-0 [&>button]:hidden'
-              : 'max-w-md max-h-[90vh] overflow-y-auto'
+              ? 'w-[calc(100%-2rem)] max-w-md max-h-[90vh] overflow-y-auto bg-transparent border-0 shadow-none p-0 [&>button]:hidden'
+              : 'w-[calc(100%-2rem)] max-w-md max-h-[90vh] overflow-y-auto rounded-lg'
           }
           // Don't lose a payment in progress with a stray click
           onInteractOutside={(e) => tipCheckout && e.preventDefault()}
@@ -1009,6 +1009,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
               </DialogHeader>
               <form
                 className="space-y-4"
+                noValidate
                 onSubmit={(e) => {
                   e.preventDefault();
                   handleTipContinue();
