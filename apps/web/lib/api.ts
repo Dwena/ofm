@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios'
+import axios, { AxiosError, AxiosResponse } from 'axios'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
@@ -21,9 +21,19 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// Response interceptor - Handle errors and token refresh
+// The API wraps every payload as { success, statusCode, data, timestamp }.
+// Unwrap it so callers can read `response.data` as the payload itself.
+function unwrapEnvelope(response: AxiosResponse) {
+  const body = response.data
+  if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
+    response.data = body.data
+  }
+  return response
+}
+
+// Response interceptor - Unwrap envelope, handle errors and token refresh
 api.interceptors.response.use(
-  (response) => response,
+  unwrapEnvelope,
   async (error: AxiosError) => {
     const originalRequest = error.config as any
 
@@ -326,8 +336,7 @@ export const storiesApi = {
   // Groups a creator's active stories into the shape the stories viewer expects
   getGroup: async (creatorId: string) => {
     const response = await api.get(`/stories/creator/${creatorId}`)
-    const payload = response.data?.data ?? response.data
-    const stories: any[] = Array.isArray(payload) ? payload : []
+    const stories: any[] = Array.isArray(response.data) ? response.data : []
     const creator = stories[0]?.creator ?? { id: creatorId, username: '' }
     return {
       ...response,

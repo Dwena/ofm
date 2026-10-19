@@ -37,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function loadUser() {
     try {
       const response = await usersApi.getMe()
-      setUser(response.data.data)
+      setUser(response.data)
     } catch (error) {
       console.error('Failed to load user:', error)
       localStorage.removeItem('accessToken')
@@ -49,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function login(email: string, password: string, totpCode?: string) {
     const response = await authApi.login({ email, password, totpCode })
-    const { user, accessToken, refreshToken } = response.data.data
+    const { user, accessToken, refreshToken } = response.data
 
     localStorage.setItem('accessToken', accessToken)
     localStorage.setItem('refreshToken', refreshToken)
