@@ -110,6 +110,71 @@ export class MessagingService {
     };
   }
 
+  /**
+   * Persist a direct message and keep the conversation's last message in sync
+   */
+  async sendMessage(
+    senderId: string,
+    receiverId: string,
+    content: string,
+    attachmentUrl?: string,
+  ) {
+    const message = await this.prisma.message.create({
+      data: {
+        senderId,
+        receiverId,
+        content,
+        status: 'SENT',
+        hasAttachment: !!attachmentUrl,
+        attachmentUrl: attachmentUrl || null,
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatar: true,
+          },
+        },
+      },
+    });
+
+    await this.updateConversation(senderId, receiverId, message.id);
+
+    return message;
+  }
+
+  private async updateConversation(userId1: string, userId2: string, lastMessageId: string) {
+    // Find existing conversation
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        OR: [
+          { participant1Id: userId1, participant2Id: userId2 },
+          { participant1Id: userId2, participant2Id: userId1 },
+        ],
+      },
+    });
+
+    if (conversation) {
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          lastMessageId,
+          updatedAt: new Date(),
+        },
+      });
+    } else {
+      await this.prisma.conversation.create({
+        data: {
+          participant1Id: userId1,
+          participant2Id: userId2,
+          lastMessageId,
+        },
+      });
+    }
+  }
+
   async deleteMessage(messageId: string, userId: string) {
     // Only allow deletion of own messages
     const message = await this.prisma.message.findFirst({

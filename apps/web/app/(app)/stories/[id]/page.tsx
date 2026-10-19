@@ -13,13 +13,16 @@ import { useAuth } from '@/contexts/auth-context';
 
 interface Story {
   id: string;
-  userId: string;
-  mediaUrl: string;
-  mediaType: 'IMAGE' | 'VIDEO';
-  caption?: string;
+  creatorId: string;
+  mediaUrl?: string | null;
+  mediaType: 'IMAGE' | 'VIDEO' | 'TEXT';
+  text?: string | null;
+  caption?: string | null;
   createdAt: string;
   expiresAt: string;
   views: number;
+  likes: number;
+  isLiked: boolean;
   user: {
     id: string;
     username: string;
@@ -84,10 +87,14 @@ export default function StoriesViewerPage({ params }: { params: { id: string } }
     onSuccess: () => {
       setReplyText('');
     },
+    onError: (error: any) => {
+      alert(error?.response?.data?.message || "Impossible d'envoyer la réponse");
+    },
   });
 
   const currentStory = storyGroup?.stories[currentStoryIndex];
   const isVideo = currentStory?.mediaType === 'VIDEO';
+  const isOwnStory = !!user && storyGroup?.userId === user.id;
 
   // Progress bar animation
   useEffect(() => {
@@ -121,7 +128,7 @@ export default function StoriesViewerPage({ params }: { params: { id: string } }
     if (currentStory) {
       markViewedMutation.mutate(currentStory.id);
       setProgress(0);
-      setIsLiked(false);
+      setIsLiked(currentStory.isLiked);
     }
   }, [currentStory?.id]);
 
@@ -245,7 +252,7 @@ export default function StoriesViewerPage({ params }: { params: { id: string } }
                 width: index < currentStoryIndex
                   ? '100%'
                   : index === currentStoryIndex
-                    ? `$${progress}%`
+                    ? `${progress}%`
                     : '0%'
               }}
             />
@@ -300,10 +307,14 @@ export default function StoriesViewerPage({ params }: { params: { id: string } }
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
       >
-        {isVideo ? (
+        {currentStory.mediaType === 'TEXT' ? (
+          <div className="max-w-md px-8 text-center text-white text-2xl font-semibold whitespace-pre-wrap">
+            {currentStory.text}
+          </div>
+        ) : isVideo ? (
           <video
             ref={videoRef}
-            src={currentStory.mediaUrl}
+            src={currentStory.mediaUrl ?? undefined}
             className="max-h-full max-w-full object-contain"
             autoPlay
             muted={false}
@@ -311,7 +322,7 @@ export default function StoriesViewerPage({ params }: { params: { id: string } }
           />
         ) : (
           <img
-            src={currentStory.mediaUrl}
+            src={currentStory.mediaUrl ?? undefined}
             alt="Story"
             className="max-h-full max-w-full object-contain"
           />
@@ -333,47 +344,49 @@ export default function StoriesViewerPage({ params }: { params: { id: string } }
         )}
       </div>
 
-      {/* Action bar */}
-      <div className="absolute bottom-0 left-0 right-0 z-20 p-4 bg-gradient-to-t from-black/80 to-transparent">
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`text-white hover:bg-white/20 $${isLiked ? 'text-red-500' : ''}`}
-            onClick={handleLike}
-          >
-            <Heart className={`h-6 w-6 $${isLiked ? 'fill-current' : ''}`} />
-          </Button>
+      {/* Action bar (hidden on the creator's own stories) */}
+      {!isOwnStory && (
+        <div className="absolute bottom-0 left-0 right-0 z-20 p-4 bg-gradient-to-t from-black/80 to-transparent">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`text-white hover:bg-white/20 ${isLiked ? 'text-red-500' : ''}`}
+              onClick={handleLike}
+            >
+              <Heart className={`h-6 w-6 ${isLiked ? 'fill-current' : ''}`} />
+            </Button>
 
-          <div className="flex-1 flex items-center gap-2">
-            <input
-              type="text"
-              placeholder="Envoyer un message..."
-              value={replyText}
-              onChange={(e) => setReplyText(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleReply()}
-              className="flex-1 bg-white/20 text-white placeholder:text-white/60 border border-white/30 rounded-full px-4 py-2 outline-none focus:bg-white/30"
-            />
+            <div className="flex-1 flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Envoyer un message..."
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleReply()}
+                className="flex-1 bg-white/20 text-white placeholder:text-white/60 border border-white/30 rounded-full px-4 py-2 outline-none focus:bg-white/30"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-white hover:bg-white/20"
+                onClick={handleReply}
+                disabled={!replyText.trim() || sendReplyMutation.isPending}
+              >
+                <Send className="h-5 w-5" />
+              </Button>
+            </div>
+
             <Button
               variant="ghost"
               size="icon"
               className="text-white hover:bg-white/20"
-              onClick={handleReply}
-              disabled={!replyText.trim() || sendReplyMutation.isPending}
             >
-              <Send className="h-5 w-5" />
+              <MoreVertical className="h-5 w-5" />
             </Button>
           </div>
-
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-white hover:bg-white/20"
-          >
-            <MoreVertical className="h-5 w-5" />
-          </Button>
         </div>
-      </div>
+      )}
     </div>
   );
 }

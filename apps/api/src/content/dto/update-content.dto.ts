@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsBoolean, IsDecimal } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsBoolean, IsNumber, Min } from 'class-validator';
 import { ContentVisibility } from './create-content.dto';
 
 export class UpdateContentDto {
@@ -22,7 +22,8 @@ export class UpdateContentDto {
   @IsOptional()
   isPpv?: boolean;
 
-  @IsDecimal()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
   @IsOptional()
   ppvPrice?: number;
 

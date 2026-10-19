@@ -195,6 +195,7 @@ model User {
   reports                 Report[]
   stories                 Story[]         @relation("CreatorStories")
   storyViews              StoryView[]     @relation("StoryViews")
+  storyLikes              StoryLike[]     @relation("StoryLikes")
   liveStreams             LiveStream[]    @relation("CreatorStreams")
   streamViews             StreamViewer[]  @relation("StreamViews")
   streamMessages          StreamMessage[] @relation("StreamMessages")
@@ -728,6 +729,7 @@ model Story {
   // Stats
   viewCount   Int      @default(0)
   views       StoryView[]
+  likes       StoryLike[]
 
   // Expiration (24h auto-delete)
   expiresAt   DateTime
@@ -753,6 +755,22 @@ model StoryView {
   @@unique([storyId, viewerId])
   @@index([storyId])
   @@index([viewerId])
+}
+
+model StoryLike {
+  id        String   @id @default(uuid())
+
+  storyId   String
+  story     Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  userId    String
+  user      User     @relation("StoryLikes", fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([storyId, userId])
+  @@index([storyId])
+  @@index([userId])
 }
 
 enum StreamStatus {

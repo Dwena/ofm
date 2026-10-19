@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsBoolean, IsDecimal, IsArray, IsUUID } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsBoolean, IsNumber, Min, IsArray, IsUUID } from 'class-validator';
 
 export enum ContentType {
   PHOTO = 'PHOTO',
@@ -40,7 +40,8 @@ export class CreateContentDto {
   @IsOptional()
   isPpv?: boolean;
 
-  @IsDecimal()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
   @IsOptional()
   ppvPrice?: number;
 

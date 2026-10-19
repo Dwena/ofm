@@ -7,10 +7,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   Bell,
-  Heart,
   MessageCircle,
   UserPlus,
   DollarSign,
@@ -24,38 +22,50 @@ import { fr } from 'date-fns/locale';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
 
-type NotificationType = 'LIKE' | 'COMMENT' | 'SUBSCRIPTION' | 'MESSAGE' | 'TIP' | 'MENTION';
+// Mirrors the NotificationType enum of the API
+type NotificationType =
+  | 'NEW_SUBSCRIBER'
+  | 'NEW_MESSAGE'
+  | 'NEW_TIP'
+  | 'NEW_COMMENT'
+  | 'SUBSCRIPTION_RENEWAL'
+  | 'PAYOUT_COMPLETED'
+  | 'CONTENT_APPROVED'
+  | 'CONTENT_REJECTED'
+  | 'SYSTEM';
 
+// Shape returned by GET /notifications
 interface Notification {
   id: string;
   type: NotificationType;
+  title: string;
   message: string;
   isRead: boolean;
+  linkUrl?: string | null;
   createdAt: string;
-  actor?: {
-    id: string;
-    username: string;
-    avatar?: string;
-  };
   metadata?: any;
 }
 
-const notificationIcons: Record<NotificationType, any> = {
-  LIKE: Heart,
-  COMMENT: MessageCircle,
-  SUBSCRIPTION: UserPlus,
-  MESSAGE: MessageCircle,
-  TIP: DollarSign,
-  MENTION: Bell,
+const notificationIcons: Partial<Record<NotificationType, any>> = {
+  NEW_SUBSCRIBER: UserPlus,
+  NEW_MESSAGE: MessageCircle,
+  NEW_TIP: DollarSign,
+  NEW_COMMENT: MessageCircle,
+  SUBSCRIPTION_RENEWAL: CheckCheck,
+  PAYOUT_COMPLETED: DollarSign,
+  CONTENT_APPROVED: CheckCheck,
+  CONTENT_REJECTED: Bell,
 };
 
-const notificationColors: Record<NotificationType, string> = {
-  LIKE: 'text-red-500',
-  COMMENT: 'text-blue-500',
-  SUBSCRIPTION: 'text-green-500',
-  MESSAGE: 'text-purple-500',
-  TIP: 'text-yellow-500',
-  MENTION: 'text-orange-500',
+const notificationColors: Partial<Record<NotificationType, string>> = {
+  NEW_SUBSCRIBER: 'text-green-500',
+  NEW_MESSAGE: 'text-purple-500',
+  NEW_TIP: 'text-yellow-500',
+  NEW_COMMENT: 'text-blue-500',
+  SUBSCRIPTION_RENEWAL: 'text-green-500',
+  PAYOUT_COMPLETED: 'text-yellow-500',
+  CONTENT_APPROVED: 'text-green-500',
+  CONTENT_REJECTED: 'text-red-500',
 };
 
 export default function NotificationsPage() {
@@ -109,13 +119,11 @@ export default function NotificationsPage() {
       await markAsReadMutation.mutateAsync(notification.id);
     }
 
-    // Navigate based on notification type
-    if (notification.metadata?.url) {
-      router.push(notification.metadata.url);
-    } else if (notification.type === 'MESSAGE') {
+    // Navigate based on notification link or type
+    if (notification.linkUrl) {
+      router.push(notification.linkUrl);
+    } else if (notification.type === 'NEW_MESSAGE') {
       router.push('/messages');
-    } else if (notification.type === 'SUBSCRIPTION' && notification.actor) {
-      router.push(`/${notification.actor.username}`);
     }
   };
 
@@ -195,39 +203,24 @@ export default function NotificationsPage() {
           ) : notifications && notifications.length > 0 ? (
             <div className="space-y-2">
               {notifications.map((notification) => {
-                const Icon = notificationIcons[notification.type];
-                const iconColor = notificationColors[notification.type];
+                const Icon = notificationIcons[notification.type] ?? Bell;
+                const iconColor = notificationColors[notification.type] ?? 'text-muted-foreground';
 
                 return (
                   <Card
                     key={notification.id}
-                    className={`cursor-pointer transition-colors hover:bg-muted/50 $${!notification.isRead ? 'border-l-4 border-l-primary bg-muted/20' : ''}`}
+                    className={`cursor-pointer transition-colors hover:bg-muted/50 ${!notification.isRead ? 'border-l-4 border-l-primary bg-muted/20' : ''}`}
                     onClick={() => handleNotificationClick(notification)}
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start gap-4">
-                        {notification.actor ? (
-                          <Avatar className="h-10 w-10">
-                            <AvatarImage src={notification.actor.avatar} />
-                            <AvatarFallback>
-                              {notification.actor.username.substring(0, 2).toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
-                        ) : (
-                          <div className={`h-10 w-10 rounded-full bg-muted flex items-center justify-center $${iconColor}`}>
-                            <Icon className="h-5 w-5" />
-                          </div>
-                        )}
+                        <div className={`h-10 w-10 rounded-full bg-muted flex items-center justify-center ${iconColor}`}>
+                          <Icon className="h-5 w-5" />
+                        </div>
 
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm">
-                            {notification.actor && (
-                              <span className="font-semibold">
-                                @{notification.actor.username}{' '}
-                              </span>
-                            )}
-                            {notification.message}
-                          </p>
+                          <p className="text-sm font-semibold">{notification.title}</p>
+                          <p className="text-sm text-muted-foreground">{notification.message}</p>
                           <p className="text-xs text-muted-foreground mt-1">
                             {formatDistanceToNow(new Date(notification.createdAt), {
                               addSuffix: true,
