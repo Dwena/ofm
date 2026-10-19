@@ -19,6 +19,10 @@ describe('ContentService', () => {
       update: jest.fn(),
       count: jest.fn(),
       deleteMany: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    contentFile: {
+      updateMany: jest.fn(),
     },
     contentLike: {
       findUnique: jest.fn(),
@@ -34,6 +38,7 @@ describe('ContentService', () => {
     },
     transaction: {
       create: jest.fn(),
+      groupBy: jest.fn(),
     },
     creatorProfile: {
       updateMany: jest.fn(),
@@ -465,6 +470,293 @@ describe('ContentService', () => {
         contentId: 'content-456',
       });
       expect(result).toEqual(expect.objectContaining({ unlocked: true, contentId: 'content-456' }));
+    });
+  });
+  describe('content management', () => {
+    const creatorId = 'creator-1';
+    const ownContent = {
+      id: 'content-1',
+      creatorId,
+      status: 'DRAFT',
+      visibility: 'SUBSCRIBERS_ONLY',
+      isPpv: false,
+      ppvPrice: null,
+      scheduledFor: null,
+      publishedAt: null,
+      deletedAt: null,
+      files: [],
+      _count: { likes: 0, comments: 0 },
+    };
+
+    beforeEach(() => {
+      mockPrismaService.subscription.findMany.mockResolvedValue([]);
+      mockPrismaService.contentUnlock.findMany.mockResolvedValue([]);
+      mockPrismaService.contentLike.findMany.mockResolvedValue([]);
+      mockPrismaService.content.count.mockResolvedValue(0);
+      mockPrismaService.creatorProfile.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    describe('createContent', () => {
+      beforeEach(() => {
+        mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR' });
+        mockPrismaService.content.create.mockResolvedValue({ id: 'new-1', files: [] });
+        mockPrismaService.contentFile.updateMany.mockResolvedValue({ count: 1 });
+      });
+
+      it('should only link files uploaded by the creator and not yet attached', async () => {
+        await service.createContent(creatorId, { type: 'PHOTO', fileIds: ['f-1', 'f-2'] } as any);
+
+        expect(mockPrismaService.contentFile.updateMany).toHaveBeenCalledTimes(2);
+        expect(mockPrismaService.contentFile.updateMany).toHaveBeenCalledWith({
+          where: { id: 'f-2', contentId: null, storagePath: { startsWith: 'users/creator-1/' } },
+          data: { contentId: 'new-1', order: 1 },
+        });
+      });
+
+      it('should publish immediately when asked', async () => {
+        await service.createContent(creatorId, { type: 'PHOTO', publish: true } as any);
+
+        expect(mockPrismaService.content.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ status: 'PUBLISHED', publishedAt: expect.any(Date) }),
+          }),
+        );
+        expect(mockPrismaService.creatorProfile.updateMany).toHaveBeenCalled();
+      });
+
+      it('should keep scheduled content as a draft even when publish is asked', async () => {
+        const scheduledFor = new Date(Date.now() + 3600_000);
+        await service.createContent(creatorId, { type: 'PHOTO', publish: true, scheduledFor } as any);
+
+        expect(mockPrismaService.content.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ status: 'DRAFT', publishedAt: null, scheduledFor }),
+          }),
+        );
+      });
+
+      it('should reject a schedule date in the past', async () => {
+        await expect(
+          service.createContent(creatorId, {
+            type: 'PHOTO',
+            scheduledFor: new Date(Date.now() - 60_000),
+          } as any),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      it('should require a price for PPV visibility', async () => {
+        await expect(
+          service.createContent(creatorId, { type: 'PHOTO', visibility: 'PPV' } as any),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      it('should flag PPV visibility as pay-per-view', async () => {
+        await service.createContent(creatorId, { type: 'PHOTO', visibility: 'PPV', ppvPrice: 5 } as any);
+
+        expect(mockPrismaService.content.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ isPpv: true, ppvPrice: 5, visibility: 'PPV' }),
+          }),
+        );
+      });
+    });
+
+    describe('getMyContent', () => {
+      it('should return every status with stats and per-status counts', async () => {
+        mockPrismaService.content.findMany
+          .mockResolvedValueOnce([
+            { ...ownContent, status: 'PUBLISHED', viewCount: 42, _count: { likes: 3, comments: 2, unlocks: 4 } },
+          ])
+          .mockResolvedValueOnce([
+            { status: 'PUBLISHED', scheduledFor: null },
+            { status: 'DRAFT', scheduledFor: null },
+            { status: 'DRAFT', scheduledFor: new Date() },
+            { status: 'ARCHIVED', scheduledFor: null },
+            { status: 'REJECTED', scheduledFor: null },
+          ]);
+        mockPrismaService.content.count.mockResolvedValue(1);
+        mockPrismaService.transaction.groupBy.mockResolvedValue([
+          { contentId: 'content-1', _sum: { netAmount: 33.96 } },
+        ]);
+
+        const result = await service.getMyContent(creatorId, {});
+
+        expect(result.counts).toEqual({ ALL: 5, PUBLISHED: 1, DRAFT: 1, SCHEDULED: 1, ARCHIVED: 1, REVIEW: 1 });
+        expect(result.total).toBe(1);
+        expect(result.items[0].stats).toEqual({ views: 42, likes: 3, comments: 2, unlocks: 4, revenue: 33.96 });
+        expect(mockPrismaService.content.findMany.mock.calls[0][0].where).toEqual({
+          creatorId,
+          deletedAt: null,
+        });
+      });
+
+      it('should filter scheduled drafts', async () => {
+        mockPrismaService.content.findMany.mockResolvedValue([]);
+
+        await service.getMyContent(creatorId, { status: 'SCHEDULED' as any });
+
+        expect(mockPrismaService.content.findMany.mock.calls[0][0].where).toEqual({
+          creatorId,
+          deletedAt: null,
+          status: 'DRAFT',
+          scheduledFor: { not: null },
+        });
+        expect(mockPrismaService.transaction.groupBy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('updateContent', () => {
+      beforeEach(() => {
+        mockPrismaService.content.update.mockImplementation(async ({ data }: any) => ({ ...ownContent, ...data }));
+      });
+
+      it('should forbid updating content of another creator', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, creatorId: 'other' });
+
+        await expect(service.updateContent(creatorId, 'content-1', { title: 'x' })).rejects.toThrow(
+          ForbiddenException,
+        );
+        expect(mockPrismaService.content.update).not.toHaveBeenCalled();
+      });
+
+      it('should not update deleted content', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, deletedAt: new Date() });
+
+        await expect(service.updateContent(creatorId, 'content-1', { title: 'x' })).rejects.toThrow(
+          NotFoundException,
+        );
+      });
+
+      it('should switch to PPV with a price and back', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue(ownContent);
+        await service.updateContent(creatorId, 'content-1', { visibility: 'PPV' as any, ppvPrice: 7.5 });
+        expect(mockPrismaService.content.update.mock.calls[0][0].data).toMatchObject({
+          visibility: 'PPV',
+          isPpv: true,
+          ppvPrice: 7.5,
+        });
+
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, visibility: 'PPV', isPpv: true, ppvPrice: 7.5 });
+        await service.updateContent(creatorId, 'content-1', { visibility: 'PUBLIC' as any });
+        expect(mockPrismaService.content.update.mock.calls[1][0].data).toMatchObject({
+          visibility: 'PUBLIC',
+          isPpv: false,
+          ppvPrice: null,
+        });
+      });
+
+      it('should reject PPV without price', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue(ownContent);
+
+        await expect(
+          service.updateContent(creatorId, 'content-1', { visibility: 'PPV' as any }),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      it('should only schedule drafts', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, status: 'PUBLISHED' });
+
+        await expect(
+          service.updateContent(creatorId, 'content-1', { scheduledFor: new Date(Date.now() + 3600_000) }),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      it('should clear the schedule with null', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, scheduledFor: new Date() });
+
+        await service.updateContent(creatorId, 'content-1', { scheduledFor: null });
+
+        expect(mockPrismaService.content.update.mock.calls[0][0].data.scheduledFor).toBeNull();
+      });
+    });
+
+    describe('publish / archive / unarchive / delete', () => {
+      beforeEach(() => {
+        mockPrismaService.content.update.mockImplementation(async ({ data }: any) => ({ ...ownContent, ...data }));
+      });
+
+      it('should publish a draft and clear its schedule', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, scheduledFor: new Date() });
+
+        const result = await service.publishContent(creatorId, 'content-1');
+
+        expect(result.status).toBe('PUBLISHED');
+        expect(mockPrismaService.content.update.mock.calls[0][0].data).toMatchObject({
+          status: 'PUBLISHED',
+          scheduledFor: null,
+        });
+        expect(mockPrismaService.creatorProfile.updateMany).toHaveBeenCalledWith({
+          where: { userId: creatorId },
+          data: { totalContent: 0 },
+        });
+      });
+
+      it('should not let content under moderation be published', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, status: 'REJECTED' });
+
+        await expect(service.publishContent(creatorId, 'content-1')).rejects.toThrow(BadRequestException);
+      });
+
+      it('should archive published content only', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, status: 'PUBLISHED' });
+        const result = await service.archiveContent(creatorId, 'content-1');
+        expect(result.status).toBe('ARCHIVED');
+
+        mockPrismaService.content.findUnique.mockResolvedValue(ownContent);
+        await expect(service.archiveContent(creatorId, 'content-1')).rejects.toThrow(BadRequestException);
+      });
+
+      it('should unarchive and keep the original publication date', async () => {
+        const publishedAt = new Date('2026-01-01');
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, status: 'ARCHIVED', publishedAt });
+
+        const result = await service.unarchiveContent(creatorId, 'content-1');
+
+        expect(result.status).toBe('PUBLISHED');
+        expect(mockPrismaService.content.update.mock.calls[0][0].data.publishedAt).toBe(publishedAt);
+      });
+
+      it('should forbid archiving or deleting content of another creator', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, creatorId: 'other', status: 'PUBLISHED' });
+
+        await expect(service.archiveContent(creatorId, 'content-1')).rejects.toThrow(ForbiddenException);
+        await expect(service.deleteContent(creatorId, 'content-1')).rejects.toThrow(ForbiddenException);
+        expect(mockPrismaService.content.update).not.toHaveBeenCalled();
+      });
+
+      it('should soft delete own content', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue(ownContent);
+
+        await service.deleteContent(creatorId, 'content-1');
+
+        expect(mockPrismaService.content.update).toHaveBeenCalledWith({
+          where: { id: 'content-1' },
+          data: { deletedAt: expect.any(Date) },
+        });
+      });
+    });
+
+    describe('publishScheduledContent', () => {
+      it('should publish due drafts', async () => {
+        mockPrismaService.content.findMany.mockResolvedValue([{ id: 'content-1', creatorId }]);
+        mockPrismaService.content.updateMany.mockResolvedValue({ count: 1 });
+
+        const published = await service.publishScheduledContent();
+
+        expect(published).toBe(1);
+        expect(mockPrismaService.content.updateMany).toHaveBeenCalledWith({
+          where: { id: { in: ['content-1'] }, status: 'DRAFT' },
+          data: { status: 'PUBLISHED', publishedAt: expect.any(Date), scheduledFor: null },
+        });
+        expect(mockPrismaService.creatorProfile.updateMany).toHaveBeenCalledTimes(1);
+      });
+
+      it('should do nothing when nothing is due', async () => {
+        mockPrismaService.content.findMany.mockResolvedValue([]);
+
+        expect(await service.publishScheduledContent()).toBe(0);
+        expect(mockPrismaService.content.updateMany).not.toHaveBeenCalled();
+      });
     });
   });
 });

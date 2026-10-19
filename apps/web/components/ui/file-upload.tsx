@@ -4,6 +4,7 @@ import React, { useRef, useState, useCallback } from 'react';
 import { Upload, X, File, Image as ImageIcon, Video, FileText, Loader2 } from 'lucide-react';
 import { Button } from './button';
 import { Progress } from './progress';
+import { toast } from '@/hooks/use-toast';
 
 export interface UploadedFile {
   file: File;
@@ -113,7 +114,11 @@ export function FileUpload({
       }
 
       if (maxFiles && files.length + fileArray.length > maxFiles) {
-        alert(`Vous ne pouvez pas télécharger plus de ${maxFiles} fichiers`);
+        toast({
+          title: 'Trop de fichiers',
+          description: `Vous ne pouvez pas télécharger plus de ${maxFiles} fichiers`,
+          variant: 'destructive',
+        });
         return;
       }
 

@@ -15,10 +15,11 @@ export class UploadPage {
   readonly jobStatus: Locator;
   readonly titleInput: Locator;
   readonly descriptionInput: Locator;
-  readonly tierSelect: Locator;
-  readonly kindSelect: Locator;
+  readonly visibilitySelect: Locator;
   readonly ppvPriceInput: Locator;
+  readonly scheduledForInput: Locator;
   readonly publishButton: Locator;
+  readonly saveDraftButton: Locator;
   readonly cancelButton: Locator;
 
   constructor(page: Page) {
@@ -30,10 +31,11 @@ export class UploadPage {
     this.jobStatus = page.getByTestId('media-job-status');
     this.titleInput = page.getByTestId('content-title');
     this.descriptionInput = page.getByTestId('content-description');
-    this.tierSelect = page.getByTestId('content-tier');
-    this.kindSelect = page.getByTestId('content-kind');
+    this.visibilitySelect = page.getByTestId('content-visibility');
     this.ppvPriceInput = page.getByTestId('content-ppv-price');
+    this.scheduledForInput = page.getByTestId('content-scheduled-for');
     this.publishButton = page.getByTestId('publish-content');
+    this.saveDraftButton = page.getByTestId('save-draft');
     this.cancelButton = page.getByRole('button', { name: 'Annuler', exact: true });
   }
 
@@ -46,16 +48,30 @@ export class UploadPage {
     await this.fileInput.setInputFiles(files as any);
   }
 
-  /** Tier labels: « Gratuit (Public) », « Basic », « Premium », « VIP » */
-  async selectTier(label: string) {
-    await this.tierSelect.click();
-    await this.page.getByRole('option', { name: label }).click();
+  /** Visibility labels: « Public », « Abonnés », « Abonnés Premium », « Pay-Per-View », « Privé » */
+  async selectVisibility(label: string) {
+    await this.visibilitySelect.click();
+    await this.page.getByRole('option', { name: label, exact: true }).click();
   }
 
   async enablePpv(price: string) {
-    await this.kindSelect.click();
-    await this.page.getByRole('option', { name: 'Pay-Per-View' }).click();
+    await this.selectVisibility('Pay-Per-View');
     await this.ppvPriceInput.fill(price);
+  }
+
+  /** Schedule the publication `minutesFromNow` minutes ahead */
+  async schedule(minutesFromNow = 60 * 24) {
+    await this.page.getByTestId('publish-mode-schedule').check();
+    const date = new Date(Date.now() + minutesFromNow * 60_000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    await this.scheduledForInput.fill(
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`,
+    );
+  }
+
+  async saveDraft() {
+    await expect(this.saveDraftButton).toBeEnabled({ timeout: 30000 });
+    await this.saveDraftButton.click();
   }
 
   async fillContentDetails(title: string, description = '') {

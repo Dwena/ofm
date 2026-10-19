@@ -1,11 +1,13 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateContentDto } from './dto/create-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
 import { SearchContentDto, ContentSortBy } from './dto/search-content.dto';
+import { MyContentQueryDto, MyContentStatusFilter } from './dto/my-content.dto';
 
 @Injectable()
 export class ContentService {
@@ -139,58 +141,203 @@ export class ContentService {
       throw new ForbiddenException('Only creators can create content');
     }
 
+    const visibility = dto.visibility || 'SUBSCRIBERS_ONLY';
+    const isPpv = !!dto.isPpv || visibility === 'PPV';
+
     // Validate PPV price
-    if (dto.isPpv && (!dto.ppvPrice || dto.ppvPrice <= 0)) {
+    if (isPpv && (!dto.ppvPrice || dto.ppvPrice <= 0)) {
       throw new BadRequestException('PPV content must have a valid price');
     }
+
+    const scheduledFor = dto.scheduledFor ? new Date(dto.scheduledFor) : null;
+    if (scheduledFor) {
+      this.assertFutureDate(scheduledFor);
+    }
+
+    // Scheduled content stays a draft until its date; otherwise publish when asked
+    const publishNow = !!dto.publish && !scheduledFor;
 
     // Create content
     const content = await this.prisma.content.create({
       data: {
         creatorId: userId,
         type: dto.type,
-        visibility: dto.visibility || 'SUBSCRIBERS_ONLY',
-        status: dto.scheduledFor ? 'DRAFT' : 'DRAFT',
+        visibility,
+        status: publishNow ? 'PUBLISHED' : 'DRAFT',
+        publishedAt: publishNow ? new Date() : null,
         title: dto.title,
         description: dto.description,
         caption: dto.caption,
-        isPpv: dto.isPpv || false,
-        ppvPrice: dto.ppvPrice,
-        scheduledFor: dto.scheduledFor,
+        isPpv,
+        ppvPrice: isPpv ? dto.ppvPrice : null,
+        scheduledFor,
       },
       include: {
         files: true,
       },
     });
 
-    // Link uploaded files if provided
+    // Link uploaded files: only the creator's own files not attached to other content
     if (dto.fileIds && dto.fileIds.length > 0) {
-      await this.prisma.contentFile.updateMany({
-        where: {
-          id: { in: dto.fileIds },
-        },
-        data: {
-          contentId: content.id,
-        },
-      });
+      await Promise.all(
+        dto.fileIds.map((fileId, order) =>
+          this.prisma.contentFile.updateMany({
+            where: {
+              id: fileId,
+              contentId: null,
+              storagePath: { startsWith: `users/${userId}/` },
+            },
+            data: {
+              contentId: content.id,
+              order,
+            },
+          }),
+        ),
+      );
+    }
+
+    if (publishNow) {
+      await this.refreshCreatorContentCount(userId);
     }
 
     this.logger.log(`Content created: ${content.id} by user ${userId}`);
     return content;
   }
 
-  async updateContent(userId: string, contentId: string, dto: UpdateContentDto) {
-    // Check ownership
-    const content = await this.prisma.content.findUnique({
-      where: { id: contentId },
-    });
+  /**
+   * Content of the authenticated creator, every status included, with
+   * per-content stats (views, likes, comments, unlocks, PPV revenue) and the
+   * number of items per status for the filters.
+   */
+  async getMyContent(userId: string, query: MyContentQueryDto = {}) {
+    const { status = MyContentStatusFilter.ALL, search, page = 1, limit = 20 } = query;
+    const skip = (page - 1) * limit;
 
-    if (!content) {
-      throw new NotFoundException('Content not found');
+    const where: any = { creatorId: userId, deletedAt: null };
+
+    switch (status) {
+      case MyContentStatusFilter.PUBLISHED:
+        where.status = 'PUBLISHED';
+        break;
+      case MyContentStatusFilter.DRAFT:
+        where.status = 'DRAFT';
+        where.scheduledFor = null;
+        break;
+      case MyContentStatusFilter.SCHEDULED:
+        where.status = 'DRAFT';
+        where.scheduledFor = { not: null };
+        break;
+      case MyContentStatusFilter.ARCHIVED:
+        where.status = 'ARCHIVED';
+        break;
+      case MyContentStatusFilter.REVIEW:
+        where.status = { in: ['UNDER_REVIEW', 'REJECTED'] };
+        break;
     }
 
-    if (content.creatorId !== userId) {
-      throw new ForbiddenException('You can only update your own content');
+    if (search?.trim()) {
+      where.OR = [
+        { title: { contains: search.trim(), mode: 'insensitive' } },
+        { description: { contains: search.trim(), mode: 'insensitive' } },
+      ];
+    }
+
+    const [items, total, allStatuses] = await Promise.all([
+      this.prisma.content.findMany({
+        where,
+        include: {
+          creator: this.contentInclude.creator,
+          files: this.contentInclude.files,
+          _count: {
+            select: {
+              likes: true,
+              comments: { where: { deletedAt: null } },
+              unlocks: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.content.count({ where }),
+      this.prisma.content.findMany({
+        where: { creatorId: userId, deletedAt: null },
+        select: { status: true, scheduledFor: true },
+      }),
+    ]);
+
+    const counts = { ALL: allStatuses.length, PUBLISHED: 0, DRAFT: 0, SCHEDULED: 0, ARCHIVED: 0, REVIEW: 0 };
+    for (const item of allStatuses) {
+      if (item.status === 'PUBLISHED') counts.PUBLISHED++;
+      else if (item.status === 'ARCHIVED') counts.ARCHIVED++;
+      else if (item.status === 'DRAFT') {
+        if (item.scheduledFor) counts.SCHEDULED++;
+        else counts.DRAFT++;
+      } else counts.REVIEW++;
+    }
+
+    // Creator's net revenue per content (PPV unlocks)
+    const ids = items.map((item: any) => item.id);
+    const revenues: any[] = ids.length
+      ? await (this.prisma.transaction as any).groupBy({
+          by: ['contentId'],
+          where: { toUserId: userId, contentId: { in: ids }, status: 'COMPLETED' },
+          _sum: { netAmount: true },
+        })
+      : [];
+    const revenueByContent = new Map<string, number>(
+      revenues.map((row: any) => [row.contentId, Number(row._sum?.netAmount ?? 0)]),
+    );
+
+    const serialized = await this.withViewerAccess(items, userId);
+
+    return {
+      items: serialized.map((item: any) => ({
+        ...item,
+        stats: {
+          views: item.viewCount ?? 0,
+          likes: item._count?.likes ?? 0,
+          comments: item._count?.comments ?? 0,
+          unlocks: item._count?.unlocks ?? 0,
+          revenue: revenueByContent.get(item.id) ?? 0,
+        },
+      })),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      counts,
+    };
+  }
+
+  async updateContent(userId: string, contentId: string, dto: UpdateContentDto) {
+    const content = await this.findOwnContent(userId, contentId, 'update');
+
+    // PPV follows the visibility unless given explicitly
+    const visibility = dto.visibility ?? content.visibility;
+    let isPpv = dto.isPpv ?? (dto.visibility !== undefined ? visibility === 'PPV' : content.isPpv);
+    if (visibility === 'PPV') {
+      isPpv = true;
+    }
+    const ppvPrice =
+      dto.ppvPrice !== undefined ? dto.ppvPrice : content.ppvPrice != null ? Number(content.ppvPrice) : null;
+
+    if (isPpv && (!ppvPrice || ppvPrice <= 0)) {
+      throw new BadRequestException('PPV content must have a valid price');
+    }
+
+    let scheduledFor: Date | null | undefined = undefined;
+    if (dto.scheduledFor !== undefined) {
+      if (dto.scheduledFor !== null) {
+        if (content.status !== 'DRAFT') {
+          throw new BadRequestException('Only drafts can be scheduled');
+        }
+        scheduledFor = new Date(dto.scheduledFor);
+        this.assertFutureDate(scheduledFor);
+      } else {
+        scheduledFor = null;
+      }
     }
 
     // Update content
@@ -201,9 +348,9 @@ export class ContentService {
         title: dto.title,
         description: dto.description,
         caption: dto.caption,
-        isPpv: dto.isPpv,
-        ppvPrice: dto.ppvPrice,
-        scheduledFor: dto.scheduledFor,
+        isPpv,
+        ppvPrice: isPpv ? ppvPrice : null,
+        scheduledFor,
         updatedAt: new Date(),
       },
       include: this.contentInclude,
@@ -214,21 +361,19 @@ export class ContentService {
   }
 
   async publishContent(userId: string, contentId: string) {
-    // Check ownership
-    const content = await this.prisma.content.findUnique({
-      where: { id: contentId },
-    });
-
-    if (!content) {
-      throw new NotFoundException('Content not found');
-    }
-
-    if (content.creatorId !== userId) {
-      throw new ForbiddenException('You can only publish your own content');
-    }
+    const content = await this.findOwnContent(userId, contentId, 'publish');
 
     if (content.status === 'PUBLISHED') {
       throw new BadRequestException('Content is already published');
+    }
+
+    if (content.status === 'ARCHIVED') {
+      throw new BadRequestException('Archived content must be unarchived');
+    }
+
+    // Under review / rejected content cannot bypass moderation
+    if (content.status !== 'DRAFT') {
+      throw new BadRequestException('Content under moderation cannot be published');
     }
 
     const published = await this.prisma.content.update({
@@ -236,27 +381,66 @@ export class ContentService {
       data: {
         status: 'PUBLISHED',
         publishedAt: new Date(),
+        scheduledFor: null,
       },
       include: this.contentInclude,
     });
+
+    await this.refreshCreatorContentCount(userId);
 
     const [serialized] = await this.withViewerAccess([published], userId);
     return serialized;
   }
 
-  async deleteContent(userId: string, contentId: string) {
-    // Check ownership
-    const content = await this.prisma.content.findUnique({
+  /**
+   * Hide published content from fans without deleting it
+   */
+  async archiveContent(userId: string, contentId: string) {
+    const content = await this.findOwnContent(userId, contentId, 'archive');
+
+    if (content.status !== 'PUBLISHED') {
+      throw new BadRequestException('Only published content can be archived');
+    }
+
+    const archived = await this.prisma.content.update({
       where: { id: contentId },
+      data: { status: 'ARCHIVED' },
+      include: this.contentInclude,
     });
 
-    if (!content) {
-      throw new NotFoundException('Content not found');
+    await this.refreshCreatorContentCount(userId);
+
+    const [serialized] = await this.withViewerAccess([archived], userId);
+    return serialized;
+  }
+
+  /**
+   * Make archived content visible again (keeps its original publication date)
+   */
+  async unarchiveContent(userId: string, contentId: string) {
+    const content = await this.findOwnContent(userId, contentId, 'unarchive');
+
+    if (content.status !== 'ARCHIVED') {
+      throw new BadRequestException('Content is not archived');
     }
 
-    if (content.creatorId !== userId) {
-      throw new ForbiddenException('You can only delete your own content');
-    }
+    const restored = await this.prisma.content.update({
+      where: { id: contentId },
+      data: {
+        status: 'PUBLISHED',
+        publishedAt: content.publishedAt ?? new Date(),
+      },
+      include: this.contentInclude,
+    });
+
+    await this.refreshCreatorContentCount(userId);
+
+    const [serialized] = await this.withViewerAccess([restored], userId);
+    return serialized;
+  }
+
+  async deleteContent(userId: string, contentId: string) {
+    await this.findOwnContent(userId, contentId, 'delete');
 
     // Soft delete
     await this.prisma.content.update({
@@ -266,8 +450,76 @@ export class ContentService {
       },
     });
 
+    await this.refreshCreatorContentCount(userId);
+
     this.logger.log(`Content deleted: ${contentId} by user ${userId}`);
     return { message: 'Content deleted successfully' };
+  }
+
+  /**
+   * Publish scheduled drafts whose publication date has passed
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async publishScheduledContent() {
+    const due = await this.prisma.content.findMany({
+      where: {
+        status: 'DRAFT',
+        deletedAt: null,
+        scheduledFor: { lte: new Date() },
+      },
+      select: { id: true, creatorId: true },
+    });
+
+    if (due.length === 0) {
+      return 0;
+    }
+
+    await this.prisma.content.updateMany({
+      where: { id: { in: due.map((item: any) => item.id) }, status: 'DRAFT' },
+      data: { status: 'PUBLISHED', publishedAt: new Date(), scheduledFor: null },
+    });
+
+    const creatorIds: string[] = [...new Set<string>(due.map((item: any) => item.creatorId))];
+    await Promise.all(creatorIds.map((creatorId) => this.refreshCreatorContentCount(creatorId)));
+
+    this.logger.log(`Published ${due.length} scheduled content item(s)`);
+    return due.length;
+  }
+
+  private async findOwnContent(userId: string, contentId: string, action: string) {
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+    });
+
+    if (!content || content.deletedAt) {
+      throw new NotFoundException('Content not found');
+    }
+
+    if (content.creatorId !== userId) {
+      throw new ForbiddenException(`You can only ${action} your own content`);
+    }
+
+    return content;
+  }
+
+  private assertFutureDate(date: Date) {
+    if (isNaN(date.getTime()) || date.getTime() <= Date.now()) {
+      throw new BadRequestException('The scheduled date must be in the future');
+    }
+  }
+
+  /**
+   * Keep the creator profile's published content counter in sync
+   */
+  private async refreshCreatorContentCount(creatorId: string) {
+    const totalContent = await this.prisma.content.count({
+      where: { creatorId, status: 'PUBLISHED', deletedAt: null },
+    });
+
+    await this.prisma.creatorProfile.updateMany({
+      where: { userId: creatorId },
+      data: { totalContent },
+    });
   }
 
   async searchContent(userId: string, dto: SearchContentDto) {
@@ -358,11 +610,13 @@ export class ContentService {
       throw new NotFoundException('Content not found');
     }
 
-    // Increment view count
-    await this.prisma.content.update({
-      where: { id: contentId },
-      data: { viewCount: { increment: 1 } },
-    });
+    // Count views from other users only
+    if (!isOwner) {
+      await this.prisma.content.update({
+        where: { id: contentId },
+        data: { viewCount: { increment: 1 } },
+      });
+    }
 
     const [serialized] = await this.withViewerAccess([content], userId);
     return serialized;
