@@ -19,7 +19,7 @@ async function fillStripeCard(page: Page, cardNumber: string) {
 async function openCreatorTiers(page: Page) {
   await page.goto(`/${testUser('creator3').username}`);
   await expect(page.getByRole('heading', { level: 1, name: testUser('creator3').displayName })).toBeVisible();
-  await expect(page.getByRole('heading', { name: "Plans d'Abonnement" })).toBeVisible();
+  await expect(page.getByRole('heading', { name: "Offres d'abonnement" })).toBeVisible();
 }
 
 /** Subscribe button of a tier card (« S'abonner », or « Suivre » for free tiers) */
@@ -43,6 +43,12 @@ test.describe('Paiements', () => {
     await subscribe.click();
 
     await expect(page).toHaveURL(/\/checkout\?.*type=subscription/);
+    if (!stripeEnabled) {
+      // Without Stripe keys the checkout explains why instead of showing a broken form
+      await expect(page.getByRole('heading', { name: 'Paiement impossible' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Retour' })).toBeVisible();
+      return;
+    }
     await expect(page.getByRole('heading', { level: 1, name: 'Paiement Sécurisé' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Récapitulatif' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Méthode de Paiement' })).toBeVisible();
@@ -107,13 +113,14 @@ test.describe('Paiements', () => {
 
   test('résilie un abonnement depuis « Mes Abonnements »', async ({ page }) => {
     await page.goto('/subscriptions');
-    await page.getByRole('tab', { name: /Mes Abonnements/ }).click();
+    await page.getByRole('tab', { name: /Actifs/ }).click();
 
     const unsubscribe = page.getByRole('button', { name: 'Se désabonner' }).first();
     test.skip((await unsubscribe.count()) === 0, 'Aucun abonnement actif à résilier');
 
-    page.once('dialog', (dialog) => dialog.accept());
+    // In-app confirmation dialog (no native confirm)
     await unsubscribe.click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Se désabonner' }).click();
 
     await expect(page.getByText('Abonnement annulé').first()).toBeVisible({ timeout: 10000 });
   });

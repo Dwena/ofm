@@ -73,8 +73,8 @@ test.describe('Analytics créateur', () => {
   });
 
   test('affiche les cartes de statistiques', async ({ page }) => {
-    for (const title of ['Revenus ce mois', 'Abonnés Actifs', 'Vues Totales', 'Engagement']) {
-      await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+    for (const title of ['Revenus ce mois', 'Abonnés actifs', 'Vues totales', 'Engagement']) {
+      await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
     }
   });
 
