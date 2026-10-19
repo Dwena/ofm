@@ -2,6 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { paymentsApi } from '@/lib/api';
+import { formatEuros } from '@/lib/utils';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -65,7 +66,7 @@ export default function WalletPage() {
       return;
     }
 
-    if (amount > (earnings?.available || 0)) {
+    if (amount > (earnings?.availableBalance || 0)) {
       toast({ title: 'Erreur', description: 'Montant supérieur au solde disponible', variant: 'destructive' });
       return;
     }
@@ -105,7 +106,7 @@ export default function WalletPage() {
               <div>
                 <p className="text-sm text-muted-foreground">Solde disponible</p>
                 <p className="text-3xl font-bold text-green-600">
-                  {new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(earnings?.available || 0)}
+                  {formatEuros(earnings?.availableBalance)}
                 </p>
               </div>
               <div className="h-12 w-12 bg-green-100 rounded-full flex items-center justify-center">
@@ -121,7 +122,7 @@ export default function WalletPage() {
               <div>
                 <p className="text-sm text-muted-foreground">En attente</p>
                 <p className="text-3xl font-bold text-yellow-600">
-                  {new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(earnings?.pending || 0)}
+                  {formatEuros(earnings?.pendingBalance)}
                 </p>
               </div>
               <div className="h-12 w-12 bg-yellow-100 rounded-full flex items-center justify-center">
@@ -137,7 +138,7 @@ export default function WalletPage() {
               <div>
                 <p className="text-sm text-muted-foreground">Total des gains</p>
                 <p className="text-3xl font-bold">
-                  {new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(earnings?.total || 0)}
+                  {formatEuros(earnings?.totalEarnings)}
                 </p>
               </div>
               <div className="h-12 w-12 bg-primary/10 rounded-full flex items-center justify-center">
@@ -172,12 +173,12 @@ export default function WalletPage() {
                     type="number"
                     step="0.01"
                     min="50"
-                    max={earnings?.available || 0}
+                    max={earnings?.availableBalance || 0}
                     placeholder="50.00"
                     required
                   />
                   <p className="text-sm text-muted-foreground mt-1">
-                    Montant minimum : 50€ - Maximum disponible : {new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(earnings?.available || 0)}
+                    Montant minimum : 50€ - Maximum disponible : {formatEuros(earnings?.availableBalance)}
                   </p>
                 </div>
 
@@ -190,7 +191,7 @@ export default function WalletPage() {
                   </ul>
                 </div>
 
-                <Button type="submit" disabled={requestPayoutMutation.isPending || (earnings?.available || 0) < 50}>
+                <Button type="submit" disabled={requestPayoutMutation.isPending || (earnings?.availableBalance || 0) < 50}>
                   {requestPayoutMutation.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -224,7 +225,7 @@ export default function WalletPage() {
                         {statusIcon[payout.status as keyof typeof statusIcon]}
                         <div>
                           <p className="font-medium">
-                            {new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(payout.amount)}
+                            {formatEuros(payout.amount)}
                           </p>
                           <p className="text-sm text-muted-foreground">
                             {format(new Date(payout.createdAt), 'PPP', { locale: fr })}

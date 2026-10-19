@@ -1,26 +1,43 @@
 'use client'
 
 import { useSearchParams, useRouter } from 'next/navigation'
-import StripeCheckout from '@/components/checkout/stripe-checkout'
+import { useQueryClient } from '@tanstack/react-query'
 import SubscriptionCheckout from '@/components/checkout/subscription-checkout'
+import OneTimeCheckout, { type OneTimePaymentResult } from '@/components/checkout/one-time-checkout'
+import { contentApi, liveApi, paymentsApi } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 
+type CheckoutType = 'subscription' | 'ppv' | 'stream' | 'tip'
+
+const CHECKOUT_TYPES: CheckoutType[] = ['subscription', 'ppv', 'stream', 'tip']
+
+/**
+ * /checkout?type=subscription|ppv|stream|tip&itemId=...&amount=9.99&description=...&returnUrl=...
+ *
+ * - amount is in euros (display only for subscriptions and PPV, the API charges its own price)
+ * - itemId: tier id (subscription), content id (ppv), stream id (stream), creator id (tip)
+ * - tip only: optional `message` and `streamId`
+ */
 export default function CheckoutPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
+  const queryClient = useQueryClient()
 
   // Get checkout params from URL
-  const amount = parseInt(searchParams.get('amount') || '0')
+  const amount = Number(searchParams.get('amount') || '0')
   const description = searchParams.get('description') || 'Paiement'
-  const type = (searchParams.get('type') || 'tip') as 'subscription' | 'ppv' | 'tip'
+  const rawType = searchParams.get('type') as CheckoutType | null
+  const type = rawType && CHECKOUT_TYPES.includes(rawType) ? rawType : null
   const itemId = searchParams.get('itemId') || undefined
+  const message = searchParams.get('message') || undefined
+  const streamId = searchParams.get('streamId') || undefined
   const returnUrl = searchParams.get('returnUrl') || '/feed'
   // Subscription upgraded from a free tier (subscriptions only)
   const changeFrom = searchParams.get('changeFrom') || undefined
 
-  if (!amount || amount <= 0) {
+  if (!type || !itemId || !Number.isFinite(amount) || amount <= 0) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Card className="max-w-md">
@@ -36,6 +53,36 @@ export default function CheckoutPage() {
         </Card>
       </div>
     )
+  }
+
+  const done = () => {
+    // Content and streams just became accessible
+    queryClient.invalidateQueries({ queryKey: ['feed'] })
+    queryClient.invalidateQueries({ queryKey: ['creator-content'] })
+    queryClient.invalidateQueries({ queryKey: ['live-stream'] })
+    router.push(returnUrl)
+  }
+
+  const handlers: Record<
+    Exclude<CheckoutType, 'subscription'>,
+    {
+      start: (paymentMethodId?: string) => Promise<OneTimePaymentResult>
+      confirm: (paymentIntentId: string) => Promise<OneTimePaymentResult>
+    }
+  > = {
+    ppv: {
+      start: async (paymentMethodId) => (await contentApi.unlockPPV(itemId, paymentMethodId)).data,
+      confirm: async (paymentIntentId) => (await contentApi.confirmUnlock(itemId, paymentIntentId)).data,
+    },
+    stream: {
+      start: async (paymentMethodId) => (await liveApi.purchase(itemId, paymentMethodId)).data,
+      confirm: async (paymentIntentId) => (await liveApi.confirmPurchase(itemId, paymentIntentId)).data,
+    },
+    tip: {
+      start: async (paymentMethodId) =>
+        (await paymentsApi.sendTip(itemId, { amount, message, streamId, paymentMethodId })).data,
+      confirm: async (paymentIntentId) => (await paymentsApi.confirmTip(itemId, paymentIntentId)).data,
+    },
   }
 
   return (
@@ -56,7 +103,7 @@ export default function CheckoutPage() {
         </p>
       </div>
 
-      {type === 'subscription' && itemId ? (
+      {type === 'subscription' ? (
         <SubscriptionCheckout
           tierId={itemId}
           amount={amount}
@@ -70,18 +117,14 @@ export default function CheckoutPage() {
           }}
         />
       ) : (
-        <StripeCheckout
+        <OneTimeCheckout
+          kind={type}
           amount={amount}
-          currency="EUR"
           description={description}
-          itemType={type}
-          itemId={itemId}
-          onSuccess={() => {
-            router.push(returnUrl)
-          }}
-          onCancel={() => {
-            router.back()
-          }}
+          start={handlers[type].start}
+          confirm={handlers[type].confirm}
+          onSuccess={done}
+          onCancel={() => router.back()}
         />
       )}
     </div>

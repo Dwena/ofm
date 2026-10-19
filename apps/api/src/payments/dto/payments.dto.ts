@@ -1,8 +1,9 @@
-import { IsNumber, IsString, IsEnum, IsOptional, Min, Max } from 'class-validator';
+import { IsNumber, IsString, IsEnum, IsOptional, IsUUID, Min, Max, MaxLength } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class RequestPayoutDto {
-  @IsNumber()
+  // Euros
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(10)
   amount: number;
 
@@ -15,10 +16,10 @@ export class CreateRefundDto {
   @IsString()
   transactionId: string;
 
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   @IsOptional()
-  amount?: number; // If not provided, full refund
+  amount?: number; // Euros. If not provided, full refund
 
   @IsString()
   @IsOptional()
@@ -96,4 +97,39 @@ export class FilterTransactionsDto {
   @Max(100)
   @IsOptional()
   limit?: number = 20;
+}
+
+export class SendTipDto {
+  // Euros
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(1)
+  @Max(10000)
+  amount: number;
+
+  @IsString()
+  @MaxLength(500)
+  @IsOptional()
+  message?: string;
+
+  // Live stream the tip was sent from (announced in its chat once paid)
+  @IsUUID()
+  @IsOptional()
+  streamId?: string;
+
+  // Saved card (GET /payments/methods); without it the client confirms with Stripe Elements
+  @IsString()
+  @IsOptional()
+  paymentMethodId?: string;
+}
+
+export class OneTimePaymentDto {
+  // Saved card (GET /payments/methods); without it the client confirms with Stripe Elements
+  @IsString()
+  @IsOptional()
+  paymentMethodId?: string;
+}
+
+export class ConfirmPaymentDto {
+  @IsString()
+  paymentIntentId: string;
 }

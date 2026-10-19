@@ -8,10 +8,12 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { Subscription } from 'rxjs';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
+import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
 
 interface SocketUser {
   id: string;
@@ -42,6 +44,8 @@ export interface LiveChatMessage {
   timestamp: string;
   type: 'MESSAGE' | 'TIP' | 'SYSTEM';
   isCreator: boolean;
+  /** Euros, for TIP messages */
+  tipAmount?: number;
 }
 
 type Ack = { success: true; [key: string]: unknown } | { error: string; reason?: string };
@@ -80,7 +84,9 @@ export const streamRoom = (streamId: string) => `stream:${streamId}`;
   },
   namespace: '/streaming',
 })
-export class StreamingGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class StreamingGateway
+  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy
+{
   @WebSocketServer()
   server: Server;
 
@@ -89,12 +95,23 @@ export class StreamingGateway implements OnGatewayConnection, OnGatewayDisconnec
   private socketStreams = new Map<string, Set<string>>(); // socketId -> streamIds
   private lastChatAt = new Map<string, number>();
   private lastReactionAt = new Map<string, number>();
+  private tipSubscription?: Subscription;
 
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
     private streamingService: StreamingService,
+    @Optional() private oneTimePayments?: OneTimePaymentService,
   ) {}
+
+  onModuleInit() {
+    // Paid tips sent from a live are announced in its chat
+    this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => this.notifyTip(tip));
+  }
+
+  onModuleDestroy() {
+    this.tipSubscription?.unsubscribe();
+  }
 
   async handleConnection(client: AuthenticatedStreamSocket) {
     try {
@@ -431,6 +448,37 @@ export class StreamingGateway implements OnGatewayConnection, OnGatewayDisconnec
       sockets.forEach((socketId) => this.socketStreams.get(socketId)?.delete(streamId));
     }
     this.rooms.delete(streamId);
+  }
+
+  /**
+   * Announce a paid tip in the live chat (`chat-message` of type TIP, plus a
+   * `tip` event for on-screen effects)
+   */
+  notifyTip(tip: TipCompletedEvent) {
+    if (!this.server || !tip.streamId) return;
+
+    const message: LiveChatMessage = {
+      id: `tip-${tip.transactionId}`,
+      userId: tip.fromUser.id,
+      username: tip.fromUser.username,
+      displayName: tip.fromUser.displayName,
+      avatar: tip.fromUser.avatar,
+      message: tip.message || `a envoyé un pourboire de ${tip.amount.toFixed(2)}€`,
+      timestamp: tip.completedAt.toISOString(),
+      type: 'TIP',
+      isCreator: false,
+      tipAmount: tip.amount,
+    };
+
+    const room = streamRoom(tip.streamId);
+    this.server.to(room).emit('chat-message', message);
+    this.server.to(room).emit('tip', {
+      streamId: tip.streamId,
+      transactionId: tip.transactionId,
+      amount: tip.amount,
+      message: tip.message,
+      fromUser: tip.fromUser,
+    });
   }
 
   getViewerCount(streamId: string) {

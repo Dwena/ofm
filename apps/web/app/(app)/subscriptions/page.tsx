@@ -149,7 +149,7 @@ export default function SubscriptionsPage() {
     const params = new URLSearchParams({
       type: 'subscription',
       itemId: sub.tierId,
-      amount: String(Math.round(Number(sub.tier.price) * 100)),
+      amount: String(Number(sub.tier.price)), // euros
       description: `${sub.tier.name} - @${sub.tier.creator.username}`,
       returnUrl: '/subscriptions',
     })

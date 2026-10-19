@@ -22,6 +22,8 @@ import {
   CreateRefundDto,
   FilterTransactionsDto,
   GetStatsDto,
+  SendTipDto,
+  ConfirmPaymentDto,
 } from './dto/payments.dto';
 
 @Controller('payments')
@@ -66,9 +68,9 @@ export class PaymentsController {
   @Roles('CREATOR')
   async requestPayout(
     @CurrentUser('id') userId: string,
-    @Body() body: { amount: number },
+    @Body() dto: RequestPayoutDto,
   ) {
-    return this.paymentsService.requestPayout(userId, body.amount);
+    return this.paymentsService.requestPayout(userId, dto.amount);
   }
 
   /**
@@ -177,21 +179,30 @@ export class PaymentsController {
   }
 
   /**
-   * Send a tip to a creator
+   * Send a tip to a creator (amount in euros). Returns a pending payment to
+   * confirm client-side; the creator is credited once Stripe confirms it.
    */
   @Post('tip/:creatorId')
   @UseGuards(JwtAuthGuard)
   async sendTip(
     @CurrentUser('id') userId: string,
     @Param('creatorId') creatorId: string,
-    @Body() body: { amount: number; message?: string },
+    @Body() dto: SendTipDto,
   ) {
-    return this.paymentsService.sendTip(
-      userId,
-      creatorId,
-      body.amount,
-      body.message,
-    );
+    return this.paymentsService.sendTip(userId, creatorId, dto);
+  }
+
+  /**
+   * Re-check a tip payment with Stripe after client-side confirmation (idempotent)
+   */
+  @Post('tip/:creatorId/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirmTip(
+    @CurrentUser('id') userId: string,
+    @Param('creatorId') creatorId: string,
+    @Body() dto: ConfirmPaymentDto,
+  ) {
+    return this.paymentsService.confirmTip(userId, creatorId, dto.paymentIntentId);
   }
 
   /**

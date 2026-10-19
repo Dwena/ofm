@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { liveApi } from '@/lib/api';
 import {
   createLiveSocket,
@@ -33,6 +33,8 @@ import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import type { Socket } from 'socket.io-client';
+import OneTimeCheckout from '@/components/checkout/one-time-checkout';
+import { formatEuros } from '@/lib/utils';
 
 interface LiveStream {
   id: string;
@@ -44,6 +46,8 @@ interface LiveStream {
   viewerCount: number;
   hasAccess?: boolean;
   accessDeniedReason?: string | null;
+  isPpv?: boolean;
+  ppvPrice?: number | null; // euros
   creator: {
     id: string;
     username: string;
@@ -70,6 +74,10 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const [reactions, setReactions] = useState<{ id: string; emoji: string; x: number; y: number }[]>([]);
   const [showTipModal, setShowTipModal] = useState(false);
   const [tipAmount, setTipAmount] = useState(5);
+  const [tipMessage, setTipMessage] = useState('');
+  // Amount chosen: show the payment step of the tip modal
+  const [tipCheckout, setTipCheckout] = useState(false);
+  const [showPurchase, setShowPurchase] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [joinError, setJoinError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -88,17 +96,12 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     refetchInterval: 10000,
   });
 
-  // Send tip mutation
-  const sendTipMutation = useMutation({
-    mutationFn: async (amount: number) => {
-      if (!stream) throw new Error('Stream not loaded');
-      await liveApi.sendTip(stream.creator.id, amount);
-    },
-    onSuccess: () => {
-      setShowTipModal(false);
-      setTipAmount(5);
-    },
-  });
+  const closeTipModal = () => {
+    setShowTipModal(false);
+    setTipCheckout(false);
+    setTipAmount(5);
+    setTipMessage('');
+  };
 
   const isLive = stream?.status === 'LIVE';
   const canWatch = isLive && stream?.hasAccess !== false;
@@ -360,6 +363,37 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     );
   }
 
+  const deniedReason = stream.hasAccess === false ? stream.accessDeniedReason || 'PRIVATE' : joinError;
+  // PPV lives (live or scheduled) can be bought from this page
+  const canPurchase = deniedReason === 'PPV_PURCHASE_REQUIRED' && Number(stream.ppvPrice) > 0;
+
+  if (canPurchase && showPurchase) {
+    return (
+      <div className="py-8 space-y-4">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold">{stream.title}</h2>
+          <p className="text-muted-foreground">
+            Live de @{stream.creator.username}
+          </p>
+        </div>
+        <OneTimeCheckout
+          kind="stream"
+          amount={Number(stream.ppvPrice)}
+          description={`${stream.title} - @${stream.creator.username}`}
+          start={async (paymentMethodId) => (await liveApi.purchase(streamId, paymentMethodId)).data}
+          confirm={async (paymentIntentId) => (await liveApi.confirmPurchase(streamId, paymentIntentId)).data}
+          successDelay={1200}
+          onSuccess={() => {
+            setShowPurchase(false);
+            setJoinError(null);
+            queryClient.invalidateQueries({ queryKey: ['live-stream', streamId] });
+          }}
+          onCancel={() => setShowPurchase(false)}
+        />
+      </div>
+    );
+  }
+
   if (stream.status === 'SCHEDULED') {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -372,16 +406,26 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 ? `Ce live est programmé pour le ${format(new Date(stream.scheduledFor), "d MMMM yyyy 'à' HH:mm", { locale: fr })}.`
                 : "Ce live n'a pas encore commencé."}
             </p>
-            <Button onClick={() => router.push(`/${stream.creator.username}`)}>
-              Voir le profil du créateur
-            </Button>
+            <div className="flex flex-col gap-2">
+              {canPurchase && (
+                <Button onClick={() => setShowPurchase(true)}>
+                  <DollarSign className="h-4 w-4 mr-2" />
+                  Réserver l&apos;accès pour {formatEuros(stream.ppvPrice)}
+                </Button>
+              )}
+              <Button
+                variant={canPurchase ? 'outline' : 'default'}
+                onClick={() => router.push(`/${stream.creator.username}`)}
+              >
+                Voir le profil du créateur
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  const deniedReason = stream.hasAccess === false ? stream.accessDeniedReason || 'PRIVATE' : joinError;
   if (deniedReason) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -392,9 +436,20 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
             <p className="text-muted-foreground mb-4">
               {ACCESS_DENIED_MESSAGES[deniedReason] || 'Impossible de rejoindre ce live.'}
             </p>
-            <Button onClick={() => router.push(`/${stream.creator.username}`)}>
-              Voir le profil du créateur
-            </Button>
+            <div className="flex flex-col gap-2">
+              {canPurchase && (
+                <Button onClick={() => setShowPurchase(true)}>
+                  <DollarSign className="h-4 w-4 mr-2" />
+                  Acheter l&apos;accès pour {formatEuros(stream.ppvPrice)}
+                </Button>
+              )}
+              <Button
+                variant={canPurchase ? 'outline' : 'default'}
+                onClick={() => router.push(`/${stream.creator.username}`)}
+              >
+                Voir le profil du créateur
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -563,7 +618,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                   {msg.type === 'TIP' && (
                     <Badge variant="secondary" className="text-xs">
                       <Gift className="h-3 w-3 mr-1" />
-                      {msg.tipAmount}€
+                      {formatEuros(msg.tipAmount)}
                     </Badge>
                   )}
                 </div>
@@ -604,42 +659,72 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         </div>
       </div>
 
-      {/* Tip Modal */}
+      {/* Tip Modal: choose the amount, then pay (saved card or Stripe Elements) */}
       {showTipModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <Card className="w-full max-w-md mx-4">
-            <CardContent className="pt-6">
-              <h3 className="text-xl font-bold mb-4">Envoyer un pourboire</h3>
-              <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-2">
-                  {[5, 10, 20, 50, 100, 200].map((amount) => (
-                    <Button
-                      key={amount}
-                      variant={tipAmount === amount ? 'default' : 'outline'}
-                      onClick={() => setTipAmount(amount)}
-                    >
-                      {amount}€
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 overflow-y-auto py-8">
+          {tipCheckout ? (
+            <div className="w-full max-w-md mx-4">
+              <OneTimeCheckout
+                kind="tip"
+                compact
+                amount={tipAmount}
+                description={`Pourboire pour @${stream.creator.username}`}
+                start={async (paymentMethodId) =>
+                  (
+                    await liveApi.sendTip(stream.creator.id, tipAmount, {
+                      streamId,
+                      message: tipMessage.trim() || undefined,
+                      paymentMethodId,
+                    })
+                  ).data
+                }
+                confirm={async (paymentIntentId) =>
+                  (await liveApi.confirmTip(stream.creator.id, paymentIntentId)).data
+                }
+                successDelay={1500}
+                onSuccess={closeTipModal}
+                onCancel={() => setTipCheckout(false)}
+              />
+            </div>
+          ) : (
+            <Card className="w-full max-w-md mx-4">
+              <CardContent className="pt-6">
+                <h3 className="text-xl font-bold mb-4">Envoyer un pourboire</h3>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-2">
+                    {[5, 10, 20, 50, 100, 200].map((amount) => (
+                      <Button
+                        key={amount}
+                        variant={tipAmount === amount ? 'default' : 'outline'}
+                        onClick={() => setTipAmount(amount)}
+                      >
+                        {formatEuros(amount)}
+                      </Button>
+                    ))}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Message (optionnel)"
+                    value={tipMessage}
+                    maxLength={200}
+                    onChange={(e) => setTipMessage(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:ring-2 focus:ring-ring bg-background"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Votre pourboire sera annoncé dans le chat une fois le paiement validé.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button className="flex-1" onClick={() => setTipCheckout(true)}>
+                      Envoyer {formatEuros(tipAmount)}
                     </Button>
-                  ))}
+                    <Button variant="outline" onClick={closeTipModal}>
+                      Annuler
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Button
-                    className="flex-1"
-                    onClick={() => sendTipMutation.mutate(tipAmount)}
-                    disabled={sendTipMutation.isPending}
-                  >
-                    {sendTipMutation.isPending ? 'Envoi...' : `Envoyer ${tipAmount}€`}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowTipModal(false)}
-                  >
-                    Annuler
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </div>

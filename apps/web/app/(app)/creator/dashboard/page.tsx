@@ -10,6 +10,7 @@ import { fr } from 'date-fns/locale'
 import { LIVE_REFETCH_INTERVAL, useLiveAnalytics } from '@/hooks/use-live-analytics'
 import { LiveIndicator } from '@/components/live-indicator'
 import { ProcessingJobsCard } from '@/components/media/media-job-progress'
+import { formatEuros } from '@/lib/utils'
 
 // Metrics refreshed live (socket events + polling)
 const LIVE_QUERY_KEYS = [['creator-earnings'], ['creator-profile'], ['creator-content']]
@@ -69,21 +70,21 @@ export default function CreatorDashboard() {
   const stats = [
     {
       title: 'Revenus Totaux',
-      value: `${((earnings?.totalEarnings || 0) / 100).toFixed(2)} €`,
+      value: formatEuros(earnings?.totalEarnings),
       icon: DollarSign,
       description: 'Depuis le début',
       color: 'text-green-600',
     },
     {
       title: 'Solde Disponible',
-      value: `${((earnings?.availableBalance || 0) / 100).toFixed(2)} €`,
+      value: formatEuros(earnings?.availableBalance),
       icon: TrendingUp,
       description: 'Prêt pour retrait',
       color: 'text-blue-600',
     },
     {
       title: 'En attente',
-      value: `${((earnings?.pendingBalance || 0) / 100).toFixed(2)} €`,
+      value: formatEuros(earnings?.pendingBalance),
       icon: Clock,
       description: 'En cours de traitement',
       color: 'text-orange-600',
@@ -214,7 +215,7 @@ export default function CreatorDashboard() {
                     <p className="font-medium">
                       {transaction.type === 'SUBSCRIPTION' && 'Abonnement'}
                       {transaction.type === 'TIP' && 'Pourboire'}
-                      {transaction.type === 'PPV' && 'Contenu PPV'}
+                      {transaction.type === 'PPV_UNLOCK' && 'Contenu PPV'}
                     </p>
                     <p className="text-sm text-muted-foreground">
                       {formatDistanceToNow(new Date(transaction.createdAt), {
@@ -225,7 +226,7 @@ export default function CreatorDashboard() {
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-green-600">
-                      +{(transaction.amount / 100).toFixed(2)} €
+                      +{formatEuros(transaction.netAmount ?? transaction.amount)}
                     </p>
                     <Badge variant={transaction.status === 'COMPLETED' ? 'success' : 'secondary'}>
                       {transaction.status}

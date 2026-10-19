@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { paymentsApi, subscriptionsApi } from '@/lib/api'
+import { formatEuros } from '@/lib/utils'
 import StripePaymentElement, { getStripe } from '@/components/checkout/stripe-payment-element'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -18,7 +19,7 @@ interface SubscribeResult {
 
 interface SubscriptionCheckoutProps {
   tierId: string
-  // Amount in cents, for display
+  // Amount in euros, for display
   amount: number
   description: string
   // Free subscription being upgraded to this paid tier: it ends once the paid one is active
@@ -138,7 +139,7 @@ export default function SubscriptionCheckout({
     }
   }
 
-  const formattedAmount = (amount / 100).toFixed(2)
+  const formattedAmount = formatEuros(amount)
 
   if (step === 'success') {
     return (
@@ -149,7 +150,7 @@ export default function SubscriptionCheckout({
           </div>
           <h3 className="text-xl font-bold mb-2">Abonnement activé !</h3>
           <p className="text-muted-foreground">
-            Votre paiement de {formattedAmount}€ a été effectué avec succès.
+            Votre paiement de {formattedAmount} a été effectué avec succès.
           </p>
           <p className="text-sm text-muted-foreground mt-2">Vous allez être redirigé...</p>
         </CardContent>
@@ -207,7 +208,7 @@ export default function SubscriptionCheckout({
               <p className="font-medium">Abonnement</p>
               <p className="text-sm text-muted-foreground">{description}</p>
             </div>
-            <p className="text-2xl font-bold">{formattedAmount}€</p>
+            <p className="text-2xl font-bold">{formattedAmount}</p>
           </div>
         </CardContent>
       </Card>
@@ -222,7 +223,7 @@ export default function SubscriptionCheckout({
             <StripePaymentElement
               clientSecret={pending.clientSecret}
               mode="payment"
-              submitLabel={`Payer ${formattedAmount}€`}
+              submitLabel={`Payer ${formattedAmount}`}
               onSuccess={handleCardConfirmed}
               onCancel={() => setStep('review')}
             />
@@ -289,7 +290,7 @@ export default function SubscriptionCheckout({
           </Button>
           <Button onClick={handlePay} className="flex-1" disabled={loadingMethods}>
             <Lock className="h-4 w-4 mr-2" />
-            {method === NEW_CARD ? 'Continuer' : `Payer ${formattedAmount}€`}
+            {method === NEW_CARD ? 'Continuer' : `Payer ${formattedAmount}`}
           </Button>
         </div>
       )}

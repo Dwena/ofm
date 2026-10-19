@@ -10,12 +10,13 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Plus, Edit, Trash2, Users, DollarSign, X, Save, CheckCircle, AlertCircle } from 'lucide-react'
+import { formatEuros } from '@/lib/utils'
 
 interface SubscriptionTier {
   id: string
   name: string
   description: string
-  price: number
+  price: number // euros
   currency: string
   interval: string
   benefits: string[]
@@ -61,7 +62,7 @@ export default function CreatorSubscriptionsPage() {
       const response = await subscriptionsApi.createTier({
         name: data.name,
         description: data.description,
-        price: Math.round(parseFloat(data.price) * 100), // Convert to cents
+        price: Math.round(parseFloat(data.price) * 100) / 100, // euros, 2 decimals
         currency: 'EUR',
         interval: data.interval,
         benefits: data.benefits.filter((b: string) => b.trim()),
@@ -81,7 +82,7 @@ export default function CreatorSubscriptionsPage() {
       const response = await subscriptionsApi.updateTier(tierId, {
         name: data.name,
         description: data.description,
-        price: data.price ? Math.round(parseFloat(data.price) * 100) : undefined,
+        price: data.price ? Math.round(parseFloat(data.price) * 100) / 100 : undefined,
         interval: data.interval,
         benefits: data.benefits?.filter((b: string) => b.trim()),
         isActive: data.isActive,
@@ -122,7 +123,7 @@ export default function CreatorSubscriptionsPage() {
     setFormData({
       name: tier.name,
       description: tier.description || '',
-      price: (tier.price / 100).toFixed(2),
+      price: Number(tier.price).toFixed(2),
       interval: tier.interval,
       benefits: tier.benefits.length > 0 ? tier.benefits : [''],
       isActive: tier.isActive,
@@ -188,7 +189,7 @@ export default function CreatorSubscriptionsPage() {
     )
   }
 
-  const totalRevenue = tiers?.reduce((sum, tier) => sum + (tier.price * (tier.subscribersCount || 0)), 0) || 0
+  const totalRevenue = tiers?.reduce((sum, tier) => sum + (Number(tier.price) * (tier.subscribersCount || 0)), 0) || 0
 
   return (
     <div className="space-y-6">
@@ -236,7 +237,7 @@ export default function CreatorSubscriptionsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {(totalRevenue / 100).toFixed(2)}€
+              {formatEuros(totalRevenue)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               Revenus récurrents estimés
@@ -449,7 +450,7 @@ export default function CreatorSubscriptionsPage() {
                   <CardContent className="space-y-4">
                     <div>
                       <p className="text-3xl font-bold">
-                        {tier.price === 0 ? 'Gratuit' : `${(tier.price / 100).toFixed(2)}€`}
+                        {Number(tier.price) === 0 ? 'Gratuit' : formatEuros(tier.price)}
                       </p>
                       {tier.price > 0 && (
                         <p className="text-sm text-muted-foreground">
@@ -481,7 +482,7 @@ export default function CreatorSubscriptionsPage() {
                         <div className="flex items-center justify-between text-sm mt-1">
                           <span className="text-muted-foreground">Revenus/mois</span>
                           <span className="font-semibold">
-                            {((tier.price * (tier.subscribersCount || 0)) / 100).toFixed(2)}€
+                            {formatEuros(Number(tier.price) * (tier.subscribersCount || 0))}
                           </span>
                         </div>
                       )}

@@ -15,7 +15,7 @@ export class CreateTierDto {
 
   @IsNumber()
   @Min(0)
-  price: number; // in cents
+  price: number; // in euros (e.g. 9.99)
 
   @IsString()
   @IsOptional()
@@ -47,7 +47,7 @@ export class UpdateTierDto {
   @IsNumber()
   @Min(0)
   @IsOptional()
-  price?: number; // in cents
+  price?: number; // in euros (e.g. 9.99)
 
   @IsString()
   @IsOptional()
