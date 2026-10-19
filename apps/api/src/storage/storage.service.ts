@@ -78,6 +78,11 @@ export class StorageService {
    * Get a signed URL for private file access
    */
   async getSignedUrl(key: string, expiresIn: number = 3600): Promise<string> {
+    // Already a public URL (e.g. demo media from the seed): nothing to sign
+    if (/^https?:\/\//i.test(key)) {
+      return key;
+    }
+
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucket,

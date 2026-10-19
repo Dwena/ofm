@@ -15,9 +15,10 @@ async function fillStripeCard(page: Page, cardNumber: string) {
   await frame.getByPlaceholder(/CVC/).fill('123');
 }
 
+/** Claire (creator3): the seeded subscriber is not subscribed to her paid tier */
 async function openCreatorTiers(page: Page) {
-  await page.goto(`/${testUser('creator').username}`);
-  await expect(page.getByRole('heading', { level: 1, name: testUser('creator').displayName })).toBeVisible();
+  await page.goto(`/${testUser('creator3').username}`);
+  await expect(page.getByRole('heading', { level: 1, name: testUser('creator3').displayName })).toBeVisible();
   await expect(page.getByRole('heading', { name: "Plans d'Abonnement" })).toBeVisible();
 }
 
@@ -37,7 +38,7 @@ test.describe('Paiements', () => {
   test("ouvre le paiement sécurisé d'un abonnement payant", async ({ page }) => {
     await openCreatorTiers(page);
 
-    const subscribe = tierButton(page, 'Bronze');
+    const subscribe = tierButton(page, 'Gourmand');
     test.skip(!(await subscribe.isEnabled()), "L'abonné de test est déjà abonné à ce créateur");
     await subscribe.click();
 
@@ -51,7 +52,7 @@ test.describe('Paiements', () => {
     test.skip(!stripeEnabled, 'E2E_STRIPE non défini : paiement Stripe non testé');
     await openCreatorTiers(page);
 
-    const subscribe = tierButton(page, 'Bronze');
+    const subscribe = tierButton(page, 'Gourmand');
     test.skip(!(await subscribe.isEnabled()), "L'abonné de test est déjà abonné à ce créateur");
     await subscribe.click();
 
@@ -66,7 +67,7 @@ test.describe('Paiements', () => {
     test.skip(!stripeEnabled, 'E2E_STRIPE non défini : paiement Stripe non testé');
     await openCreatorTiers(page);
 
-    const subscribe = tierButton(page, 'Silver');
+    const subscribe = tierButton(page, 'Gourmand');
     test.skip(!(await subscribe.isEnabled()), "L'abonné de test est déjà abonné à ce créateur");
     await subscribe.click();
 

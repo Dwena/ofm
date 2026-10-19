@@ -115,9 +115,9 @@ test.describe('Abonnements créateur', () => {
     }
   });
 
-  test('affiche les tiers du créateur (seed : Bronze, Silver)', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Bronze', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Silver', exact: true })).toBeVisible();
+  test('affiche les tiers du créateur (seed : Essentiel, Premium)', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'Essentiel', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Premium', exact: true })).toBeVisible();
   });
 
   test('bascule sur la liste des abonnés', async ({ page }) => {

@@ -8,7 +8,7 @@ import users from './test-users.json';
  * Accounts created by `npm run seed` in apps/api (password: SecurePass123!).
  * Override with TEST_<ROLE>_EMAIL / TEST_<ROLE>_PASSWORD.
  */
-export type TestRole = 'creator' | 'creator2' | 'subscriber' | 'admin';
+export type TestRole = 'creator' | 'creator2' | 'creator3' | 'subscriber' | 'admin';
 
 export function testUser(role: TestRole) {
   const prefix = `TEST_${role.toUpperCase()}`;
@@ -24,6 +24,7 @@ export function testUser(role: TestRole) {
 const HOME_BY_ROLE: Record<TestRole, RegExp> = {
   creator: /\/creator\/dashboard/,
   creator2: /\/creator\/dashboard/,
+  creator3: /\/creator\/dashboard/,
   subscriber: /\/feed/,
   admin: /\/(feed|admin)/,
 };

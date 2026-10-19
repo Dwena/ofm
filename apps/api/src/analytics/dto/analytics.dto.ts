@@ -1,5 +1,5 @@
 import { IsString, IsEnum, IsOptional, IsNumber, IsDateString } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export enum AnalyticsInterval {
   DAY = 'DAY',
@@ -17,6 +17,8 @@ export enum MetricType {
 }
 
 export class GetAnalyticsDto {
+  // The web app sends lowercase intervals (day, week...)
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   @IsEnum(AnalyticsInterval)
   @IsOptional()
   interval?: AnalyticsInterval = AnalyticsInterval.DAY;
@@ -63,6 +65,8 @@ export class GetContentAnalyticsDto extends GetAnalyticsDto {
 }
 
 export class GetEngagementDto {
+  // The web app sends lowercase intervals (day, week...)
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   @IsEnum(AnalyticsInterval)
   @IsOptional()
   interval?: AnalyticsInterval = AnalyticsInterval.DAY;

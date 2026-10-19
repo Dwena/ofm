@@ -22,5 +22,11 @@
     "password": "SecurePass123!",
     "username": "admin",
     "displayName": "Administrateur"
+  },
+  "creator3": {
+    "email": "creator3@demo.com",
+    "password": "SecurePass123!",
+    "username": "chef_claire",
+    "displayName": "Claire Rousseau"
   }
 }
