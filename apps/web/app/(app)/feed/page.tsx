@@ -24,6 +24,7 @@ import { fr } from 'date-fns/locale'
 import CommentsSection from '@/components/social/comments-section'
 import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 import { formatEuros } from '@/lib/utils'
+import { StoriesBar } from '@/components/stories/stories-bar'
 
 // Shape returned by /content/feed and /content/feed/subscriptions
 interface ContentItem {
@@ -124,6 +125,8 @@ export default function FeedPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Feed</h1>
       </div>
+
+      <StoriesBar />
 
       <PpvUnlockDialog
         content={unlocking}

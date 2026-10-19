@@ -776,6 +776,7 @@ model Story {
   thumbnailUrl String? // Thumbnail for videos
   text        String?  // For text stories or captions
   caption     String?
+  backgroundColor String? // Background color (hex) of text stories
   duration    Int?     // Video duration in seconds
 
   // Media metadata
