@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PaymentsService } from './payments.service';
 import { StripeService } from './stripe.service';
@@ -9,6 +9,7 @@ import { SettingsService } from '../settings/settings.service';
 import { OneTimePaymentService } from './one-time-payment.service';
 import { SubscriptionSyncService } from './subscription-sync.service';
 import { PrismaService } from '../common/database/prisma.service';
+import { StatsInterval } from './dto/payments.dto';
 
 const config = (values: Record<string, string> = {}) => ({
   get: jest.fn((key: string, fallback?: string) => values[key] ?? fallback),
@@ -18,15 +19,21 @@ describe('PaymentsService (money units)', () => {
   let service: PaymentsService;
 
   const mockPrismaService = {
-    user: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn(), update: jest.fn() },
     transaction: { aggregate: jest.fn(), findMany: jest.fn(), count: jest.fn() },
-    payout: { aggregate: jest.fn(), create: jest.fn() },
+    payout: { aggregate: jest.fn(), create: jest.fn(), findMany: jest.fn() },
     liveStream: { findUnique: jest.fn() },
   };
 
   const mockStripeService = {
+    isConfigured: jest.fn(() => true),
     getAccountBalance: jest.fn(),
     createPayout: jest.fn(),
+    getAccount: jest.fn(),
+    createConnectAccount: jest.fn(),
+    createSetupIntent: jest.fn(),
+    listPaymentMethods: jest.fn(),
+    getCustomer: jest.fn(),
   };
 
   const mockOneTimePayments = {
@@ -82,6 +89,84 @@ describe('PaymentsService (money units)', () => {
       await expect(service.requestPayout('creator-1', 120.51)).rejects.toThrow(BadRequestException);
       expect(mockStripeService.createPayout).not.toHaveBeenCalled();
     });
+
+    it('enforces the minimum payout platform setting', async () => {
+      await expect(service.requestPayout('creator-1', 49.99)).rejects.toThrow('Minimum payout amount is 50.00€');
+      expect(mockStripeService.createPayout).not.toHaveBeenCalled();
+    });
+
+    it('refuses when Stripe is not configured', async () => {
+      mockStripeService.isConfigured.mockReturnValueOnce(false);
+      await expect(service.requestPayout('creator-1', 100)).rejects.toThrow(ServiceUnavailableException);
+    });
+  });
+
+  describe('Stripe Connect onboarding', () => {
+    it('reports the last known status without calling Stripe when it is not configured', async () => {
+      mockStripeService.isConfigured.mockReturnValue(false);
+      mockPrismaService.user.findUnique.mockResolvedValue({ ...creatorUser, stripeOnboarded: false });
+
+      const status = await service.getOnboardingStatus('creator-1');
+
+      expect(status).toEqual(
+        expect.objectContaining({ stripeConfigured: false, hasAccount: true, isOnboarded: false }),
+      );
+      expect(mockStripeService.getAccount).not.toHaveBeenCalled();
+      mockStripeService.isConfigured.mockReturnValue(true);
+    });
+
+    it('reads the account once and syncs the onboarding flag', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ ...creatorUser, stripeOnboarded: false });
+      mockStripeService.getAccount.mockResolvedValue({
+        charges_enabled: true,
+        payouts_enabled: true,
+        details_submitted: true,
+      });
+
+      const status = await service.getOnboardingStatus('creator-1');
+
+      expect(status).toEqual(expect.objectContaining({ stripeConfigured: true, isOnboarded: true, payoutsEnabled: true }));
+      expect(mockStripeService.getAccount).toHaveBeenCalledTimes(1);
+      expect(mockPrismaService.user.update).toHaveBeenCalledWith({
+        where: { id: 'creator-1' },
+        data: { stripeOnboarded: true },
+      });
+    });
+
+    it('does not reach Stripe to create an account when it is not configured', async () => {
+      mockStripeService.isConfigured.mockReturnValueOnce(false);
+      mockPrismaService.user.findUnique.mockResolvedValue({ ...creatorUser, stripeAccountId: null });
+
+      await expect(service.createConnectAccount('creator-1')).rejects.toThrow(ServiceUnavailableException);
+      expect(mockStripeService.createConnectAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getRevenueStats', () => {
+    it('returns one rounded bucket per period, empty ones included', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue(creatorUser);
+      mockPrismaService.transaction.findMany.mockResolvedValue([
+        { type: 'SUBSCRIPTION', netAmount: new Prisma.Decimal('8.49'), createdAt: new Date() },
+        { type: 'SUBSCRIPTION', netAmount: new Prisma.Decimal('0.1'), createdAt: new Date() },
+        { type: 'TIP', netAmount: new Prisma.Decimal('0.2'), createdAt: new Date() },
+      ]);
+
+      const stats = await service.getRevenueStats('creator-1', { interval: StatsInterval.DAY, periods: 7 });
+
+      expect(stats.periods).toHaveLength(7);
+      expect(stats.periods[6]).toEqual(
+        expect.objectContaining({ totalRevenue: 8.79, subscriptionRevenue: 8.59, tipRevenue: 0.2, transactionCount: 3 }),
+      );
+      expect(stats.periods[0].totalRevenue).toBe(0);
+      expect(stats.totals.totalRevenue).toBe(8.79);
+    });
+  });
+
+  describe('getPayouts', () => {
+    it('returns amounts as numbers', async () => {
+      mockPrismaService.payout.findMany.mockResolvedValue([{ id: 'p1', amount: new Prisma.Decimal('249'), status: 'COMPLETED' }]);
+      expect(await service.getPayouts('creator-1')).toEqual([{ id: 'p1', amount: 249, status: 'COMPLETED' }]);
+    });
   });
 
   describe('getEarnings', () => {
@@ -110,6 +195,7 @@ describe('PaymentsService (money units)', () => {
           pendingBalance: 9.99,
           availableForPayout: 123.45,
           totalPayouts: 300,
+          minimumPayoutAmount: 50,
         }),
       );
       expect(earnings.recentTransactions[0]).toEqual(expect.objectContaining({ amount: 10, netAmount: 8.5 }));
@@ -172,6 +258,80 @@ describe('PaymentsService (money units)', () => {
         kind: 'tip',
         creatorId: 'creator-1',
       });
+    });
+  });
+
+  describe('getFilteredTransactions', () => {
+    beforeEach(() => {
+      mockPrismaService.transaction.findMany.mockResolvedValue([
+        { id: 'tx-1', amount: new Prisma.Decimal('9.99'), platformFee: new Prisma.Decimal('1.5'), netAmount: new Prisma.Decimal('8.49') },
+      ]);
+      mockPrismaService.transaction.count.mockResolvedValue(21);
+      mockPrismaService.transaction.aggregate
+        .mockResolvedValueOnce({ _sum: { amount: new Prisma.Decimal('59.97') } })
+        .mockResolvedValueOnce({ _sum: { amount: new Prisma.Decimal('9.99') } })
+        .mockResolvedValueOnce({ _sum: { netAmount: null } });
+    });
+
+    it('filters sent transactions by type, status, other party and whole end day', async () => {
+      const result = await service.getFilteredTransactions('fan-1', {
+        type: 'TIP' as any,
+        status: 'COMPLETED' as any,
+        direction: 'sent' as any,
+        search: ' alice ',
+        endDate: '2026-10-19',
+        page: 2,
+        limit: 20,
+      });
+
+      const { where, skip, take } = mockPrismaService.transaction.findMany.mock.calls[0][0];
+      expect(skip).toBe(20);
+      expect(take).toBe(20);
+      expect(where.AND).toEqual(
+        expect.arrayContaining([
+          { fromUserId: 'fan-1' },
+          { type: 'TIP' },
+          { status: 'COMPLETED' },
+          { createdAt: { lte: new Date('2026-10-19T23:59:59.999Z') } },
+          expect.objectContaining({
+            OR: [
+              expect.objectContaining({ fromUserId: 'fan-1', toUser: expect.anything() }),
+              expect.objectContaining({ toUserId: 'fan-1', fromUser: expect.anything() }),
+            ],
+          }),
+        ]),
+      );
+      expect(JSON.stringify(where)).toContain('"contains":"alice"');
+      expect(result.items[0]).toEqual(expect.objectContaining({ amount: 9.99, platformFee: 1.5, netAmount: 8.49 }));
+      expect(result.pagination).toEqual({ page: 2, limit: 20, total: 21, totalPages: 2 });
+      expect(result.summary).toEqual({ totalSpent: 59.97, totalRefunded: 9.99, totalReceived: 0 });
+    });
+
+    it('includes both directions by default', async () => {
+      await service.getFilteredTransactions('fan-1', {});
+
+      const { where } = mockPrismaService.transaction.findMany.mock.calls[0][0];
+      expect(where.AND).toEqual([{ OR: [{ fromUserId: 'fan-1' }, { toUserId: 'fan-1' }] }]);
+    });
+  });
+
+  describe('payment methods without Stripe keys', () => {
+    beforeEach(() => {
+      mockStripeService.isConfigured.mockReturnValue(false);
+    });
+
+    it('lists no saved card', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ stripeCustomerId: 'cus_1' });
+
+      await expect(service.listPaymentMethods('fan-1')).resolves.toEqual([]);
+      expect(mockStripeService.listPaymentMethods).not.toHaveBeenCalled();
+    });
+
+    it('refuses to create a setup intent with a clear error', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'fan-1', stripeCustomerId: 'cus_1' });
+
+      await expect(service.createSetupIntent('fan-1')).rejects.toThrow(ServiceUnavailableException);
+      expect(mockStripeService.createSetupIntent).not.toHaveBeenCalled();
     });
   });
 });

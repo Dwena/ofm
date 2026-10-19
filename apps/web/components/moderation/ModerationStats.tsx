@@ -18,7 +18,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { adminApi } from '@/lib/api';
-import { ACTION_LABELS, EmptyState, LoadingState, timeAgo } from '@/components/admin/admin-shared';
+import { ACTION_LABELS, EmptyState, ErrorState, LoadingState, timeAgo } from '@/components/admin/admin-shared';
 import {
   ChartLegend,
   ChartTooltip,
@@ -84,6 +84,13 @@ const TYPE_LABELS: Record<string, string> = {
   MESSAGE: 'Messages',
 };
 
+const RESOURCE_LABELS: Record<string, string> = {
+  USER: 'Utilisateur',
+  CONTENT: 'Contenu',
+  REPORT: 'Signalement',
+  SETTINGS: 'Paramètres',
+};
+
 const STATUS_LABELS: Record<string, string> = {
   PENDING: 'En attente',
   REVIEWING: 'En examen',
@@ -134,7 +141,7 @@ function BreakdownList({ rows, total }: { rows: { label: string; count: number }
 export function ModerationStats() {
   const [days, setDays] = useState('30');
 
-  const { data: stats, isLoading, isError } = useQuery({
+  const { data: stats, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['moderation-statistics', days],
     queryFn: async () => {
       const response = await adminApi.getModerationStats(Number(days));
@@ -148,7 +155,13 @@ export function ModerationStats() {
   }
 
   if (isError || !stats) {
-    return <EmptyState>Impossible de charger les statistiques de modération</EmptyState>;
+    return (
+      <ErrorState
+        error={error}
+        onRetry={() => refetch()}
+        label="Impossible de charger les statistiques de modération"
+      />
+    );
   }
 
   return (
@@ -309,7 +322,7 @@ export function ModerationStats() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium">{ACTION_LABELS[log.action] || log.action}</p>
                     <p className="text-xs text-muted-foreground truncate">
-                      {log.resource}
+                      {RESOURCE_LABELS[log.resource] || log.resource}
                       {log.resourceId ? ` • ${log.resourceId.slice(0, 8)}` : ''} • {timeAgo(log.createdAt)}
                     </p>
                   </div>

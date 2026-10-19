@@ -31,40 +31,58 @@ function unwrapEnvelope(response: AxiosResponse) {
   return response
 }
 
+/** Fired on `window` when the session can no longer be refreshed (AuthProvider clears it). */
+export const SESSION_EXPIRED_EVENT = 'auth:session-expired'
+
+// One refresh at a time: refresh tokens are single-use (rotated on every refresh), so
+// parallel 401s must share the same refresh call instead of revoking each other.
+let refreshPromise: Promise<string> | null = null
+
+function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const refreshToken = localStorage.getItem('refreshToken')
+      if (!refreshToken) {
+        throw new Error('No refresh token')
+      }
+      const response = await axios.post(`${API_URL}/api/v1/auth/refresh`, { refreshToken })
+      const { accessToken, refreshToken: newRefreshToken } = response.data.data
+      localStorage.setItem('accessToken', accessToken)
+      localStorage.setItem('refreshToken', newRefreshToken)
+      return accessToken as string
+    })().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
 // Response interceptor - Unwrap envelope, handle errors and token refresh
 api.interceptors.response.use(
   unwrapEnvelope,
   async (error: AxiosError) => {
     const originalRequest = error.config as any
 
-    // If 401 and not already retried
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // If 401 and not already retried (and there is a session to refresh)
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !originalRequest._retry &&
+      localStorage.getItem('refreshToken')
+    ) {
       originalRequest._retry = true
 
       try {
-        const refreshToken = localStorage.getItem('refreshToken')
-        if (!refreshToken) {
-          throw new Error('No refresh token')
-        }
-
-        const response = await axios.post(`${API_URL}/api/v1/auth/refresh`, {
-          refreshToken,
-        })
-
-        const { accessToken, refreshToken: newRefreshToken } = response.data.data
-
-        localStorage.setItem('accessToken', accessToken)
-        localStorage.setItem('refreshToken', newRefreshToken)
-
+        const accessToken = await refreshAccessToken()
         originalRequest.headers.Authorization = `Bearer ${accessToken}`
         return api(originalRequest)
       } catch (refreshError) {
-        // Refresh failed - logout user
+        // Refresh failed: the AuthProvider clears the session (protected layouts then go to /login)
         localStorage.removeItem('accessToken')
         localStorage.removeItem('refreshToken')
         localStorage.removeItem('user')
-        window.location.href = '/login'
-        return Promise.reject(refreshError)
+        window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+        return Promise.reject(error)
       }
     }
 
@@ -80,7 +98,8 @@ export const authApi = {
   // redirecting to /login) when the credentials or the 2FA code are wrong.
   login: (data: { email: string; password: string; totpCode?: string }) =>
     api.post('/auth/login', data, { _retry: true } as any),
-  logout: () => api.post('/auth/logout'),
+  // No refresh attempt: the local session is cleared whatever the answer
+  logout: () => api.post('/auth/logout', undefined, { _retry: true } as any),
   getMe: () => api.get('/auth/me'),
   enable2FA: () => api.post('/auth/2fa/enable'),
   verify2FA: (code: string) => api.post('/auth/2fa/verify', { code }),
@@ -90,6 +109,16 @@ export const authApi = {
   forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
   resetPassword: (token: string, password: string) =>
     api.post('/auth/reset-password', { token, password }),
+  getPublicSettings: () =>
+    api.get<{ registrationOpen: boolean; maintenanceMode: boolean; maintenanceMessage: string | null }>(
+      '/settings/public'
+    ),
+  // Returns fresh { accessToken, refreshToken } (other sessions are revoked)
+  changePassword: (currentPassword: string, newPassword: string) =>
+    api.put('/auth/password', { currentPassword, newPassword }),
+  logoutAll: () => api.post('/auth/logout-all'),
+  deleteAccount: (data: { password: string; totpCode?: string }) =>
+    api.delete('/auth/account', { data }),
 }
 
 export const pushApi = {
@@ -110,18 +139,47 @@ export const usersApi = {
   getProfile: () => api.get('/users/me'),
   getByUsername: (username: string) => api.get(`/users/${username}`),
   updateProfile: (data: any) => api.put('/users/profile', data),
+  // Profile images, stored and served by the API (returns the same shape as getMe)
+  uploadAvatar: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/users/profile/avatar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  uploadCover: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/users/profile/cover', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
   getStats: () => api.get('/users/stats'),
   // Maps the /social/discover/creators response to the discover page's creator shape
-  discover: async (params: { search?: string; category?: string; sortBy?: string; page?: number; limit?: number } = {}) => {
-    const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED'> = {
+  // `pagination` is { page, limit, total, totalPages }; prices filter/sort on the cheapest active tier
+  discover: async (params: {
+    search?: string
+    category?: string
+    sortBy?: string
+    minPrice?: number
+    maxPrice?: number
+    page?: number
+    limit?: number
+  } = {}) => {
+    const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED' | 'PRICE_ASC' | 'PRICE_DESC'> = {
       popular: 'POPULAR',
       subscribers: 'POPULAR',
       recent: 'NEW',
+      new: 'NEW',
+      'price-low': 'PRICE_ASC',
+      'price-high': 'PRICE_DESC',
     }
     const response = await api.get('/social/discover/creators', {
       params: {
         query: params.search || undefined,
         sortBy: params.sortBy ? sortMap[params.sortBy] ?? 'RECOMMENDED' : undefined,
+        minPrice: params.minPrice,
+        maxPrice: params.maxPrice,
         page: params.page,
         limit: params.limit,
       },
@@ -129,6 +187,9 @@ export const usersApi = {
     const items: any[] = Array.isArray(response.data?.items) ? response.data.items : []
     return {
       ...response,
+      pagination: response.data?.pagination as
+        | { page: number; limit: number; total: number; totalPages: number }
+        | undefined,
       data: items.map((creator) => ({
         ...creator,
         subscriberCount: creator.creatorProfile?.totalSubscribers ?? 0,
@@ -202,11 +263,16 @@ export const paymentsApi = {
     api.post(`/payments/methods/${paymentMethodId}/default`),
   deletePaymentMethod: (paymentMethodId: string) =>
     api.delete(`/payments/methods/${paymentMethodId}`),
+  // Server price, tip limits and whether the payment can go through
+  getCheckoutInfo: (type: 'subscription' | 'ppv' | 'stream' | 'tip', itemId: string) =>
+    api.get('/payments/checkout-info', { params: { type, itemId } }),
 }
 
 export const subscriptionsApi = {
   getMySubscriptions: () => api.get('/subscriptions/my-subscriptions'),
-  getMySubscribers: () => api.get('/subscriptions/my-subscribers'),
+  // Every status unless filtered; each row has totalSpent (euros)
+  getMySubscribers: (params?: { status?: string }) =>
+    api.get('/subscriptions/my-subscribers', { params }),
   getCreatorTiers: (creatorId: string) =>
     api.get(`/subscriptions/creator/${creatorId}/tiers`),
   // Tier management
@@ -244,6 +310,9 @@ export const subscriptionsApi = {
   // paymentMethodId only applies to free → paid (new Stripe subscription).
   changeTier: (subscriptionId: string, data: { tierId: string; paymentMethodId?: string }) =>
     api.post(`/subscriptions/${subscriptionId}/change-tier`, data),
+  // Past-due subscription: pay the overdue invoice again; same result shape as subscribe
+  retryPayment: (subscriptionId: string, data: { paymentMethodId?: string } = {}) =>
+    api.post(`/subscriptions/${subscriptionId}/retry-payment`, data),
 }
 
 export const contentApi = {
@@ -253,10 +322,17 @@ export const contentApi = {
     api.get('/content/feed/subscriptions', { params }),
   getCreatorContent: (creatorId: string) =>
     api.get(`/content/creator/${creatorId}`),
-  getMyContent: (params: { page?: number; limit?: number } = {}) =>
-    api.get('/content/my-content', { params }),
+  // Creator's own content, every status, with stats: { items, total, page, limit, totalPages, counts }
+  getMyContent: (
+    params: {
+      status?: 'ALL' | 'PUBLISHED' | 'DRAFT' | 'SCHEDULED' | 'ARCHIVED' | 'REVIEW'
+      search?: string
+      page?: number
+      limit?: number
+    } = {},
+  ) => api.get('/content/my-content', { params }),
   getById: (id: string) => api.get(`/content/${id}`),
-  // Created as a draft; call publish() to make it visible
+  // Created as a draft unless `publish: true`; publish() makes a draft visible
   create: (data: {
     type: 'PHOTO' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'ALBUM'
     visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
@@ -266,9 +342,23 @@ export const contentApi = {
     fileIds?: string[]
     isPpv?: boolean
     ppvPrice?: number // euros
+    scheduledFor?: string // ISO date in the future: stays a draft until then
+    publish?: boolean // publish right away (ignored when scheduledFor is set)
   }) => api.post('/content', data),
   publish: (id: string) => api.post(`/content/${id}/publish`),
-  update: (id: string, data: any) => api.put(`/content/${id}`, data),
+  update: (
+    id: string,
+    data: {
+      title?: string
+      description?: string
+      visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
+      isPpv?: boolean
+      ppvPrice?: number | null // euros
+      scheduledFor?: string | null // drafts only; null removes the schedule
+    },
+  ) => api.put(`/content/${id}`, data),
+  archive: (id: string) => api.post(`/content/${id}/archive`),
+  unarchive: (id: string) => api.post(`/content/${id}/unarchive`),
   delete: (id: string) => api.delete(`/content/${id}`),
   likeContent: (id: string) => api.post(`/content/${id}/like`),
   // PPV access is granted once the payment is confirmed (saved card or Stripe Elements)
@@ -282,14 +372,36 @@ export const messagesApi = {
   getConversations: () => api.get('/messages/conversations'),
   // Open (or create) the conversation with a user, by id or username
   startConversation: (user: string) => api.post('/messages/conversations', { user }),
-  getMessages: (partnerId: string, params: { page?: number; limit?: number } = {}) =>
+  // `before` (ISO date): load the messages older than the oldest one displayed
+  getMessages: (partnerId: string, params: { page?: number; limit?: number; before?: string } = {}) =>
     api.get(`/messages/${partnerId}`, { params }),
+  // ppvPrice (euros, creators only): the message stays locked until the recipient pays
+  sendMessage: (data: { recipientId: string; content?: string; attachmentUrl?: string; ppvPrice?: number }) =>
+    api.post('/messages', data),
+  markAsRead: (partnerId: string) => api.post(`/messages/${partnerId}/read`),
+  // People the user can start a conversation with
+  searchContacts: (q?: string) => api.get('/messages/contacts', { params: q ? { q } : {} }),
+  unlockMessage: (messageId: string, paymentMethodId?: string) =>
+    api.post(`/messages/${messageId}/unlock`, paymentMethodId ? { paymentMethodId } : {}),
+  confirmUnlockMessage: (messageId: string, paymentIntentId: string) =>
+    api.post(`/messages/${messageId}/unlock/confirm`, { paymentIntentId }),
   deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
 }
 
 export const notificationsApi = {
-  getAll: (unreadOnly: boolean = false) =>
-    api.get('/notifications', { params: { unreadOnly } }),
+  // Paginated: { items, total, unreadCount, page, limit, hasMore }
+  getAll: (params: { unreadOnly?: boolean; category?: string; page?: number; limit?: number } = {}) =>
+    api.get('/notifications', {
+      params: {
+        unreadOnly: params.unreadOnly ? 'true' : undefined,
+        category: params.category || undefined,
+        page: params.page,
+        limit: params.limit,
+      },
+    }),
+  getPreferences: () => api.get('/notifications/preferences'),
+  updatePreferences: (data: Record<string, { inApp?: boolean; push?: boolean }>) =>
+    api.put('/notifications/preferences', data),
   markAsRead: (id: string) => api.put(`/notifications/${id}/read`),
   markAllAsRead: () => api.put('/notifications/read-all'),
   deleteNotification: (id: string) => api.delete(`/notifications/${id}`),
@@ -374,11 +486,20 @@ export const analyticsApi = {
 export const adminApi = {
   getStats: (params?: { startDate?: string; endDate?: string }) =>
     api.get('/admin/stats/platform', { params }),
-  getUsers: (params?: { query?: string; role?: string; status?: string; page?: number; limit?: number }) =>
-    api.get('/admin/users', { params }),
+  getUsers: (params?: {
+    query?: string
+    role?: string
+    status?: string
+    kycStatus?: string
+    page?: number
+    limit?: number
+  }) => api.get('/admin/users', { params }),
   getRecentUsers: (limit: number = 5) =>
     api.get('/admin/users', { params: { page: 1, limit } }),
   getUserDetails: (userId: string) => api.get(`/admin/users/${userId}`),
+  // Identity verification (KYC) decision; a reason is required to reject
+  reviewKyc: (userId: string, data: { decision: 'APPROVE' | 'REJECT'; reason?: string }) =>
+    api.post(`/admin/users/${userId}/kyc`, data),
   moderateUser: (data: { userId: string; action: string; reason?: string; durationDays?: number }) =>
     api.post('/admin/users/moderate', data),
   getReports: (params?: { status?: string; type?: string; page?: number; limit?: number }) =>
@@ -479,9 +600,12 @@ export const liveApi = {
 }
 
 export const storiesApi = {
+  // Groups { creator, stories, hasUnviewed, isOwn }: own stories first, then unseen groups
   getFeed: () => api.get('/stories/feed'),
+  // Active stories of the current creator, with view/like counts
+  getMine: () => api.get('/stories/me'),
   getCreatorStories: (creatorId: string) => api.get(`/stories/creator/${creatorId}`),
-  // Groups a creator's active stories into the shape the stories viewer expects
+  // Groups a creator's active stories (chronological) into the shape the stories viewer expects
   getGroup: async (creatorId: string) => {
     const response = await api.get(`/stories/creator/${creatorId}`)
     const stories: any[] = Array.isArray(response.data) ? response.data : []
@@ -491,21 +615,45 @@ export const storiesApi = {
       data: {
         userId: creatorId,
         user: creator,
-        stories: stories
-          .map((story) => ({
-            ...story,
-            user: story.creator,
-            mediaType: story.type === 'VIDEO' ? 'VIDEO' : story.type === 'TEXT' ? 'TEXT' : 'IMAGE',
-            views: story._count?.views ?? 0,
-            likes: story._count?.likes ?? 0,
-          }))
-          .reverse(),
+        stories: stories.map((story) => ({
+          ...story,
+          user: story.creator,
+          mediaType: story.type === 'VIDEO' ? 'VIDEO' : story.type === 'TEXT' ? 'TEXT' : 'IMAGE',
+          views: story._count?.views ?? 0,
+          likes: story._count?.likes ?? 0,
+        })),
       },
     }
   },
+  // Uploads a story photo/video through the media API; resolves to { key, url, jobId }
+  uploadMedia: (file: File, onProgress?: (percent: number) => void) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const endpoint = file.type.startsWith('video/') ? '/media/upload/video' : '/media/upload/image'
+    return api.post(endpoint, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (event) => {
+        if (onProgress && event.total) onProgress(Math.round((event.loaded / event.total) * 100))
+      },
+    })
+  },
+  // mediaUrl is the `key` returned by uploadMedia
+  create: (data: {
+    type: 'PHOTO' | 'VIDEO' | 'TEXT'
+    mediaUrl?: string
+    text?: string
+    caption?: string
+    backgroundColor?: string
+    duration?: number
+    width?: number
+    height?: number
+    visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY'
+  }) => api.post('/stories', data),
   getStory: (storyId: string) => api.get(`/stories/${storyId}`),
   markAsViewed: (storyId: string) => api.post(`/stories/${storyId}/view`),
-  getViewers: (storyId: string) => api.get(`/stories/${storyId}/viewers`),
+  // Paginated { items: [{ viewer, viewedAt, hasLiked }], total, page, totalPages }
+  getViewers: (storyId: string, page = 1) =>
+    api.get(`/stories/${storyId}/viewers`, { params: { page, limit: 50 } }),
   // Toggles the like; resolves to { liked, likesCount }
   like: (storyId: string) => api.post(`/stories/${storyId}/like`),
   // Delivered to the creator as a direct message

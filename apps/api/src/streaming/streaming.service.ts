@@ -25,6 +25,14 @@ export interface StreamAccessTarget {
 }
 
 export const MAX_CHAT_MESSAGE_LENGTH = 500;
+// Euros
+export const MIN_PPV_PRICE = 1;
+
+/**
+ * The stream key is a secret of the creator's broadcast: never list it
+ */
+const withoutStreamKey = <T extends { streamKey?: string | null }>({ streamKey: _streamKey, ...stream }: T) =>
+  stream;
 
 @Injectable()
 export class StreamingService {
@@ -50,15 +58,30 @@ export class StreamingService {
       throw new ForbiddenException('Only creators can create live streams');
     }
 
+    const title = dto.title?.trim();
+    if (!title) {
+      throw new BadRequestException('Title is required');
+    }
+
+    const scheduledFor = dto.scheduledFor ? new Date(dto.scheduledFor) : null;
+    if (scheduledFor && scheduledFor.getTime() <= Date.now()) {
+      throw new BadRequestException('Scheduled date must be in the future');
+    }
+
     // If PPV, verify payment setup
     if (dto.isPpv) {
-      if (!dto.ppvPrice || dto.ppvPrice <= 0) {
+      if (!dto.ppvPrice || dto.ppvPrice < MIN_PPV_PRICE) {
         throw new BadRequestException('PPV streams must have a valid price');
       }
 
       if (!user.stripeAccountId || !user.stripeOnboarded) {
         throw new BadRequestException('Payment account must be set up for PPV streams');
       }
+    }
+
+    // A creator broadcasts one live at a time
+    if (!scheduledFor) {
+      await this.assertNoOtherLiveStream(userId);
     }
 
     // Generate unique stream key
@@ -71,17 +94,17 @@ export class StreamingService {
     const stream = await this.prisma.liveStream.create({
       data: {
         creatorId: userId,
-        title: dto.title,
-        description: dto.description,
+        title,
+        description: dto.description?.trim() || null,
         thumbnailUrl: dto.thumbnailUrl,
         visibility: dto.visibility || 'SUBSCRIBERS_ONLY',
         isPpv: dto.isPpv || false,
-        ppvPrice: dto.ppvPrice,
-        scheduledFor: dto.scheduledFor ? new Date(dto.scheduledFor) : null,
+        ppvPrice: dto.isPpv ? dto.ppvPrice : null,
+        scheduledFor,
         streamKey,
         streamUrl,
-        status: dto.scheduledFor ? 'SCHEDULED' : 'LIVE',
-        startedAt: dto.scheduledFor ? null : new Date(),
+        status: scheduledFor ? 'SCHEDULED' : 'LIVE',
+        startedAt: scheduledFor ? null : new Date(),
       },
       include: {
         creator: {
@@ -127,10 +150,22 @@ export class StreamingService {
       throw new BadRequestException('Cannot update ended streams');
     }
 
-    return this.prisma.liveStream.update({
+    if (dto.title !== undefined && !dto.title.trim()) {
+      throw new BadRequestException('Title is required');
+    }
+
+    if (dto.scheduledFor && new Date(dto.scheduledFor).getTime() <= Date.now()) {
+      throw new BadRequestException('Scheduled date must be in the future');
+    }
+
+    if (dto.isPpv && (!dto.ppvPrice || dto.ppvPrice < MIN_PPV_PRICE)) {
+      throw new BadRequestException('PPV streams must have a valid price');
+    }
+
+    const updated = await this.prisma.liveStream.update({
       where: { id: streamId },
       data: {
-        title: dto.title,
+        title: dto.title?.trim(),
         description: dto.description,
         thumbnailUrl: dto.thumbnailUrl,
         visibility: dto.visibility,
@@ -150,6 +185,7 @@ export class StreamingService {
         },
       },
     });
+    return withoutStreamKey(updated);
   }
 
   /**
@@ -173,17 +209,20 @@ export class StreamingService {
       throw new BadRequestException('Stream is already live');
     }
 
-    if (stream.status === 'ENDED') {
+    if (stream.status === 'ENDED' || stream.status === 'CANCELLED') {
       throw new BadRequestException('Cannot restart ended streams');
     }
 
-    return this.prisma.liveStream.update({
+    await this.assertNoOtherLiveStream(userId, streamId);
+
+    const started = await this.prisma.liveStream.update({
       where: { id: streamId },
       data: {
         status: 'LIVE',
         startedAt: new Date(),
       },
     });
+    return withoutStreamKey(started);
   }
 
   /**
@@ -224,16 +263,17 @@ export class StreamingService {
 
     await this.closeViewerSessions(streamId);
 
-    return ended;
+    return withoutStreamKey(ended);
   }
 
   /**
    * Get active live streams
    */
   async getLiveStreams(userId?: string) {
-    return this.prisma.liveStream.findMany({
+    const streams = await this.prisma.liveStream.findMany({
       where: {
         status: 'LIVE',
+        ...this.hidePrivateFrom(userId),
       },
       include: {
         creator: {
@@ -254,18 +294,20 @@ export class StreamingService {
         viewerCount: 'desc',
       },
     });
+    return streams.map(withoutStreamKey);
   }
 
   /**
    * Get scheduled streams
    */
   async getScheduledStreams(userId?: string) {
-    return this.prisma.liveStream.findMany({
+    const streams = await this.prisma.liveStream.findMany({
       where: {
         status: 'SCHEDULED',
         scheduledFor: {
           gte: new Date(),
         },
+        ...this.hidePrivateFrom(userId),
       },
       include: {
         creator: {
@@ -281,15 +323,19 @@ export class StreamingService {
         scheduledFor: 'asc',
       },
     });
+    return streams.map(withoutStreamKey);
   }
 
   /**
-   * Get creator's streams
+   * Get a creator's streams. Other users don't see private streams; the
+   * creator also gets the revenue of each stream (PPV sales and tips, euros).
    */
-  async getCreatorStreams(creatorId: string) {
-    return this.prisma.liveStream.findMany({
+  async getCreatorStreams(creatorId: string, userId?: string) {
+    const isOwner = !!userId && userId === creatorId;
+    const streams = await this.prisma.liveStream.findMany({
       where: {
         creatorId,
+        ...(isOwner ? {} : { visibility: { not: 'PRIVATE' as const } }),
       },
       include: {
         creator: {
@@ -311,6 +357,89 @@ export class StreamingService {
         createdAt: 'desc',
       },
     });
+
+    const publicStreams = streams.map(withoutStreamKey);
+    if (!isOwner || streams.length === 0) {
+      return publicStreams;
+    }
+
+    const stats = await this.getStreamRevenue(creatorId, streams);
+    return publicStreams.map((stream) => ({
+      ...stream,
+      stats: stats.get(stream.id) ?? { tipsCount: 0, tipsTotal: 0, ppvCount: 0, ppvTotal: 0 },
+    }));
+  }
+
+  /**
+   * PPV sales (PPV_UNLOCK transactions keyed by the stream id) and tips sent
+   * from each stream (TIP transactions with metadata.streamId), gross euros
+   */
+  private async getStreamRevenue(creatorId: string, streams: { id: string; createdAt: Date }[]) {
+    const ids = streams.map((stream) => stream.id);
+    const since = new Date(Math.min(...streams.map((stream) => stream.createdAt.getTime())));
+
+    const [sales, tips] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: { toUserId: creatorId, type: 'PPV_UNLOCK', status: 'COMPLETED', contentId: { in: ids } },
+        select: { contentId: true, amount: true },
+      }),
+      this.prisma.transaction.findMany({
+        where: { toUserId: creatorId, type: 'TIP', status: 'COMPLETED', createdAt: { gte: since } },
+        select: { amount: true, metadata: true },
+      }),
+    ]);
+
+    const stats = new Map<string, { tipsCount: number; tipsTotal: number; ppvCount: number; ppvTotal: number }>();
+    const entry = (id: string) => {
+      let value = stats.get(id);
+      if (!value) {
+        value = { tipsCount: 0, tipsTotal: 0, ppvCount: 0, ppvTotal: 0 };
+        stats.set(id, value);
+      }
+      return value;
+    };
+    const round = (value: number) => Math.round(value * 100) / 100;
+
+    for (const sale of sales) {
+      if (!sale.contentId) continue;
+      const value = entry(sale.contentId);
+      value.ppvCount += 1;
+      value.ppvTotal = round(value.ppvTotal + Number(sale.amount));
+    }
+
+    const known = new Set(ids);
+    for (const tip of tips) {
+      const metadata = tip.metadata as Record<string, unknown> | null;
+      const streamId = typeof metadata?.streamId === 'string' ? metadata.streamId : null;
+      if (!streamId || !known.has(streamId)) continue;
+      const value = entry(streamId);
+      value.tipsCount += 1;
+      value.tipsTotal = round(value.tipsTotal + Number(tip.amount));
+    }
+
+    return stats;
+  }
+
+  /**
+   * Private streams are only listed for their creator
+   */
+  private hidePrivateFrom(userId?: string) {
+    return {
+      OR: [{ visibility: { not: 'PRIVATE' as const } }, ...(userId ? [{ creatorId: userId }] : [])],
+    };
+  }
+
+  /**
+   * Only one live at a time per creator
+   */
+  private async assertNoOtherLiveStream(creatorId: string, exceptStreamId?: string) {
+    const live = await this.prisma.liveStream.findFirst({
+      where: { creatorId, status: 'LIVE', ...(exceptStreamId && { id: { not: exceptStreamId } }) },
+      select: { id: true },
+    });
+    if (live) {
+      throw new BadRequestException('You already have a live stream in progress');
+    }
   }
 
   /**
@@ -326,6 +455,8 @@ export class StreamingService {
             username: true,
             displayName: true,
             avatar: true,
+            // Tip settings, for the live's tip button
+            creatorProfile: { select: { allowTips: true, minimumTip: true } },
           },
         },
         _count: {
@@ -346,12 +477,20 @@ export class StreamingService {
       ? await this.checkViewAccess(userId, stream)
       : { allowed: stream.visibility === 'PUBLIC' && !stream.isPpv, isCreator: false };
 
+    const { creatorProfile, ...creator } = stream.creator;
+
     return {
       ...publicStream,
+      creator,
       // The stream key is only useful to the creator
       streamKey: access.isCreator ? streamKey : undefined,
       hasAccess: access.allowed,
       accessDeniedReason: access.reason ?? null,
+      // Euros
+      tips: {
+        allowed: creatorProfile?.allowTips ?? true,
+        minimum: Number(creatorProfile?.minimumTip ?? 1),
+      },
     };
   }
 
@@ -601,6 +740,16 @@ export class StreamingService {
         },
       },
     });
+  }
+
+  /**
+   * Delete a chat message of a stream (moderation). Returns false when it does not exist.
+   */
+  async deleteChatMessage(streamId: string, messageId: string) {
+    const result = await this.prisma.streamMessage.deleteMany({
+      where: { id: messageId, streamId },
+    });
+    return result.count > 0;
   }
 
   /**

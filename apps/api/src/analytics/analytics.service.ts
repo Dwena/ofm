@@ -8,6 +8,8 @@ import {
   GetEngagementDto,
   AnalyticsInterval,
 } from './dto/analytics.dto';
+import { createPeriodMap, getPeriodKey, resolvePeriodRange } from '../common/utils/periods';
+import { roundMoney } from '../common/utils/money';
 
 @Injectable()
 export class AnalyticsService {
@@ -83,6 +85,7 @@ export class AnalyticsService {
           totalSubscribers,
           totalContent,
           monthlyRevenue,
+          previousMonthRevenue,
           topContent,
         ] = await Promise.all([
           // Total views
@@ -159,6 +162,28 @@ export class AnalyticsService {
               },
             });
           })(),
+          // Last month's revenue (for the month-over-month trend)
+          (async () => {
+            const startOfMonth = new Date();
+            startOfMonth.setDate(1);
+            startOfMonth.setHours(0, 0, 0, 0);
+            const startOfPreviousMonth = new Date(startOfMonth);
+            startOfPreviousMonth.setMonth(startOfPreviousMonth.getMonth() - 1);
+
+            return this.prisma.transaction.aggregate({
+              where: {
+                toUserId: userId,
+                status: 'COMPLETED',
+                createdAt: {
+                  gte: startOfPreviousMonth,
+                  lt: startOfMonth,
+                },
+              },
+              _sum: {
+                netAmount: true,
+              },
+            });
+          })(),
           // Top performing content
           this.prisma.content.findMany({
             where: {
@@ -190,7 +215,8 @@ export class AnalyticsService {
             activeSubscriptions,
             totalSubscribers,
             totalContent,
-            monthlyRevenue: Number(monthlyRevenue._sum.netAmount || 0),
+            monthlyRevenue: roundMoney(Number(monthlyRevenue._sum.netAmount || 0)),
+            previousMonthRevenue: roundMoney(Number(previousMonthRevenue._sum.netAmount || 0)),
           },
           topContent,
         };
@@ -200,46 +226,19 @@ export class AnalyticsService {
   }
 
   /**
-   * Get content analytics by period
+   * Get content analytics by period (content published in each period and
+   * the views/likes/comments it gathered)
    */
   async getContentAnalytics(userId: string, dto: GetContentAnalyticsDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user || user.role !== 'CREATOR') {
-      throw new ForbiddenException('Only creators can view analytics');
-    }
+    await this.assertCreator(userId);
 
     const { interval = AnalyticsInterval.DAY, periods = 30, startDate, endDate, contentId, contentType } = dto;
-
-    // Calculate date range
-    const end = endDate ? new Date(endDate) : new Date();
-    let start: Date;
-
-    if (startDate) {
-      start = new Date(startDate);
-    } else {
-      start = new Date(end);
-      switch (interval) {
-        case AnalyticsInterval.DAY:
-          start.setDate(start.getDate() - periods);
-          break;
-        case AnalyticsInterval.WEEK:
-          start.setDate(start.getDate() - periods * 7);
-          break;
-        case AnalyticsInterval.MONTH:
-          start.setMonth(start.getMonth() - periods);
-          break;
-        case AnalyticsInterval.YEAR:
-          start.setFullYear(start.getFullYear() - periods);
-          break;
-      }
-    }
+    const { start, end } = resolvePeriodRange(interval, periods, startDate, endDate);
 
     // Build where clause
     const where: any = {
       creatorId: userId,
+      status: 'PUBLISHED',
       deletedAt: null,
       publishedAt: {
         gte: start,
@@ -255,7 +254,6 @@ export class AnalyticsService {
       where.type = contentType;
     }
 
-    // Get all content in range
     const content = await this.prisma.content.findMany({
       where,
       orderBy: {
@@ -272,43 +270,31 @@ export class AnalyticsService {
       },
     });
 
-    // Group by period
-    const periodMap = new Map<string, any>();
+    const periodMap = createPeriodMap(start, end, interval, (period) => ({
+      period,
+      contentPublished: 0,
+      totalViews: 0,
+      totalLikes: 0,
+      totalComments: 0,
+      avgViewsPerContent: 0,
+      avgLikesPerContent: 0,
+    }));
 
     content.forEach((item: any) => {
-      const periodKey = this.getPeriodKey(item.publishedAt!, interval);
-
-      if (!periodMap.has(periodKey)) {
-        periodMap.set(periodKey, {
-          period: periodKey,
-          contentPublished: 0,
-          totalViews: 0,
-          totalLikes: 0,
-          totalComments: 0,
-          avgViewsPerContent: 0,
-          avgLikesPerContent: 0,
-        });
-      }
-
-      const periodData = periodMap.get(periodKey);
+      const periodData = periodMap.get(getPeriodKey(item.publishedAt!, interval));
+      if (!periodData) return;
       periodData.contentPublished++;
       periodData.totalViews += item.viewCount;
       periodData.totalLikes += item.likeCount;
       periodData.totalComments += item.commentCount;
     });
 
-    // Calculate averages
-    const stats: any[] = [];
-    periodMap.forEach((data) => {
-      data.avgViewsPerContent = data.contentPublished > 0 ? data.totalViews / data.contentPublished : 0;
-      data.avgLikesPerContent = data.contentPublished > 0 ? data.totalLikes / data.contentPublished : 0;
-      stats.push(data);
-    });
+    const stats = Array.from(periodMap.values()).map((data) => ({
+      ...data,
+      avgViewsPerContent: data.contentPublished > 0 ? data.totalViews / data.contentPublished : 0,
+      avgLikesPerContent: data.contentPublished > 0 ? data.totalLikes / data.contentPublished : 0,
+    }));
 
-    // Sort by period
-    stats.sort((a, b) => a.period.localeCompare(b.period));
-
-    // Calculate totals
     const totals = {
       contentPublished: stats.reduce((sum, s) => sum + s.contentPublished, 0),
       totalViews: stats.reduce((sum, s) => sum + s.totalViews, 0),
@@ -328,152 +314,69 @@ export class AnalyticsService {
   }
 
   /**
-   * Get engagement statistics
+   * Get engagement statistics (likes, comments and new subscribers per period)
    */
   async getEngagementStats(userId: string, dto: GetEngagementDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user || user.role !== 'CREATOR') {
-      throw new ForbiddenException('Only creators can view analytics');
-    }
+    await this.assertCreator(userId);
 
     const { interval = AnalyticsInterval.DAY, periods = 30 } = dto;
+    const { start, end } = resolvePeriodRange(interval, periods);
+    const range = { gte: start, lte: end };
 
-    // Calculate date range
-    const end = new Date();
-    const start = new Date(end);
+    const [likes, comments, subscriptions] = await Promise.all([
+      this.prisma.contentLike.findMany({
+        where: { content: { creatorId: userId }, createdAt: range },
+        select: { createdAt: true },
+      }),
+      this.prisma.comment.findMany({
+        where: { content: { creatorId: userId }, createdAt: range, deletedAt: null },
+        select: { createdAt: true },
+      }),
+      this.prisma.subscription.findMany({
+        where: { tier: { creatorId: userId }, createdAt: range },
+        select: { createdAt: true, status: true },
+      }),
+    ]);
 
-    switch (interval) {
-      case AnalyticsInterval.DAY:
-        start.setDate(start.getDate() - periods);
-        break;
-      case AnalyticsInterval.WEEK:
-        start.setDate(start.getDate() - periods * 7);
-        break;
-      case AnalyticsInterval.MONTH:
-        start.setMonth(start.getMonth() - periods);
-        break;
-      case AnalyticsInterval.YEAR:
-        start.setFullYear(start.getFullYear() - periods);
-        break;
-    }
+    const periodMap = createPeriodMap(start, end, interval, (period) => ({
+      period,
+      likes: 0,
+      comments: 0,
+      interactions: 0,
+      newSubscribers: 0,
+      activeSubscribers: 0,
+    }));
+    const bucket = (date: Date) => periodMap.get(getPeriodKey(date, interval));
 
-    // Get likes over time
-    const likes = await this.prisma.contentLike.findMany({
-      where: {
-        content: {
-          creatorId: userId,
-        },
-        createdAt: {
-          gte: start,
-          lte: end,
-        },
-      },
-      orderBy: {
-        createdAt: 'asc',
-      },
-      select: {
-        createdAt: true,
-        contentId: true,
-      },
-    });
-
-    // Get comments over time
-    const comments = await this.prisma.comment.findMany({
-      where: {
-        content: {
-          creatorId: userId,
-        },
-        createdAt: {
-          gte: start,
-          lte: end,
-        },
-        deletedAt: null,
-      },
-      orderBy: {
-        createdAt: 'asc',
-      },
-      select: {
-        createdAt: true,
-        contentId: true,
-      },
-    });
-
-    // Get new subscriptions over time
-    const subscriptions = await this.prisma.subscription.findMany({
-      where: {
-        tier: {
-          creatorId: userId,
-        },
-        createdAt: {
-          gte: start,
-          lte: end,
-        },
-      },
-      orderBy: {
-        createdAt: 'asc',
-      },
-      select: {
-        createdAt: true,
-        status: true,
-      },
-    });
-
-    // Group by period
-    const periodMap = new Map<string, any>();
-
-    // Process likes
     likes.forEach((like: any) => {
-      const periodKey = this.getPeriodKey(like.createdAt, interval);
-      if (!periodMap.has(periodKey)) {
-        periodMap.set(periodKey, this.createEmptyPeriod(periodKey));
-      }
-      periodMap.get(periodKey).likes++;
+      const data = bucket(like.createdAt);
+      if (data) data.likes++;
     });
 
-    // Process comments
     comments.forEach((comment: any) => {
-      const periodKey = this.getPeriodKey(comment.createdAt, interval);
-      if (!periodMap.has(periodKey)) {
-        periodMap.set(periodKey, this.createEmptyPeriod(periodKey));
-      }
-      periodMap.get(periodKey).comments++;
+      const data = bucket(comment.createdAt);
+      if (data) data.comments++;
     });
 
-    // Process subscriptions
     subscriptions.forEach((sub: any) => {
-      const periodKey = this.getPeriodKey(sub.createdAt, interval);
-      if (!periodMap.has(periodKey)) {
-        periodMap.set(periodKey, this.createEmptyPeriod(periodKey));
-      }
-      periodMap.get(periodKey).newSubscribers++;
+      const data = bucket(sub.createdAt);
+      if (!data) return;
+      data.newSubscribers++;
       if (sub.status === 'ACTIVE') {
-        periodMap.get(periodKey).activeSubscribers++;
+        data.activeSubscribers++;
       }
     });
 
-    // Convert to array and calculate engagement rate
-    const stats: any[] = [];
-    periodMap.forEach((data) => {
-      // Engagement rate = (likes + comments) / views (we don't have period views, so use total interactions)
-      const totalInteractions = data.likes + data.comments;
-      data.engagementRate = totalInteractions > 0 ? ((data.likes + data.comments) / totalInteractions) * 100 : 0;
-      stats.push(data);
-    });
+    const stats = Array.from(periodMap.values()).map((data) => ({
+      ...data,
+      interactions: data.likes + data.comments,
+    }));
 
-    // Sort by period
-    stats.sort((a, b) => a.period.localeCompare(b.period));
-
-    // Calculate totals
     const totals = {
       totalLikes: stats.reduce((sum, s) => sum + s.likes, 0),
       totalComments: stats.reduce((sum, s) => sum + s.comments, 0),
+      totalInteractions: stats.reduce((sum, s) => sum + s.interactions, 0),
       totalNewSubscribers: stats.reduce((sum, s) => sum + s.newSubscribers, 0),
-      avgEngagementRate: stats.length > 0
-        ? stats.reduce((sum, s) => sum + s.engagementRate, 0) / stats.length
-        : 0,
     };
 
     return {
@@ -488,56 +391,22 @@ export class AnalyticsService {
   }
 
   /**
-   * Get subscriber growth analytics
+   * Get subscriber growth analytics: subscriptions started and cancelled in
+   * each period (a cancellation counts even when the subscription started earlier)
    */
   async getSubscriberGrowth(userId: string, dto: GetAnalyticsDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user || user.role !== 'CREATOR') {
-      throw new ForbiddenException('Only creators can view analytics');
-    }
+    await this.assertCreator(userId);
 
     const { interval = AnalyticsInterval.DAY, periods = 30, startDate, endDate } = dto;
+    const { start, end } = resolvePeriodRange(interval, periods, startDate, endDate);
+    const range = { gte: start, lte: end };
 
-    // Calculate date range
-    const end = endDate ? new Date(endDate) : new Date();
-    let start: Date;
-
-    if (startDate) {
-      start = new Date(startDate);
-    } else {
-      start = new Date(end);
-      switch (interval) {
-        case AnalyticsInterval.DAY:
-          start.setDate(start.getDate() - periods);
-          break;
-        case AnalyticsInterval.WEEK:
-          start.setDate(start.getDate() - periods * 7);
-          break;
-        case AnalyticsInterval.MONTH:
-          start.setMonth(start.getMonth() - periods);
-          break;
-        case AnalyticsInterval.YEAR:
-          start.setFullYear(start.getFullYear() - periods);
-          break;
-      }
-    }
-
-    // Get all subscriptions
     const subscriptions = await this.prisma.subscription.findMany({
       where: {
         tier: {
           creatorId: userId,
         },
-        createdAt: {
-          gte: start,
-          lte: end,
-        },
-      },
-      orderBy: {
-        createdAt: 'asc',
+        OR: [{ createdAt: range }, { cancelledAt: range }],
       },
       select: {
         createdAt: true,
@@ -546,49 +415,29 @@ export class AnalyticsService {
       },
     });
 
-    // Group by period
-    const periodMap = new Map<string, any>();
+    const periodMap = createPeriodMap(start, end, interval, (period) => ({
+      period,
+      newSubscribers: 0,
+      cancelledSubscribers: 0,
+      netGrowth: 0,
+    }));
 
     subscriptions.forEach((sub: any) => {
-      const periodKey = this.getPeriodKey(sub.createdAt, interval);
-
-      if (!periodMap.has(periodKey)) {
-        periodMap.set(periodKey, {
-          period: periodKey,
-          newSubscribers: 0,
-          cancelledSubscribers: 0,
-          netGrowth: 0,
-        });
+      if (sub.createdAt >= start && sub.createdAt <= end) {
+        const data = periodMap.get(getPeriodKey(sub.createdAt, interval));
+        if (data) data.newSubscribers++;
       }
-
-      const periodData = periodMap.get(periodKey);
-      periodData.newSubscribers++;
-
       if (sub.cancelledAt && sub.cancelledAt >= start && sub.cancelledAt <= end) {
-        const cancelPeriodKey = this.getPeriodKey(sub.cancelledAt, interval);
-        if (!periodMap.has(cancelPeriodKey)) {
-          periodMap.set(cancelPeriodKey, {
-            period: cancelPeriodKey,
-            newSubscribers: 0,
-            cancelledSubscribers: 0,
-            netGrowth: 0,
-          });
-        }
-        periodMap.get(cancelPeriodKey).cancelledSubscribers++;
+        const data = periodMap.get(getPeriodKey(sub.cancelledAt, interval));
+        if (data) data.cancelledSubscribers++;
       }
     });
 
-    // Calculate net growth
-    const stats: any[] = [];
-    periodMap.forEach((data) => {
-      data.netGrowth = data.newSubscribers - data.cancelledSubscribers;
-      stats.push(data);
-    });
+    const stats = Array.from(periodMap.values()).map((data) => ({
+      ...data,
+      netGrowth: data.newSubscribers - data.cancelledSubscribers,
+    }));
 
-    // Sort by period
-    stats.sort((a, b) => a.period.localeCompare(b.period));
-
-    // Calculate totals
     const totals = {
       totalNewSubscribers: stats.reduce((sum, s) => sum + s.newSubscribers, 0),
       totalCancelled: stats.reduce((sum, s) => sum + s.cancelledSubscribers, 0),
@@ -610,13 +459,7 @@ export class AnalyticsService {
    * Get detailed report for creator
    */
   async getDetailedReport(userId: string, dto: GetAnalyticsDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user || user.role !== 'CREATOR') {
-      throw new ForbiddenException('Only creators can view analytics');
-    }
+    await this.assertCreator(userId);
 
     // Get all analytics in parallel
     const [overview, contentAnalytics, engagementStats, subscriberGrowth] = await Promise.all([
@@ -655,54 +498,31 @@ export class AnalyticsService {
       contentAnalytics,
       engagementStats,
       subscriberGrowth,
-      contentBreakdown: contentByType.map((item: any) => ({
-        type: item.type,
-        count: item._count.id,
-        totalViews: item._sum.viewCount || 0,
-        totalLikes: item._sum.likeCount || 0,
-        totalComments: item._sum.commentCount || 0,
-        avgViewsPerContent: item._count.id > 0 ? (item._sum.viewCount || 0) / item._count.id : 0,
-      })),
+      contentBreakdown: contentByType.map((item: any) => {
+        const views = item._sum.viewCount || 0;
+        const likes = item._sum.likeCount || 0;
+        const comments = item._sum.commentCount || 0;
+        return {
+          type: item.type,
+          count: item._count.id,
+          totalViews: views,
+          totalLikes: likes,
+          totalComments: comments,
+          avgViewsPerContent: item._count.id > 0 ? views / item._count.id : 0,
+          // (likes + comments) / views, in percent
+          engagementRate: views > 0 ? ((likes + comments) / views) * 100 : 0,
+        };
+      }),
     };
   }
 
-  /**
-   * Helper: Create empty period data
-   */
-  private createEmptyPeriod(periodKey: string) {
-    return {
-      period: periodKey,
-      likes: 0,
-      comments: 0,
-      newSubscribers: 0,
-      activeSubscribers: 0,
-      engagementRate: 0,
-    };
-  }
+  private async assertCreator(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
 
-  /**
-   * Helper: Get period key for grouping
-   */
-  private getPeriodKey(date: Date, interval: AnalyticsInterval): string {
-    const d = new Date(date);
-
-    switch (interval) {
-      case AnalyticsInterval.DAY:
-        return d.toISOString().split('T')[0]; // YYYY-MM-DD
-
-      case AnalyticsInterval.WEEK:
-        const weekStart = new Date(d);
-        weekStart.setDate(d.getDate() - d.getDay());
-        return weekStart.toISOString().split('T')[0];
-
-      case AnalyticsInterval.MONTH:
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; // YYYY-MM
-
-      case AnalyticsInterval.YEAR:
-        return String(d.getFullYear()); // YYYY
-
-      default:
-        return d.toISOString().split('T')[0];
+    if (!user || user.role !== 'CREATOR') {
+      throw new ForbiddenException('Only creators can view analytics');
     }
   }
 }

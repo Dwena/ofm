@@ -3,12 +3,16 @@ import { Inter } from 'next/font/google'
 import './globals.css'
 import { AuthProvider } from '@/contexts/auth-context'
 import { Providers } from './providers'
+import { I18nProvider } from '@/components/i18n-provider'
 
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'OFM - Platform for Content Creators',
-  description: 'Monetize your content and connect with your fans',
+  title: {
+    default: 'OFM - La plateforme des créateurs de contenu',
+    template: '%s | OFM',
+  },
+  description: 'Monétisez votre contenu et rapprochez-vous de vos fans',
   applicationName: 'OFM',
   // PWA: icons are generated from public/icon.svg (see public/PWA_ICONS_README.md)
   manifest: '/manifest.json',
@@ -41,9 +45,11 @@ export default function RootLayout({
     <html lang="fr" suppressHydrationWarning>
       <body className={inter.className}>
         <Providers>
-          <AuthProvider>
-            {children}
-          </AuthProvider>
+          <I18nProvider>
+            <AuthProvider>
+              {children}
+            </AuthProvider>
+          </I18nProvider>
         </Providers>
       </body>
     </html>

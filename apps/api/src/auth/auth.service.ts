@@ -5,6 +5,7 @@ import {
   ConflictException,
   ForbiddenException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +13,7 @@ import * as bcrypt from 'bcryptjs';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
@@ -29,6 +31,8 @@ import { Enable2FaDto } from './dto/enable-2fa.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
 import { ResetPasswordDto } from './dto/email-token.dto';
 import { SettingsService } from '../settings/settings.service';
+import { StripeService } from '../payments/stripe.service';
+import { ChangePasswordDto, DeleteAccountDto } from './dto/account.dto';
 
 /** Redis key holding the unix time (s) of the user's last password change. */
 export const PASSWORD_CHANGED_KEY = (userId: string) => `auth:pwd-changed:${userId}`;
@@ -46,6 +50,7 @@ export class AuthService {
     private usersService: UsersService,
     private mailService: MailService,
     private settingsService: SettingsService,
+    @Optional() private stripeService?: StripeService,
   ) {}
 
   async register(registerDto: RegisterDto) {
@@ -476,6 +481,167 @@ export class AuthService {
     this.logger.log(`2FA disabled for user: ${userId}`);
 
     return { message: '2FA disabled successfully' };
+  }
+
+  /**
+   * Change the password of the logged-in user (current password required).
+   * Every other session is revoked; fresh tokens are returned for this one.
+   */
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.deletedAt) {
+      throw new BadRequestException('Utilisateur introuvable');
+    }
+
+    if (!(await bcrypt.compare(dto.currentPassword, user.password))) {
+      // 400 rather than 401: the session itself is valid
+      throw new BadRequestException('Mot de passe actuel incorrect');
+    }
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException("Le nouveau mot de passe doit être différent de l'actuel");
+    }
+
+    const hashedPassword = await this.hashPassword(dto.newPassword);
+    const now = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: userId }, data: { password: hashedPassword } }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId, isRevoked: false },
+        data: { isRevoked: true, revokedAt: now },
+      }),
+      this.prisma.session.deleteMany({ where: { userId } }),
+    ]);
+
+    await this.markTokensRevoked(userId, now);
+
+    // New tokens for the current device (issued after the revocation point)
+    const tokens = await this.generateTokens(user);
+    await this.saveRefreshToken(userId, tokens.refreshToken);
+
+    await this.mailService.sendPasswordChangedEmail(user.email, user.username);
+    this.logger.log(`Password changed for user: ${userId}`);
+
+    return { message: 'Password changed successfully', ...tokens };
+  }
+
+  /** Sign out every device: refresh tokens revoked, access tokens rejected */
+  async logoutAll(userId: string) {
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.updateMany({
+        where: { userId, isRevoked: false },
+        data: { isRevoked: true, revokedAt: now },
+      }),
+      this.prisma.session.deleteMany({ where: { userId } }),
+    ]);
+    // + 1s: also rejects tokens issued earlier within the current second
+    await this.markTokensRevoked(userId, new Date(now.getTime() + 1000));
+    this.logger.log(`All sessions revoked for user: ${userId}`);
+    return { message: 'Logged out from all devices' };
+  }
+
+  /**
+   * Soft-delete the account of the logged-in user: personal data is anonymized,
+   * content hidden, tiers deactivated, Stripe subscriptions set to end with the
+   * current period, every session revoked.
+   */
+  async deleteAccount(userId: string, dto: DeleteAccountDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.deletedAt) {
+      throw new BadRequestException('Utilisateur introuvable');
+    }
+    if (user.role === 'ADMIN') {
+      throw new ForbiddenException('Un compte administrateur ne peut pas être supprimé depuis les paramètres');
+    }
+    if (!(await bcrypt.compare(dto.password, user.password))) {
+      throw new BadRequestException('Mot de passe incorrect');
+    }
+    if (user.twoFactorEnabled) {
+      if (!dto.totpCode) {
+        throw new BadRequestException('Code 2FA requis');
+      }
+      if (!(await this.verify2FACode(userId, dto.totpCode))) {
+        throw new BadRequestException('Code 2FA invalide');
+      }
+    }
+
+    // Stop future billing (as a fan, and for the fans of a creator)
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: {
+        status: { in: ['ACTIVE', 'PAST_DUE', 'PAUSED'] },
+        OR: [{ subscriberId: userId }, { tier: { creatorId: userId } }],
+      },
+      select: { id: true, stripeSubscriptionId: true },
+    });
+    for (const subscription of subscriptions) {
+      if (!subscription.stripeSubscriptionId || !this.stripeService) continue;
+      try {
+        await this.stripeService.setCancelAtPeriodEnd(subscription.stripeSubscriptionId, true);
+      } catch (error: any) {
+        this.logger.error(
+          `Failed to schedule cancellation of ${subscription.stripeSubscriptionId}: ${error?.message ?? error}`,
+        );
+      }
+    }
+
+    const now = new Date();
+    const anonymousId = userId.replace(/-/g, '').slice(0, 12);
+    const unusablePassword = await this.hashPassword(randomBytes(32).toString('hex'));
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          email: `deleted-${userId}@deleted.invalid`,
+          username: `deleted_${anonymousId}`,
+          password: unusablePassword,
+          displayName: 'Compte supprimé',
+          bio: null,
+          avatar: null,
+          coverImage: null,
+          location: null,
+          website: null,
+          phoneNumber: null,
+          twoFactorEnabled: false,
+          twoFactorSecret: null,
+          emailVerificationToken: null,
+          emailVerificationExpires: null,
+          passwordResetToken: null,
+          passwordResetExpires: null,
+          notificationPreferences: Prisma.DbNull,
+          deletedAt: now,
+        },
+      }),
+      this.prisma.subscription.updateMany({
+        where: { id: { in: subscriptions.map((s) => s.id) } },
+        data: { cancelAtPeriodEnd: true },
+      }),
+      this.prisma.subscriptionTier.updateMany({ where: { creatorId: userId }, data: { isActive: false } }),
+      this.prisma.content.updateMany({ where: { creatorId: userId, deletedAt: null }, data: { deletedAt: now } }),
+      this.prisma.follow.deleteMany({ where: { OR: [{ followerId: userId }, { creatorId: userId }] } }),
+      this.prisma.pushSubscription.deleteMany({ where: { userId } }),
+      this.prisma.notification.deleteMany({ where: { userId } }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId, isRevoked: false },
+        data: { isRevoked: true, revokedAt: now },
+      }),
+      this.prisma.session.deleteMany({ where: { userId } }),
+    ]);
+
+    await this.markTokensRevoked(userId, new Date(now.getTime() + 1000));
+    this.logger.log(`Account deleted (soft) for user: ${userId}`);
+
+    return { message: 'Account deleted' };
+  }
+
+  /** Access tokens issued before `at` are rejected by JwtStrategy */
+  private async markTokensRevoked(userId: string, at: Date) {
+    await this.redis.set(
+      PASSWORD_CHANGED_KEY(userId),
+      String(Math.floor(at.getTime() / 1000)),
+      PASSWORD_CHANGED_TTL_SECONDS,
+    );
   }
 
   private async verify2FACode(userId: string, code: string): Promise<boolean> {

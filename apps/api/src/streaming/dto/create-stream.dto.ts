@@ -1,4 +1,15 @@
-import { IsString, IsOptional, IsEnum, IsBoolean, IsNumber, IsDateString, Min } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsBoolean,
+  IsNumber,
+  IsDateString,
+  IsNotEmpty,
+  MaxLength,
+  Min,
+  Max,
+} from 'class-validator';
 
 export enum StreamVisibility {
   PUBLIC = 'PUBLIC',
@@ -9,10 +20,13 @@ export enum StreamVisibility {
 
 export class CreateStreamDto {
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
   title: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   description?: string;
 
   @IsOptional()
@@ -30,6 +44,7 @@ export class CreateStreamDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
+  @Max(1000)
   ppvPrice?: number;
 
   @IsOptional()
@@ -40,10 +55,12 @@ export class CreateStreamDto {
 export class UpdateStreamDto {
   @IsOptional()
   @IsString()
+  @MaxLength(120)
   title?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   description?: string;
 
   @IsOptional()
@@ -61,6 +78,7 @@ export class UpdateStreamDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
+  @Max(1000)
   ppvPrice?: number;
 
   @IsOptional()

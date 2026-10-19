@@ -8,10 +8,10 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, UseGuards } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
-import { MessagingService } from './messaging.service';
+import { MessagingService, presentMessage } from './messaging.service';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -29,7 +29,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
   server: Server;
 
   private logger = new Logger('MessagingGateway');
-  private userSockets = new Map<string, string>(); // userId -> socketId
+  private userSockets = new Map<string, Set<string>>(); // userId -> socket ids (one per tab)
 
   constructor(
     private prisma: PrismaService,
@@ -54,7 +54,9 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       });
 
       client.userId = payload.sub;
-      this.userSockets.set(payload.sub, client.id);
+      const sockets = this.userSockets.get(payload.sub) ?? new Set<string>();
+      sockets.add(client.id);
+      this.userSockets.set(payload.sub, sockets);
 
       // Join user's personal room
       client.join(`user:${payload.sub}`);
@@ -71,6 +73,12 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   handleDisconnect(client: AuthenticatedSocket) {
     if (client.userId) {
+      const sockets = this.userSockets.get(client.userId);
+      sockets?.delete(client.id);
+      if (sockets && sockets.size > 0) {
+        // Still connected from another tab
+        return;
+      }
       this.userSockets.delete(client.userId);
       this.server.emit('user:offline', { userId: client.userId });
       this.logger.log(`Client disconnected: ${client.id} (User: ${client.userId})`);
@@ -85,10 +93,11 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       content: string;
       type?: string;
       attachmentUrl?: string;
+      ppvPrice?: number;
     },
   ) {
     try {
-      const { recipientId, content, type = 'TEXT', attachmentUrl } = data;
+      const { recipientId, content, attachmentUrl, ppvPrice } = data ?? ({} as typeof data);
 
       if (!client.userId) {
         return { error: 'Unauthorized' };
@@ -100,17 +109,15 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
         recipientId,
         content,
         attachmentUrl,
+        { ppvPrice },
       );
 
-      // Prepare message data to emit
-      const messageData = this.toMessagePayload(message);
+      // Emit to recipient if online (PPV stays locked for them)
+      this.emitNewMessage(recipientId, this.toMessagePayload(message, recipientId));
 
-      // Emit to recipient if online
-      this.emitNewMessage(recipientId, messageData);
-
-      // Emit to sender for confirmation
-      client.emit('message:sent', {
-        message: messageData,
+      // Emit to the sender's tabs for confirmation
+      this.emitToUser(client.userId, 'message:sent', {
+        message: this.toMessagePayload(message, client.userId),
       });
 
       return { success: true, messageId: message.id };
@@ -179,18 +186,44 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     }
   }
 
-  // Shape a persisted message for socket clients
-  toMessagePayload(message: any) {
+  /**
+   * Which of the given users are connected (presence of conversation partners)
+   */
+  @SubscribeMessage('presence:query')
+  handlePresenceQuery(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { userIds?: string[] },
+  ) {
+    if (!client.userId) {
+      return { error: 'Unauthorized' };
+    }
+    const userIds = Array.isArray(data?.userIds) ? data.userIds.slice(0, 200) : [];
+    return { online: userIds.filter((id) => this.isUserOnline(id)) };
+  }
+
+  // Shape a persisted message for socket clients, as seen by `viewerId`
+  toMessagePayload(message: any, viewerId?: string) {
+    const presented = presentMessage(message, viewerId ?? message.receiverId);
     return {
-      id: message.id,
-      content: message.content,
-      senderId: message.senderId,
-      receiverId: message.receiverId,
-      createdAt: message.createdAt,
-      hasAttachment: message.hasAttachment,
-      attachmentUrl: message.attachmentUrl,
-      sender: message.sender,
+      id: presented.id,
+      content: presented.content,
+      senderId: presented.senderId,
+      receiverId: presented.receiverId,
+      createdAt: presented.createdAt,
+      status: presented.status,
+      hasAttachment: presented.hasAttachment,
+      attachmentUrl: presented.attachmentUrl,
+      isPpv: presented.isPpv,
+      ppvPrice: presented.ppvPrice,
+      isPurchased: presented.isPurchased,
+      locked: presented.locked,
+      sender: presented.sender,
     };
+  }
+
+  // Emit an event to every tab of a user
+  emitToUser(userId: string, event: string, payload: any) {
+    this.server?.to(`user:${userId}`).emit(event, payload);
   }
 
   // Push a new message to the recipient's room (no-op if offline)
@@ -205,6 +238,6 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   // Check if user is online
   isUserOnline(userId: string): boolean {
-    return this.userSockets.has(userId);
+    return (this.userSockets.get(userId)?.size ?? 0) > 0;
   }
 }

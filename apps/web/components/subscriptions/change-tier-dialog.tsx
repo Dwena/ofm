@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { subscriptionsApi } from '@/lib/api'
+import { formatEuros } from '@/lib/utils'
 import { getStripe } from '@/components/checkout/stripe-payment-element'
 import {
   Dialog,
@@ -80,7 +81,7 @@ export const formatDate = (date: string) => new Date(date).toLocaleDateString('f
 export const formatTierPrice = (tier: TierSummary) =>
   Number(tier.price) === 0
     ? 'Gratuit'
-    : `${Number(tier.price).toFixed(2)}€/${tier.interval === 'year' ? 'an' : 'mois'}`
+    : `${formatEuros(tier.price)}/${tier.interval === 'year' ? 'an' : 'mois'}`
 
 /**
  * "Passera à X le <date>" for a scheduled downgrade

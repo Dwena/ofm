@@ -3,6 +3,7 @@ import { StoriesService } from './stories.service';
 import { PrismaService } from '../common/database/prisma.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { MessagingGateway } from '../messaging/messaging.gateway';
+import { StorageService } from '../storage/storage.service';
 import { ForbiddenException, BadRequestException, NotFoundException } from '@nestjs/common';
 
 describe('StoriesService', () => {
@@ -39,7 +40,16 @@ describe('StoriesService', () => {
     subscription: {
       findMany: jest.fn(),
     },
+    follow: {
+      findMany: jest.fn(),
+    },
     $transaction: jest.fn(),
+  };
+
+  const mockStorageService = {
+    getSignedUrl: jest.fn(async (key: string) =>
+      /^https?:\/\//.test(key) ? key : `https://signed.example.com/${key}`,
+    ),
   };
 
   const mockMessagingService = {
@@ -59,6 +69,7 @@ describe('StoriesService', () => {
           provide: PrismaService,
           useValue: mockPrismaService,
         },
+        { provide: StorageService, useValue: mockStorageService },
         { provide: MessagingService, useValue: mockMessagingService },
         { provide: MessagingGateway, useValue: mockMessagingGateway },
       ],
@@ -68,11 +79,16 @@ describe('StoriesService', () => {
     prisma = module.get<PrismaService>(PrismaService);
 
     jest.clearAllMocks();
+    mockPrismaService.storyLike.findMany.mockResolvedValue([]);
+    mockPrismaService.storyView.findMany.mockResolvedValue([]);
+    mockPrismaService.subscription.findMany.mockResolvedValue([]);
+    mockPrismaService.follow.findMany.mockResolvedValue([]);
   });
 
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
+
 
   describe('createStory', () => {
     const userId = 'creator-123';
@@ -102,7 +118,12 @@ describe('StoriesService', () => {
 
       const result = await service.createStory(userId, dto);
 
-      expect(result).toEqual(mockStory);
+      expect(result).toMatchObject({
+        id: 'story-123',
+        mediaUrl: 'https://example.com/image.jpg',
+        isOwn: true,
+        isLocked: false,
+      });
       expect(mockPrismaService.story.create).toHaveBeenCalled();
 
       const createCall = mockPrismaService.story.create.mock.calls[0][0];
@@ -158,6 +179,7 @@ describe('StoriesService', () => {
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         deletedAt: null,
         creatorId: 'creator-123',
+        visibility: 'PUBLIC',
       };
 
       mockPrismaService.story.findUnique.mockResolvedValue(mockStory);
@@ -179,6 +201,7 @@ describe('StoriesService', () => {
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         deletedAt: null,
         creatorId: 'creator-123',
+        visibility: 'PUBLIC',
       };
       const mockView = { id: 'view-123' };
 
@@ -197,6 +220,7 @@ describe('StoriesService', () => {
         expiresAt: new Date(Date.now() - 1000), // Expired
         deletedAt: null,
         creatorId: 'creator-123',
+        visibility: 'PUBLIC',
       };
 
       mockPrismaService.story.findUnique.mockResolvedValue(mockStory);
@@ -253,6 +277,7 @@ describe('StoriesService', () => {
       creatorId: 'creator-1',
       expiresAt: new Date(Date.now() + 3600 * 1000),
       deletedAt: null,
+      visibility: 'PUBLIC',
     };
 
     it('should like a story that is not yet liked', async () => {
@@ -300,6 +325,7 @@ describe('StoriesService', () => {
       creatorId: 'creator-1',
       expiresAt: new Date(Date.now() + 3600 * 1000),
       deletedAt: null,
+      visibility: 'PUBLIC',
     };
 
     it('should send the reply as a direct message to the creator', async () => {
@@ -345,6 +371,176 @@ describe('StoriesService', () => {
       await expect(service.replyToStory(userId, storyId, 'hi')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('createStory media ownership', () => {
+    const userId = 'creator-123';
+
+    beforeEach(() => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR' });
+    });
+
+    it('should accept a storage key from the creator folder and sign it on output', async () => {
+      const key = `users/${userId}/images/2026/10/abc.jpg`;
+      mockPrismaService.story.create.mockImplementation(async ({ data }: any) => ({
+        id: 'story-1',
+        ...data,
+        creator: { id: userId },
+        _count: { views: 0, likes: 0 },
+      }));
+
+      const result: any = await service.createStory(userId, {
+        type: 'PHOTO' as any,
+        mediaUrl: key,
+        visibility: 'PUBLIC' as any,
+      });
+
+      expect(mockPrismaService.story.create.mock.calls[0][0].data.mediaUrl).toBe(key);
+      expect(result.mediaUrl).toBe(`https://signed.example.com/${key}`);
+    });
+
+    it('should reject a storage key belonging to another user', async () => {
+      await expect(
+        service.createStory(userId, {
+          type: 'PHOTO' as any,
+          mediaUrl: 'users/someone-else/images/2026/10/abc.jpg',
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrismaService.story.create).not.toHaveBeenCalled();
+    });
+
+    it('should store the background color of text stories only', async () => {
+      mockPrismaService.story.create.mockImplementation(async ({ data }: any) => ({
+        id: 'story-2',
+        ...data,
+        creator: { id: userId },
+      }));
+
+      await service.createStory(userId, {
+        type: 'TEXT' as any,
+        text: '  Bonjour  ',
+        backgroundColor: '#ff0066',
+        mediaUrl: 'users/someone-else/x.jpg',
+      });
+
+      const data = mockPrismaService.story.create.mock.calls[0][0].data;
+      expect(data.text).toBe('Bonjour');
+      expect(data.backgroundColor).toBe('#ff0066');
+      expect(data.mediaUrl).toBeNull();
+    });
+  });
+
+  describe('visibility enforcement', () => {
+    const creatorId = 'creator-1';
+    const viewerId = 'fan-1';
+    const base = {
+      creatorId,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      deletedAt: null,
+      createdAt: new Date(),
+      creator: { id: creatorId, username: 'alice' },
+      _count: { views: 0, likes: 0 },
+    };
+    const publicStory = { ...base, id: 's-public', type: 'PHOTO', visibility: 'PUBLIC', mediaUrl: 'https://cdn/p.jpg', caption: 'Hello' };
+    const subStory = { ...base, id: 's-sub', type: 'PHOTO', visibility: 'SUBSCRIBERS_ONLY', mediaUrl: 'https://cdn/s.jpg', caption: 'Secret' };
+
+    it('should lock subscriber-only stories for non-subscribers', async () => {
+      mockPrismaService.story.findMany.mockResolvedValue([publicStory, subStory]);
+
+      const result: any[] = await service.getCreatorStories(creatorId, viewerId);
+
+      expect(result[0]).toMatchObject({ id: 's-public', isLocked: false, mediaUrl: 'https://cdn/p.jpg' });
+      expect(result[1]).toMatchObject({ id: 's-sub', isLocked: true, mediaUrl: null, caption: null });
+      expect(mockPrismaService.story.findMany.mock.calls[0][0].where.visibility).toEqual({ not: 'PRIVATE' });
+    });
+
+    it('should unlock subscriber-only stories for active subscribers', async () => {
+      mockPrismaService.story.findMany.mockResolvedValue([subStory]);
+      mockPrismaService.subscription.findMany.mockResolvedValue([{ tier: { creatorId } }]);
+      mockPrismaService.storyView.findMany.mockResolvedValue([{ storyId: 's-sub' }]);
+
+      const [story]: any[] = await service.getCreatorStories(creatorId, viewerId);
+
+      expect(story).toMatchObject({ isLocked: false, mediaUrl: 'https://cdn/s.jpg', isViewed: true });
+    });
+
+    it('should refuse views, likes and replies on locked stories', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue({ ...subStory });
+
+      await expect(service.viewStory(viewerId, 's-sub')).rejects.toThrow(ForbiddenException);
+      await expect(service.toggleLike(viewerId, 's-sub')).rejects.toThrow(ForbiddenException);
+      await expect(service.replyToStory(viewerId, 's-sub', 'hi')).rejects.toThrow(ForbiddenException);
+      expect(mockPrismaService.storyView.create).not.toHaveBeenCalled();
+      expect(mockPrismaService.storyLike.create).not.toHaveBeenCalled();
+      expect(mockMessagingService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('should hide private stories from other users', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue({ ...publicStory, visibility: 'PRIVATE' });
+
+      await expect(service.getStoryById('s-public', viewerId)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getStoriesFeed', () => {
+    const userId = 'fan-1';
+
+    it('should group stories by creator with unseen groups first', async () => {
+      const now = Date.now();
+      const story = (id: string, creatorId: string, minutesAgo: number) => ({
+        id,
+        creatorId,
+        visibility: 'PUBLIC',
+        type: 'TEXT',
+        text: id,
+        createdAt: new Date(now - minutesAgo * 60000),
+        expiresAt: new Date(now + 3600 * 1000),
+        creator: { id: creatorId },
+      });
+      mockPrismaService.subscription.findMany.mockResolvedValue([{ tier: { creatorId: 'c-seen' } }]);
+      mockPrismaService.follow.findMany.mockResolvedValue([{ creatorId: 'c-new' }]);
+      mockPrismaService.story.findMany.mockResolvedValue([
+        story('a', 'c-seen', 30),
+        story('b', 'c-new', 20),
+        story('c', 'c-seen', 10),
+      ]);
+      mockPrismaService.storyView.findMany.mockResolvedValue([{ storyId: 'a' }, { storyId: 'c' }]);
+
+      const groups: any[] = await service.getStoriesFeed(userId);
+
+      expect(groups.map((g) => g.creator.id)).toEqual(['c-new', 'c-seen']);
+      expect(groups[1].stories.map((s: any) => s.id)).toEqual(['a', 'c']);
+      expect(groups[1].hasUnviewed).toBe(false);
+      const where = mockPrismaService.story.findMany.mock.calls[0][0].where;
+      expect(where.OR).toEqual([
+        { creatorId: userId },
+        { creatorId: { in: ['c-seen'] }, visibility: { not: 'PRIVATE' } },
+        { creatorId: { in: ['c-new'] }, visibility: 'PUBLIC' },
+      ]);
+    });
+  });
+
+  describe('getStoryViewers', () => {
+    it('should list viewers with their like status', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue({ creatorId: 'creator-1', deletedAt: null });
+      mockPrismaService.storyView.findMany.mockResolvedValue([
+        { viewerId: 'u1', viewer: { id: 'u1' } },
+        { viewerId: 'u2', viewer: { id: 'u2' } },
+      ]);
+      mockPrismaService.storyView.count.mockResolvedValue(2);
+      mockPrismaService.storyLike.findMany.mockResolvedValue([{ userId: 'u2' }]);
+
+      const result = await service.getStoryViewers('creator-1', 'story-1');
+
+      expect(result.total).toBe(2);
+      expect(result.items.map((i: any) => i.hasLiked)).toEqual([false, true]);
+    });
+
+    it('should forbid other users', async () => {
+      mockPrismaService.story.findUnique.mockResolvedValue({ creatorId: 'creator-1', deletedAt: null });
+
+      await expect(service.getStoryViewers('fan-1', 'story-1')).rejects.toThrow(ForbiddenException);
     });
   });
 });

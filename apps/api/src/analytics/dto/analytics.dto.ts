@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsNumber, IsDateString } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsNumber, IsDateString, Min, Max } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 export enum AnalyticsInterval {
@@ -25,6 +25,8 @@ export class GetAnalyticsDto {
 
   @IsNumber()
   @Type(() => Number)
+  @Min(1)
+  @Max(366)
   @IsOptional()
   periods?: number = 30;
 
@@ -59,7 +61,7 @@ export class GetContentAnalyticsDto extends GetAnalyticsDto {
   @IsOptional()
   contentId?: string;
 
-  @IsEnum(['POST', 'IMAGE', 'VIDEO', 'AUDIO'])
+  @IsEnum(['PHOTO', 'VIDEO', 'AUDIO', 'TEXT', 'ALBUM'])
   @IsOptional()
   contentType?: string;
 }
@@ -73,6 +75,8 @@ export class GetEngagementDto {
 
   @IsNumber()
   @Type(() => Number)
+  @Min(1)
+  @Max(366)
   @IsOptional()
   periods?: number = 30;
 }

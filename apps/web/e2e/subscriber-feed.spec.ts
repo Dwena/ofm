@@ -31,7 +31,7 @@ test.describe('Feed abonné', () => {
   test('affiche la pagination quand elle est disponible', async ({ page }) => {
     const previous = page.getByRole('button', { name: 'Précédent' });
     if (await previous.count()) {
-      await expect(page.getByRole('button', { name: 'Suivant' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Suivant' }).first()).toBeVisible();
     }
   });
 
@@ -57,23 +57,19 @@ test.describe('Abonnements (abonné)', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Abonnements' })).toBeVisible();
   });
 
-  test('propose les onglets Découvrir / Mes Abonnements', async ({ page }) => {
-    await expect(page.getByRole('tab', { name: 'Découvrir' })).toBeVisible();
-    await expect(page.getByRole('tab', { name: /Mes Abonnements/ })).toBeVisible();
+  test('propose les onglets Actifs / Suivis / Historique', async ({ page }) => {
+    for (const name of [/Actifs/, /Suivis/, /Historique/]) {
+      await expect(page.getByRole('tab', { name })).toBeVisible();
+    }
   });
 
-  test('recherche des créateurs', async ({ page }) => {
-    const search = page.getByPlaceholder('Rechercher des créateurs...');
-    await expect(search).toBeVisible();
-    await search.fill('creator');
-
-    await expect(
-      page.getByText(/abonnés$/).first().or(page.getByText('Aucun créateur trouvé')),
-    ).toBeVisible({ timeout: 10000 });
+  test('renvoie vers Découvrir pour chercher des créateurs', async ({ page }) => {
+    await page.getByRole('link', { name: /Découvrir/ }).first().click();
+    await expect(page).toHaveURL(/\/discover/);
   });
 
   test('liste mes abonnements ou un état vide', async ({ page }) => {
-    await page.getByRole('tab', { name: /Mes Abonnements/ }).click();
+    await page.getByRole('tab', { name: /Actifs/ }).click();
 
     await expect(
       page.getByRole('button', { name: /Se désabonner|Reprendre|Se réabonner/ }).first().or(page.getByText("Vous n'avez aucun abonnement actif")),

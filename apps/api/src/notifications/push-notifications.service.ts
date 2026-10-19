@@ -7,6 +7,7 @@ import { PrismaService } from '../common/database/prisma.service';
 import { MessagingGateway } from '../messaging/messaging.gateway';
 import { CreatePushSubscriptionDto } from './dto/push-subscription.dto';
 import { normalizeNotificationData } from './notification-kind';
+import { getNotificationCategory, isNotificationChannelEnabled } from './notification-preferences';
 
 export interface PushPayload {
   title: string;
@@ -52,6 +53,9 @@ export class PushNotificationsService implements OnModuleInit {
    * Single hook for every Notification row created anywhere in the app
    * (NotificationsService.create or direct prisma.notification.create calls):
    * - the data is normalized (valid enum type, `metadata.kind` marker);
+   * - the recipient's preferences are applied: a category muted "in app" is
+   *   stored as already read and not pushed on the socket, a category muted for
+   *   "push" is not delivered as a web push;
    * - the created row is pushed in realtime (`notification:new` on the socket)
    *   and delivered as a web push.
    */
@@ -62,16 +66,48 @@ export class PushNotificationsService implements OnModuleInit {
     }
     prisma.$use(async (params: Prisma.MiddlewareParams, next: (p: Prisma.MiddlewareParams) => Promise<any>) => {
       const isNotificationCreate = params.model === 'Notification' && params.action === 'create';
+      let channels = { inApp: true, push: true };
       if (isNotificationCreate && params.args?.data) {
-        normalizeNotificationData(params.args.data);
+        const data = normalizeNotificationData(params.args.data);
+        channels = await this.getChannels(data);
+        if (!channels.inApp && data.isRead === undefined) {
+          data.isRead = true;
+          data.readAt = new Date();
+        }
       }
       const result = await next(params);
       if (isNotificationCreate && result?.userId) {
-        this.emitRealtime(result as Notification);
-        void this.sendForNotification(result as Notification);
+        if (channels.inApp) {
+          this.emitRealtime(result as Notification);
+        }
+        if (channels.push) {
+          void this.sendForNotification(result as Notification);
+        }
       }
       return result;
     });
+  }
+
+  /** Channels enabled by the recipient for this notification (all on when unknown) */
+  async getChannels(data: Record<string, any>): Promise<{ inApp: boolean; push: boolean }> {
+    const enabled = { inApp: true, push: true };
+    if (typeof data?.userId !== 'string' || !getNotificationCategory(data.type, data.metadata)) {
+      return enabled;
+    }
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: data.userId },
+        select: { notificationPreferences: true },
+      });
+      const preferences = user?.notificationPreferences;
+      return {
+        inApp: isNotificationChannelEnabled(preferences, data.type, data.metadata, 'inApp'),
+        push: isNotificationChannelEnabled(preferences, data.type, data.metadata, 'push'),
+      };
+    } catch (error: any) {
+      this.logger.warn(`Failed to load notification preferences of ${data.userId}: ${error?.message ?? error}`);
+      return enabled;
+    }
   }
 
   /** Push the notification to the recipient's socket room (no-op when offline) */

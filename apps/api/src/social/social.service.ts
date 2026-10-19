@@ -32,6 +32,12 @@ export class SocialService {
       throw new NotFoundException('Content not found');
     }
 
+    // Drafts and private content can only be commented by their creator
+    const isOwner = content.creatorId === userId;
+    if (!isOwner && (content.status !== 'PUBLISHED' || content.visibility === 'PRIVATE')) {
+      throw new NotFoundException('Content not found');
+    }
+
     // Create comment
     const comment = await this.prisma.comment.create({
       data: {
@@ -395,109 +401,139 @@ export class SocialService {
 
   /**
    * Discover creators
+   *
+   * - POPULAR / RECOMMENDED: most subscribers first; NEW: most recent accounts first.
+   * - PRICE_ASC / PRICE_DESC and minPrice / maxPrice work on the creator's
+   *   cheapest active tier (the "from" price shown on cards). Prisma cannot
+   *   order by a relation aggregate, so those cases rank the matching ids in
+   *   memory, then load the requested page.
+   * - The requesting user is never listed.
    */
   async discoverCreators(userId: string, dto: DiscoverCreatorsDto) {
-    const { query, sortBy = 'POPULAR', page = 1, limit = 20 } = dto;
+    const { query, sortBy = 'POPULAR', page = 1, limit = 20, minPrice, maxPrice } = dto;
     const skip = (page - 1) * limit;
 
-    const where: any = {
+    const where: Prisma.UserWhereInput = {
       role: 'CREATOR',
       status: 'ACTIVE',
       deletedAt: null,
+      ...(userId ? { id: { not: userId } } : {}),
     };
 
     // Search by username or display name
-    if (query) {
+    const search = query?.trim();
+    if (search) {
       where.OR = [
-        { username: { contains: query, mode: 'insensitive' } },
-        { displayName: { contains: query, mode: 'insensitive' } },
+        { username: { contains: search, mode: 'insensitive' } },
+        { displayName: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    // Build order by
-    let orderBy: any = {};
+    const cheapestTier = {
+      where: { isActive: true },
+      select: { price: true },
+      orderBy: { price: 'asc' as const },
+      take: 1,
+    };
 
-    switch (sortBy) {
-      case 'POPULAR':
-        orderBy = {
-          creatorProfile: {
-            totalSubscribers: 'desc',
-          },
-        };
-        break;
-      case 'NEW':
-        orderBy = { createdAt: 'desc' };
-        break;
-      case 'RECOMMENDED':
-        // For recommended, we could use ML or just popular for now
-        orderBy = {
-          creatorProfile: {
-            totalSubscribers: 'desc',
-          },
-        };
-        break;
-    }
+    const select = {
+      id: true,
+      username: true,
+      displayName: true,
+      bio: true,
+      avatar: true,
+      coverImage: true,
+      location: true,
+      kycStatus: true,
+      createdAt: true,
+      creatorProfile: {
+        select: {
+          totalSubscribers: true,
+          totalContent: true,
+        },
+      },
+      subscriptionTiers: cheapestTier,
+    };
 
-    const [creators, total] = await Promise.all([
-      this.prisma.user.findMany({
+    const byPrice = sortBy === 'PRICE_ASC' || sortBy === 'PRICE_DESC';
+    const priceFiltered = minPrice !== undefined || maxPrice !== undefined;
+
+    let creators: any[];
+    let total: number;
+
+    if (byPrice || priceFiltered) {
+      const candidates = await this.prisma.user.findMany({
         where,
-        orderBy,
-        skip,
-        take: limit,
         select: {
           id: true,
-          username: true,
-          displayName: true,
-          bio: true,
-          avatar: true,
-          coverImage: true,
-          location: true,
-          kycStatus: true,
           createdAt: true,
-          creatorProfile: {
-            select: {
-              totalSubscribers: true,
-              totalContent: true,
-            },
-          },
-          subscriptionTiers: {
-            where: { isActive: true },
-            select: { price: true },
-            orderBy: { price: 'asc' },
-            take: 1,
-          },
+          creatorProfile: { select: { totalSubscribers: true } },
+          subscriptionTiers: cheapestTier,
         },
+      });
+
+      const ranked = candidates
+        .map((c: any) => ({
+          id: c.id as string,
+          price: c.subscriptionTiers?.[0] ? Number(c.subscriptionTiers[0].price) : null,
+          subscribers: c.creatorProfile?.totalSubscribers ?? 0,
+          createdAt: new Date(c.createdAt).getTime(),
+        }))
+        .filter((c) => {
+          if (!priceFiltered) return true;
+          // A creator without an active tier cannot be subscribed to
+          if (c.price === null) return false;
+          if (minPrice !== undefined && c.price < minPrice) return false;
+          if (maxPrice !== undefined && c.price > maxPrice) return false;
+          return true;
+        })
+        .sort((a, b) => {
+          if (byPrice && a.price !== b.price) {
+            // Creators without a tier always come last
+            if (a.price === null) return 1;
+            if (b.price === null) return -1;
+            return sortBy === 'PRICE_ASC' ? a.price - b.price : b.price - a.price;
+          }
+          if (sortBy === 'NEW') return b.createdAt - a.createdAt;
+          return b.subscribers - a.subscribers;
+        });
+
+      total = ranked.length;
+      const pageIds = ranked.slice(skip, skip + limit).map((c) => c.id);
+      const rows: any[] = pageIds.length
+        ? await this.prisma.user.findMany({ where: { id: { in: pageIds } }, select })
+        : [];
+      const rowsById = new Map(rows.map((row) => [row.id, row]));
+      creators = pageIds.map((id) => rowsById.get(id)).filter(Boolean);
+    } else {
+      const orderBy: Prisma.UserOrderByWithRelationInput[] =
+        sortBy === 'NEW'
+          ? [{ createdAt: 'desc' }]
+          : [{ creatorProfile: { totalSubscribers: 'desc' } }, { createdAt: 'desc' }];
+
+      [creators, total] = await Promise.all([
+        this.prisma.user.findMany({ where, orderBy, skip, take: limit, select }),
+        this.prisma.user.count({ where }),
+      ]);
+    }
+
+    const creatorIds = creators.map((c: any) => c.id);
+
+    // Check if the user is subscribed to / following each creator
+    const [userSubscriptions, userFollows] = await Promise.all([
+      this.prisma.subscription.findMany({
+        where: {
+          subscriberId: userId,
+          status: 'ACTIVE',
+          tier: { creatorId: { in: creatorIds } },
+        },
+        select: { tier: { select: { creatorId: true } } },
       }),
-      this.prisma.user.count({ where }),
+      this.prisma.follow.findMany({
+        where: { followerId: userId, creatorId: { in: creatorIds } },
+        select: { creatorId: true },
+      }),
     ]);
-
-    // Check if user is following each creator
-    const userSubscriptions = await this.prisma.subscription.findMany({
-      where: {
-        subscriberId: userId,
-        status: 'ACTIVE',
-        tier: {
-          creatorId: {
-            in: creators.map((c: any) => c.id),
-          },
-        },
-      },
-      select: {
-        tier: {
-          select: {
-            creatorId: true,
-          },
-        },
-      },
-    });
-
-    const userFollows = await this.prisma.follow.findMany({
-      where: {
-        followerId: userId,
-        creatorId: { in: creators.map((c: any) => c.id) },
-      },
-      select: { creatorId: true },
-    });
 
     const subscribedIds = new Set(userSubscriptions.map((s: any) => s.tier.creatorId));
     const followingIds = new Set(userFollows.map((f: any) => f.creatorId));
@@ -505,7 +541,7 @@ export class SocialService {
     const creatorsWithFollowStatus = creators.map(({ subscriptionTiers, ...creator }: any) => ({
       ...creator,
       // Cheapest active tier, so the discover page can display/filter by price
-      subscriptionPrice: subscriptionTiers[0] ? Number(subscriptionTiers[0].price) : null,
+      subscriptionPrice: subscriptionTiers?.[0] ? Number(subscriptionTiers[0].price) : null,
       isSubscribed: subscribedIds.has(creator.id),
       isFollowing: followingIds.has(creator.id),
     }));

@@ -4,7 +4,8 @@ import {
   Body,
   UseGuards,
   Get,
-  Request,
+  Put,
+  Delete,
   Headers,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
@@ -15,6 +16,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
 import { EmailDto, ResetPasswordDto, VerifyEmailDto } from './dto/email-token.dto';
+import { ChangePasswordDto, DeleteAccountDto } from './dto/account.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 
@@ -81,6 +83,35 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async getProfile(@CurrentUser() user: any) {
     return { user };
+  }
+
+  /** Change the password (current password required). Returns fresh tokens. */
+  @Put('password')
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  async changePassword(
+    @CurrentUser('id') userId: string,
+    @Body() changePasswordDto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(userId, changePasswordDto);
+  }
+
+  /** Sign out of every device (all refresh and access tokens revoked) */
+  @Post('logout-all')
+  @UseGuards(JwtAuthGuard)
+  async logoutAll(@CurrentUser('id') userId: string) {
+    return this.authService.logoutAll(userId);
+  }
+
+  /** Soft-delete the current account (password + 2FA code when enabled) */
+  @Delete('account')
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  async deleteAccount(
+    @CurrentUser('id') userId: string,
+    @Body() deleteAccountDto: DeleteAccountDto,
+  ) {
+    return this.authService.deleteAccount(userId, deleteAccountDto);
   }
 
   @Post('2fa/enable')

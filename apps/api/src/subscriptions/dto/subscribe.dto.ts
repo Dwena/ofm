@@ -26,3 +26,10 @@ export class ChangeTierDto {
   @IsOptional()
   paymentMethodId?: string;
 }
+
+export class RetryPaymentDto {
+  // Saved card to pay with (it becomes the subscription's card); defaults to the current one
+  @IsString()
+  @IsOptional()
+  paymentMethodId?: string;
+}

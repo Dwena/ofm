@@ -73,8 +73,8 @@ test.describe('Analytics créateur', () => {
   });
 
   test('affiche les cartes de statistiques', async ({ page }) => {
-    for (const title of ['Revenus ce mois', 'Abonnés Actifs', 'Vues Totales', 'Engagement']) {
-      await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+    for (const title of ['Revenus ce mois', 'Abonnés actifs', 'Vues totales', 'Engagement']) {
+      await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
     }
   });
 
@@ -106,24 +106,31 @@ test.describe('Abonnements créateur', () => {
 
   test('affiche la page de gestion des abonnements', async ({ page }) => {
     await expect(page.getByRole('heading', { level: 1, name: 'Abonnements' })).toBeVisible();
-    await expect(page.getByText("Gérez vos tiers d'abonnement et vos abonnés")).toBeVisible();
+    await expect(page.getByText("Gérez vos offres d'abonnement et vos abonnés")).toBeVisible();
   });
 
   test('affiche les cartes de statistiques', async ({ page }) => {
-    for (const title of ['Abonnés Totaux', 'Revenus Mensuels', 'Tiers Actifs']) {
+    for (const title of ['Abonnés actifs', 'Revenus mensuels', 'Offres actives']) {
       await expect(page.getByRole('heading', { name: new RegExp(title) })).toBeVisible();
     }
   });
 
-  test('affiche les tiers du créateur (seed : Essentiel, Premium)', async ({ page }) => {
+  test('affiche les offres du créateur (seed : Essentiel, Premium)', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Essentiel', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Premium', exact: true })).toBeVisible();
   });
 
   test('bascule sur la liste des abonnés', async ({ page }) => {
-    await expect(page.getByRole('tab', { name: "Tiers d'Abonnement" })).toBeVisible();
-    await page.getByRole('tab', { name: 'Mes Abonnés' }).click();
+    await expect(page.getByRole('tab', { name: 'Offres' })).toBeVisible();
+    await page.getByRole('tab', { name: /Abonnés/ }).click();
 
-    await expect(page.getByRole('heading', { name: 'Liste des Abonnés' })).toBeVisible();
+    await expect(page).toHaveURL(/tab=subscribers/);
+    await expect(page.getByRole('heading', { name: 'Liste des abonnés' })).toBeVisible();
+  });
+
+  test("/creator/tiers redirige vers l'onglet Offres", async ({ page }) => {
+    await page.goto('/creator/tiers');
+    await expect(page).toHaveURL(/\/creator\/subscriptions\?tab=tiers/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Abonnements' })).toBeVisible();
   });
 });

@@ -7,6 +7,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateContentDto } from './dto/create-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
 import { SearchContentDto } from './dto/search-content.dto';
+import { MyContentQueryDto } from './dto/my-content.dto';
 import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
 
 @Controller('content')
@@ -40,11 +41,17 @@ export class ContentController {
     );
   }
 
+  /**
+   * Authenticated creator's content (every status) with per-content stats
+   */
   @Get('my-content')
+  @UseGuards(RolesGuard)
+  @Roles('CREATOR')
   async getMyContent(
     @CurrentUser('id') userId: string,
+    @Query() query: MyContentQueryDto,
   ) {
-    return this.contentService.getCreatorContent(userId, userId);
+    return this.contentService.getMyContent(userId, query);
   }
 
   @Get('search')
@@ -96,6 +103,22 @@ export class ContentController {
     @Param('id') contentId: string,
   ) {
     return this.contentService.publishContent(userId, contentId);
+  }
+
+  @Post(':id/archive')
+  async archiveContent(
+    @CurrentUser('id') userId: string,
+    @Param('id') contentId: string,
+  ) {
+    return this.contentService.archiveContent(userId, contentId);
+  }
+
+  @Post(':id/unarchive')
+  async unarchiveContent(
+    @CurrentUser('id') userId: string,
+    @Param('id') contentId: string,
+  ) {
+    return this.contentService.unarchiveContent(userId, contentId);
   }
 
   @Delete(':id')

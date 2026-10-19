@@ -21,6 +21,16 @@ describe('SubscriptionSyncService', () => {
     },
     creatorProfile: {
       updateMany: jest.fn(),
+      findUnique: jest.fn(),
+    },
+    message: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+    },
+    conversation: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
     },
     user: {
       findUnique: jest.fn(),
@@ -296,6 +306,68 @@ describe('SubscriptionSyncService', () => {
         },
         data: expect.objectContaining({ status: 'CANCELLED' }),
       });
+    });
+  });
+
+  describe('sendWelcomeMessage', () => {
+    it('sends the creator welcome message and opens the conversation', async () => {
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ welcomeMessage: ' Bienvenue ! ' });
+      mockPrismaService.message.findFirst.mockResolvedValue(null);
+      mockPrismaService.message.create.mockResolvedValue({ id: 'msg-1' });
+      mockPrismaService.conversation.findFirst.mockResolvedValue(null);
+
+      await service.sendWelcomeMessage('creator-1', 'fan-1');
+
+      expect(mockPrismaService.message.create).toHaveBeenCalledWith({
+        data: { senderId: 'creator-1', receiverId: 'fan-1', content: 'Bienvenue !', status: 'SENT' },
+      });
+      expect(mockPrismaService.conversation.create).toHaveBeenCalledWith({
+        data: { participant1Id: 'creator-1', participant2Id: 'fan-1', lastMessageId: 'msg-1' },
+      });
+    });
+
+    it('updates an existing conversation', async () => {
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ welcomeMessage: 'Bienvenue !' });
+      mockPrismaService.message.findFirst.mockResolvedValue(null);
+      mockPrismaService.message.create.mockResolvedValue({ id: 'msg-2' });
+      mockPrismaService.conversation.findFirst.mockResolvedValue({ id: 'conv-1' });
+
+      await service.sendWelcomeMessage('creator-1', 'fan-1');
+
+      expect(mockPrismaService.conversation.update).toHaveBeenCalledWith({
+        where: { id: 'conv-1' },
+        data: expect.objectContaining({ lastMessageId: 'msg-2' }),
+      });
+      expect(mockPrismaService.conversation.create).not.toHaveBeenCalled();
+    });
+
+    it('does nothing without a welcome message', async () => {
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ welcomeMessage: null });
+
+      await service.sendWelcomeMessage('creator-1', 'fan-1');
+
+      expect(mockPrismaService.message.create).not.toHaveBeenCalled();
+    });
+
+    it('does not send the same welcome message twice', async () => {
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ welcomeMessage: 'Bienvenue !' });
+      mockPrismaService.message.findFirst.mockResolvedValue({ id: 'msg-old' });
+
+      await service.sendWelcomeMessage('creator-1', 'fan-1');
+
+      expect(mockPrismaService.message.create).not.toHaveBeenCalled();
+    });
+
+    it('is sent when a free subscription is activated', async () => {
+      mockPrismaService.subscription.upsert.mockResolvedValue({ id: 'sub-free' });
+      mockPrismaService.creatorProfile.findUnique.mockResolvedValue({ welcomeMessage: 'Bienvenue !' });
+      mockPrismaService.message.findFirst.mockResolvedValue(null);
+      mockPrismaService.message.create.mockResolvedValue({ id: 'msg-3' });
+      mockPrismaService.conversation.findFirst.mockResolvedValue(null);
+
+      await service.activateFreeSubscription('fan-1', { id: 'tier-free', creatorId: 'creator-1', name: 'Fan', interval: 'month' });
+
+      expect(mockPrismaService.message.create).toHaveBeenCalled();
     });
   });
 });

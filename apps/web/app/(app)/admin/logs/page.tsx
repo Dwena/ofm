@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ScrollText } from 'lucide-react'
 import { adminApi } from '@/lib/api'
+import { useDebounce } from '@/hooks/use-debounce'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -11,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   EmptyState,
+  ErrorState,
   LoadingState,
   Paginated,
   PaginationControls,
@@ -51,12 +54,13 @@ export default function AdminLogsPage() {
   const [action, setAction] = useState('')
   const [resource, setResource] = useState('all')
   const [page, setPage] = useState(1)
+  const debouncedAction = useDebounce(action, 400)
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['admin-audit-logs', action, resource, page],
+  const { data, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ['admin-audit-logs', debouncedAction, resource, page],
     queryFn: async () => {
       const response = await adminApi.getAuditLogs({
-        action: action.trim() || undefined,
+        action: debouncedAction.trim() || undefined,
         resource: resource !== 'all' ? resource : undefined,
         page,
         limit: 50,
@@ -83,11 +87,14 @@ export default function AdminLogsPage() {
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <CardTitle>Actions</CardTitle>
-              <CardDescription>{data?.pagination.total ?? 0} entrée(s)</CardDescription>
+              <CardDescription>
+                {data?.pagination.total ?? 0} entrée(s){isFetching && !isLoading ? ' • mise à jour...' : ''}
+              </CardDescription>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input
-                placeholder="Filtrer par action (ex. BAN)"
+                placeholder="Filtrer par action (ex. BAN, KYC)"
+                aria-label="Filtrer par action"
                 value={action}
                 onChange={(e) => {
                   setAction(e.target.value)
@@ -120,6 +127,8 @@ export default function AdminLogsPage() {
         <CardContent>
           {isLoading ? (
             <LoadingState />
+          ) : error ? (
+            <ErrorState error={error} onRetry={() => refetch()} label="Impossible de charger le journal" />
           ) : logs.length === 0 ? (
             <EmptyState>Aucune action enregistrée</EmptyState>
           ) : (
@@ -145,12 +154,26 @@ export default function AdminLogsPage() {
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
                         {RESOURCES[log.resource] || log.resource}
-                        {log.resourceId && (
-                          <span className="text-xs text-muted-foreground"> • {log.resourceId.slice(0, 8)}</span>
-                        )}
+                        {log.resourceId &&
+                          (log.resource === 'USER' ? (
+                            <Link
+                              href={`/admin/users?user=${log.resourceId}`}
+                              className="text-xs text-primary hover:underline"
+                            >
+                              {' '}• {log.resourceId.slice(0, 8)}
+                            </Link>
+                          ) : (
+                            <span className="text-xs text-muted-foreground"> • {log.resourceId.slice(0, 8)}</span>
+                          ))}
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
-                        {log.actor ? `@${log.actor.username}` : 'Système'}
+                        {log.actor ? (
+                          <Link href={`/admin/users?user=${log.actor.id}`} className="hover:underline">
+                            @{log.actor.username}
+                          </Link>
+                        ) : (
+                          'Système'
+                        )}
                       </TableCell>
                       <TableCell className="max-w-md text-sm text-muted-foreground break-words">
                         {summarize(log.metadata)}
