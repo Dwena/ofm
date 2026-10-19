@@ -32,6 +32,12 @@ export class SocialService {
       throw new NotFoundException('Content not found');
     }
 
+    // Drafts and private content can only be commented by their creator
+    const isOwner = content.creatorId === userId;
+    if (!isOwner && (content.status !== 'PUBLISHED' || content.visibility === 'PRIVATE')) {
+      throw new NotFoundException('Content not found');
+    }
+
     // Create comment
     const comment = await this.prisma.comment.create({
       data: {

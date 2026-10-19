@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   Eye,
@@ -14,6 +14,7 @@ import {
   Lock,
   MessageCircle,
   Music,
+  Share2,
   Video,
 } from 'lucide-react'
 import { contentApi } from '@/lib/api'
@@ -25,8 +26,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Lightbox } from '@/components/ui/lightbox'
 import { VideoPlayer } from '@/components/ui/video-player'
 import CommentsSection from '@/components/social/comments-section'
-import { formatCurrency, formatRelativeTime } from '@/lib/utils'
-import { toast } from '@/hooks/use-toast'
+import ContentActionsMenu from '@/components/social/content-actions-menu'
+import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
+import { shareContent, useToggleLike } from '@/hooks/use-content-actions'
+import { cn, formatCurrency, formatRelativeTime } from '@/lib/utils'
 
 // Shape returned by GET /content/:id
 interface ContentFile {
@@ -67,6 +70,14 @@ interface ContentDetail {
   }
 }
 
+const typeLabels: Record<ContentDetail['type'], string> = {
+  PHOTO: 'Photo',
+  ALBUM: 'Album',
+  VIDEO: 'Vidéo',
+  AUDIO: 'Audio',
+  TEXT: 'Texte',
+}
+
 const typeIcons = {
   PHOTO: ImageIcon,
   ALBUM: ImageIcon,
@@ -92,43 +103,18 @@ export default function ContentDetailPage() {
       return response.data as ContentDetail
     },
     retry: (count, err: any) => err?.response?.status !== 404 && count < 2,
+    // Each fetch counts as a view
+    refetchOnWindowFocus: false,
   })
 
-  const likeMutation = useMutation({
-    mutationFn: async () => {
-      const response = await contentApi.likeContent(contentId)
-      return response.data as { liked: boolean }
-    },
-    // Optimistic toggle
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey })
-      const previous = queryClient.getQueryData<ContentDetail>(queryKey)
-      if (previous) {
-        queryClient.setQueryData<ContentDetail>(queryKey, {
-          ...previous,
-          isLiked: !previous.isLiked,
-          likeCount: Math.max(0, previous.likeCount + (previous.isLiked ? -1 : 1)),
-        })
-      }
-      return { previous }
-    },
-    onError: (err: any, _vars, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(queryKey, context.previous)
-      }
-      toast({
-        title: 'Erreur',
-        description: err?.response?.data?.message || "Impossible d'aimer ce contenu.",
-        variant: 'destructive',
-      })
-    },
-    onSuccess: (data) => {
-      queryClient.setQueryData<ContentDetail>(queryKey, (current) =>
-        current ? { ...current, isLiked: data.liked } : current,
-      )
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
-    },
-  })
+  const [unlockOpen, setUnlockOpen] = useState(false)
+  const likeMutation = useToggleLike({ id: contentId, isLiked: content?.isLiked ?? false })
+
+  const goBack = () => {
+    // Opened from a shared link: there is no in-app page to go back to
+    if (window.history.length > 1) router.back()
+    else router.push('/feed')
+  }
 
   if (isLoading) {
     return (
@@ -171,20 +157,18 @@ export default function ContentDetailPage() {
     title: content.title ?? undefined,
   }))
 
-  const checkoutUrl =
-    content.isPpv && content.ppvPrice
-      ? `/checkout?${new URLSearchParams({
-          type: 'ppv',
-          itemId: content.id,
-          amount: String(content.ppvPrice),
-          description: content.title || `Contenu de @${content.creator.username}`,
-          returnUrl: `/content/${content.id}`,
-        }).toString()}`
-      : null
-
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <Button variant="ghost" onClick={() => router.back()} className="-ml-2">
+      <PpvUnlockDialog
+        content={unlockOpen ? content : null}
+        onClose={() => setUnlockOpen(false)}
+        onUnlocked={() => {
+          queryClient.invalidateQueries({ queryKey })
+          queryClient.invalidateQueries({ queryKey: ['feed'] })
+        }}
+      />
+
+      <Button variant="ghost" onClick={goBack} className="-ml-2">
         <ArrowLeft className="h-4 w-4 mr-2" />
         Retour
       </Button>
@@ -206,7 +190,7 @@ export default function ContentDetailPage() {
         <div className="flex items-center gap-2 flex-shrink-0">
           <Badge variant="secondary" className="gap-1">
             <TypeIcon className="h-3 w-3" />
-            {content.mediaCount > 1 ? `${content.mediaCount} médias` : content.type}
+            {content.mediaCount > 1 ? `${content.mediaCount} médias` : typeLabels[content.type] ?? content.type}
           </Badge>
           {content.isPpv && (
             <Badge className="bg-amber-500 hover:bg-amber-500">
@@ -215,6 +199,7 @@ export default function ContentDetailPage() {
                 : formatCurrency(content.ppvPrice ?? 0)}
             </Badge>
           )}
+          <ContentActionsMenu content={content} isOwner={isOwner} showOpen={false} />
         </div>
       </div>
 
@@ -228,7 +213,7 @@ export default function ContentDetailPage() {
               <div className="mx-auto h-16 w-16 rounded-full bg-background/80 flex items-center justify-center">
                 <Lock className="h-8 w-8" />
               </div>
-              {content.isPpv && checkoutUrl ? (
+              {content.isPpv ? (
                 <>
                   <div>
                     <p className="text-lg font-semibold">Contenu payant</p>
@@ -237,14 +222,16 @@ export default function ContentDetailPage() {
                       {formatCurrency(content.ppvPrice ?? 0)}
                     </p>
                   </div>
-                  <Button asChild size="lg">
-                    <Link href={checkoutUrl}>Débloquer pour {formatCurrency(content.ppvPrice ?? 0)}</Link>
+                  <Button size="lg" onClick={() => setUnlockOpen(true)}>
+                    Débloquer pour {formatCurrency(content.ppvPrice ?? 0)}
                   </Button>
                 </>
               ) : (
                 <>
                   <div>
-                    <p className="text-lg font-semibold">Réservé aux abonnés</p>
+                    <p className="text-lg font-semibold">
+                      {content.visibility === 'PREMIUM_SUBSCRIBERS' ? 'Réservé aux abonnés premium' : 'Réservé aux abonnés'}
+                    </p>
                     <p className="text-sm text-muted-foreground">
                       Abonnez-vous à {creatorName} pour accéder à ce contenu
                     </p>
@@ -317,23 +304,33 @@ export default function ContentDetailPage() {
       )}
 
       {/* Actions */}
-      <div className="flex items-center gap-4 border-y py-3">
+      <div className="flex items-center gap-1 sm:gap-4 border-y py-3">
         <Button
           variant="ghost"
           size="sm"
           onClick={() => likeMutation.mutate()}
           disabled={likeMutation.isPending}
           aria-pressed={content.isLiked}
-          className="gap-2"
+          className={cn('gap-2', content.isLiked && 'text-red-500 hover:text-red-600')}
         >
-          <Heart className={`h-5 w-5 ${content.isLiked ? 'fill-red-500 text-red-500' : ''}`} />
+          <Heart className={cn('h-5 w-5', content.isLiked && 'fill-current')} />
           <span>{content.likeCount}</span>
           <span className="sr-only">{content.isLiked ? "Je n'aime plus" : "J'aime"}</span>
         </Button>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-2"
+          onClick={() => document.getElementById('comments')?.scrollIntoView({ behavior: 'smooth' })}
+        >
           <MessageCircle className="h-5 w-5" />
           <span>{content.commentCount}</span>
-        </div>
+          <span className="sr-only">Voir les commentaires</span>
+        </Button>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={() => shareContent(content)}>
+          <Share2 className="h-5 w-5" />
+          <span className="hidden sm:inline">Partager</span>
+        </Button>
         <div className="flex items-center gap-2 text-sm text-muted-foreground ml-auto">
           <Eye className="h-4 w-4" />
           <span>{content.viewCount} vues</span>
@@ -341,7 +338,13 @@ export default function ContentDetailPage() {
       </div>
 
       {/* Comments */}
-      <CommentsSection contentId={content.id} initialCount={content.commentCount} />
+      <div id="comments" className="scroll-mt-6">
+        <CommentsSection
+          contentId={content.id}
+          contentCreatorId={content.creatorId}
+          initialCount={content.commentCount}
+        />
+      </div>
 
       {lightboxItems.length > 0 && (
         <Lightbox
