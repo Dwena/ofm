@@ -25,6 +25,9 @@ const pendingTierSelect = {
   select: { id: true, name: true, price: true, interval: true },
 } as const;
 
+export const SUBSCRIPTION_STATUSES = ['ACTIVE', 'CANCELLED', 'EXPIRED', 'PAST_DUE', 'PAUSED'] as const;
+export type SubscriptionStatusFilter = (typeof SUBSCRIPTION_STATUSES)[number];
+
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
@@ -74,13 +77,18 @@ export class SubscriptionsService {
     });
   }
 
-  async getCreatorSubscribers(creatorId: string) {
-    return this.prisma.subscription.findMany({
+  /**
+   * Subscriptions to the creator's tiers (every status, so the creator can
+   * filter on cancelled / expired ones too), each with what that subscriber
+   * has spent on the creator overall (completed transactions, euros).
+   */
+  async getCreatorSubscribers(creatorId: string, status?: SubscriptionStatusFilter) {
+    const subscriptions = await this.prisma.subscription.findMany({
       where: {
         tier: {
           creatorId,
         },
-        status: 'ACTIVE',
+        ...(status && { status }),
       },
       include: {
         subscriber: {
@@ -91,12 +99,36 @@ export class SubscriptionsService {
             avatar: true,
           },
         },
-        tier: true,
+        tier: {
+          select: { id: true, name: true, price: true, currency: true, interval: true, isActive: true },
+        },
+        pendingTier: pendingTierSelect,
       },
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    const subscriberIds = [...new Set(subscriptions.map((s: any) => s.subscriberId))];
+    const spent = subscriberIds.length
+      ? await this.prisma.transaction.groupBy({
+          by: ['fromUserId'],
+          where: {
+            toUserId: creatorId,
+            fromUserId: { in: subscriberIds },
+            status: 'COMPLETED',
+          },
+          _sum: { amount: true },
+        })
+      : [];
+    const spentBySubscriber = new Map<string, number>(
+      spent.map((row: any) => [row.fromUserId, Number(row._sum?.amount ?? 0)]),
+    );
+
+    return subscriptions.map((subscription: any) => ({
+      ...subscription,
+      totalSpent: spentBySubscriber.get(subscription.subscriberId) ?? 0,
+    }));
   }
 
   // Tier Management
@@ -145,24 +177,38 @@ export class SubscriptionsService {
       orderBy: { price: 'asc' },
     });
 
-    // Get subscriber counts for each tier
-    const tiersWithCounts = await Promise.all(
-      tiers.map(async (tier: any) => {
-        const subscribersCount = await this.prisma.subscription.count({
-          where: {
-            tierId: tier.id,
-            status: 'ACTIVE',
-          },
-        });
+    // Subscription counts per tier and status, in one query
+    const counts = tiers.length
+      ? await this.prisma.subscription.groupBy({
+          by: ['tierId', 'status'],
+          where: { tierId: { in: tiers.map((tier: any) => tier.id) } },
+          _count: { _all: true },
+        })
+      : [];
 
-        return {
-          ...tier,
-          subscribersCount,
-        };
-      }),
-    );
+    return tiers.map((tier: any) => {
+      const tierCounts = counts.filter((row: any) => row.tierId === tier.id);
+      const subscribersCount = tierCounts
+        .filter((row: any) => row.status === 'ACTIVE')
+        .reduce((sum: number, row: any) => sum + row._count._all, 0);
+      const totalSubscriptionsCount = tierCounts.reduce(
+        (sum: number, row: any) => sum + row._count._all,
+        0,
+      );
+      const price = Number(tier.price);
+      const monthlyPrice = tier.interval === 'year' ? price / 12 : price;
 
-    return tiersWithCounts;
+      return {
+        ...tier,
+        subscribersCount,
+        totalSubscriptionsCount,
+        // Monthly recurring revenue of the active subscriptions (euros)
+        monthlyRevenue: Math.round(monthlyPrice * subscribersCount * 100) / 100,
+        // A tier referenced by subscriptions (even past ones) keeps the history:
+        // it can only be deactivated
+        canDelete: totalSubscriptionsCount === 0,
+      };
+    });
   }
 
   async updateTier(creatorId: string, tierId: string, dto: UpdateTierDto) {
@@ -172,11 +218,11 @@ export class SubscriptionsService {
     });
 
     if (!tier) {
-      throw new NotFoundException('Tier not found');
+      throw new NotFoundException('Offre introuvable');
     }
 
     if (tier.creatorId !== creatorId) {
-      throw new ForbiddenException('You can only update your own tiers');
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres offres');
     }
 
     // A Stripe price is immutable: drop it when pricing changes so the next
@@ -212,24 +258,35 @@ export class SubscriptionsService {
     });
 
     if (!tier) {
-      throw new NotFoundException('Tier not found');
+      throw new NotFoundException('Offre introuvable');
     }
 
     if (tier.creatorId !== creatorId) {
-      throw new ForbiddenException('You can only delete your own tiers');
+      throw new ForbiddenException('Vous ne pouvez supprimer que vos propres offres');
     }
 
     // Check if tier has active subscriptions
     const activeSubscriptions = await this.prisma.subscription.count({
       where: {
         tierId,
-        status: 'ACTIVE',
+        status: { in: ['ACTIVE', 'PAST_DUE'] },
       },
     });
 
     if (activeSubscriptions > 0) {
       throw new BadRequestException(
-        `Cannot delete tier with ${activeSubscriptions} active subscription(s). Please deactivate it instead.`,
+        `Impossible de supprimer l'offre « ${tier.name} » : elle compte ${activeSubscriptions} abonné(s) actif(s). Désactivez-la plutôt.`,
+      );
+    }
+
+    // Past subscriptions reference the tier (history, renewals): keep it
+    const pastSubscriptions = await this.prisma.subscription.count({
+      where: { tierId },
+    });
+
+    if (pastSubscriptions > 0) {
+      throw new BadRequestException(
+        `Impossible de supprimer l'offre « ${tier.name} » : elle est liée à ${pastSubscriptions} ancien(s) abonnement(s). Désactivez-la pour la masquer de votre profil.`,
       );
     }
 
@@ -239,7 +296,7 @@ export class SubscriptionsService {
     });
 
     this.logger.log(`Tier deleted: ${tierId} by creator ${creatorId}`);
-    return { message: 'Tier deleted successfully' };
+    return { message: 'Offre supprimée' };
   }
 
   // Subscription lifecycle

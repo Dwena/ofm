@@ -133,6 +133,21 @@ export const usersApi = {
   getProfile: () => api.get('/users/me'),
   getByUsername: (username: string) => api.get(`/users/${username}`),
   updateProfile: (data: any) => api.put('/users/profile', data),
+  // Profile images, stored and served by the API (returns the same shape as getMe)
+  uploadAvatar: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/users/profile/avatar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  uploadCover: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/users/profile/cover', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
   getStats: () => api.get('/users/stats'),
   // Maps the /social/discover/creators response to the discover page's creator shape
   // `pagination` is { page, limit, total, totalPages }; prices filter/sort on the cheapest active tier
@@ -246,7 +261,9 @@ export const paymentsApi = {
 
 export const subscriptionsApi = {
   getMySubscriptions: () => api.get('/subscriptions/my-subscriptions'),
-  getMySubscribers: () => api.get('/subscriptions/my-subscribers'),
+  // Every status unless filtered; each row has totalSpent (euros)
+  getMySubscribers: (params?: { status?: string }) =>
+    api.get('/subscriptions/my-subscribers', { params }),
   getCreatorTiers: (creatorId: string) =>
     api.get(`/subscriptions/creator/${creatorId}/tiers`),
   // Tier management

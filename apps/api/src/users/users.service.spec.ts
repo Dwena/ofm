@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UsersService } from './users.service';
 import { PrismaService } from '../common/database/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { MessagingService } from '../messaging/messaging.service';
 
 describe('UsersService', () => {
@@ -48,6 +49,7 @@ describe('UsersService', () => {
         UsersService,
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: MessagingService, useValue: mockMessagingService },
+        { provide: StorageService, useValue: {} },
       ],
     }).compile();
 
