@@ -426,7 +426,7 @@ export class AdminService {
       case 'COMMENT': {
         const comment = await this.prisma.comment.findUnique({
           where: { id: reportedId },
-          select: { id: true, content: true, createdAt: true, user: { select: userSelect } },
+          select: { id: true, text: true, contentId: true, createdAt: true, user: { select: userSelect } },
         });
         if (comment) return { entity: comment, user: comment.user };
         break;

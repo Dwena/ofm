@@ -32,7 +32,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         message = exceptionResponse;
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      // Keep internal details (Prisma queries, stack paths) in the logs only
       this.logger.error(
         `Unhandled exception: ${exception.message}`,
         exception.stack,

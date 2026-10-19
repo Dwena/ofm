@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
@@ -525,9 +525,13 @@ export class AuthService {
       role: user.role,
     };
 
-    const accessToken = this.jwtService.sign(payload);
+    // A unique jwtid per token: two logins of the same user within the same
+    // second would otherwise produce identical tokens and collide on the
+    // unique `token` columns of Session / RefreshToken
+    const accessToken = this.jwtService.sign(payload, { jwtid: randomUUID() });
 
     const refreshToken = this.jwtService.sign(payload, {
+      jwtid: randomUUID(),
       secret: this.configService.get('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN', '7d'),
     });

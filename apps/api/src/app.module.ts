@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bull';
@@ -41,12 +41,15 @@ import { SettingsModule } from './settings/settings.module';
     }),
 
     // Rate limiting
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000, // 1 minute
-        limit: 100, // 100 requests per minute
-      },
-    ]),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => [
+        {
+          ttl: Number(config.get('THROTTLE_TTL', 60)) * 1000, // seconds in env
+          limit: Number(config.get('THROTTLE_LIMIT', 100)), // requests per ttl window
+        },
+      ],
+    }),
 
     // Scheduling
     ScheduleModule.forRoot(),

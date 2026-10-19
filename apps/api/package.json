@@ -23,7 +23,9 @@
     "migration:revert": "prisma migrate reset",
     "prisma:generate": "prisma generate",
     "prisma:studio": "prisma studio",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "seed:fresh": "SEED_RESET=true ts-node prisma/seed.ts",
+    "db:reset": "prisma migrate reset --force"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

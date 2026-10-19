@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { contentApi, subscriptionsApi, mediaApi } from '@/lib/api'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
@@ -281,9 +282,13 @@ function ContentCard({
                       </p>
                     )}
                   </div>
-                  {content.isPpv && (
+                  {content.isPpv ? (
                     <Button onClick={() => onUnlock(content)}>
                       Débloquer maintenant
+                    </Button>
+                  ) : (
+                    <Button asChild>
+                      <Link href={`/${content.creator.username}#tiers-section`}>S'abonner</Link>
                     </Button>
                   )}
                 </div>

@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev",
+    "dev:up": "bash scripts/dev-up.sh",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
@@ -16,6 +17,7 @@
     "clean": "turbo run clean && rm -rf node_modules",
     "db:migrate": "cd apps/api && npm run migration:run",
     "db:seed": "cd apps/api && npm run seed",
+    "db:seed:fresh": "cd apps/api && npm run seed:fresh",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "prepare": "husky install"

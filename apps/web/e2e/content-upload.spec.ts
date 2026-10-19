@@ -81,7 +81,7 @@ test.describe('Publication de contenu', () => {
   test('exige un titre avant publication', async ({ uploadPage, page }) => {
     await uploadPage.uploadFiles(pngFile());
 
-    await expect(page.getByText(/Ajoutez un titre/)).toBeVisible();
+    await expect(page.getByText(/Ajoutez un titre •/)).toBeVisible();
     await expect(uploadPage.publishButton).toBeDisabled();
   });
 

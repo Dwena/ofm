@@ -39,7 +39,11 @@ test.describe('Feed abonné', () => {
     const locked = page.getByText('Contenu verrouillé');
     if (await locked.count()) {
       await expect(locked.first()).toBeVisible();
-      await expect(page.getByRole('button', { name: /Débloquer maintenant|S'abonner/ }).first()).toBeVisible();
+      // PPV content offers « Débloquer maintenant », subscriber-only content links to the creator's tiers
+      const cta = page
+        .getByRole('button', { name: 'Débloquer maintenant' })
+        .or(page.getByRole('link', { name: "S'abonner" }));
+      await expect(cta.first()).toBeVisible();
     }
   });
 });

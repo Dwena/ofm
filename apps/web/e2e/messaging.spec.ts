@@ -55,15 +55,15 @@ test.describe('Messagerie', () => {
       await input.fill(message);
       await input.press('Enter');
 
-      await expect(subscriber.page.getByText(message)).toBeVisible({ timeout: 5000 });
-      await expect(creator.page.getByText(message)).toBeVisible({ timeout: 10000 });
+      await expect(subscriber.page.getByText(message).last()).toBeVisible({ timeout: 5000 });
+      await expect(creator.page.getByText(message).last()).toBeVisible({ timeout: 10000 });
 
       const reply = `Merci pour votre message ${Date.now()}`;
       const replyInput = creator.page.getByPlaceholder(MESSAGE_INPUT);
       await replyInput.fill(reply);
       await replyInput.press('Enter');
 
-      await expect(subscriber.page.getByText(reply)).toBeVisible({ timeout: 10000 });
+      await expect(subscriber.page.getByText(reply).last()).toBeVisible({ timeout: 10000 });
     } finally {
       await creator.context.close();
       await subscriber.context.close();
