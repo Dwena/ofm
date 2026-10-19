@@ -1,21 +1,37 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { paymentsApi, usersApi, contentApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { DollarSign, Users, FileText, TrendingUp, Clock } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
+import { LIVE_REFETCH_INTERVAL, useLiveAnalytics } from '@/hooks/use-live-analytics'
+import { LiveIndicator } from '@/components/live-indicator'
+import { ProcessingJobsCard } from '@/components/media/media-job-progress'
+import { formatEuros } from '@/lib/utils'
+
+// Metrics refreshed live (socket events + polling)
+const LIVE_QUERY_KEYS = [['creator-earnings'], ['creator-profile'], ['creator-content']]
 
 export default function CreatorDashboard() {
+  const queryClient = useQueryClient()
+  const { connected } = useLiveAnalytics(LIVE_QUERY_KEYS)
+
   // Fetch earnings data
-  const { data: earnings, isLoading: earningsLoading } = useQuery({
+  const {
+    data: earnings,
+    isLoading: earningsLoading,
+    isFetching: earningsFetching,
+    dataUpdatedAt,
+  } = useQuery({
     queryKey: ['creator-earnings'],
     queryFn: async () => {
       const response = await paymentsApi.getCreatorEarnings()
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch profile data
@@ -25,6 +41,7 @@ export default function CreatorDashboard() {
       const response = await usersApi.getProfile()
       return response.data.creatorProfile
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch recent content
@@ -34,6 +51,7 @@ export default function CreatorDashboard() {
       const response = await contentApi.getMyContent({ page: 1, limit: 5 })
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   const isLoading = earningsLoading || profileLoading || contentLoading
@@ -52,21 +70,21 @@ export default function CreatorDashboard() {
   const stats = [
     {
       title: 'Revenus Totaux',
-      value: `${((earnings?.totalEarnings || 0) / 100).toFixed(2)} €`,
+      value: formatEuros(earnings?.totalEarnings),
       icon: DollarSign,
       description: 'Depuis le début',
       color: 'text-green-600',
     },
     {
       title: 'Solde Disponible',
-      value: `${((earnings?.availableBalance || 0) / 100).toFixed(2)} €`,
+      value: formatEuros(earnings?.availableBalance),
       icon: TrendingUp,
       description: 'Prêt pour retrait',
       color: 'text-blue-600',
     },
     {
       title: 'En attente',
-      value: `${((earnings?.pendingBalance || 0) / 100).toFixed(2)} €`,
+      value: formatEuros(earnings?.pendingBalance),
       icon: Clock,
       description: 'En cours de traitement',
       color: 'text-orange-600',
@@ -89,11 +107,21 @@ export default function CreatorDashboard() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Dashboard Créateur</h1>
-        <p className="text-muted-foreground mt-2">
-          Bienvenue sur votre espace créateur
-        </p>
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Dashboard Créateur</h1>
+          <p className="text-muted-foreground mt-2">
+            Bienvenue sur votre espace créateur
+          </p>
+        </div>
+        <LiveIndicator
+          connected={connected}
+          updatedAt={dataUpdatedAt}
+          isFetching={earningsFetching}
+          onRefresh={() =>
+            LIVE_QUERY_KEYS.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }))
+          }
+        />
       </div>
 
       {/* Stats Cards */}
@@ -119,6 +147,9 @@ export default function CreatorDashboard() {
         })}
       </div>
 
+      {/* Media still being processed after upload */}
+      <ProcessingJobsCard />
+
       {/* Recent Content */}
       <Card>
         <CardHeader>
@@ -135,11 +166,11 @@ export default function CreatorDashboard() {
                   <div className="flex-1">
                     <div className="flex items-center space-x-3">
                       <h3 className="font-medium">{item.title}</h3>
-                      <Badge variant={item.isPublished ? 'success' : 'secondary'}>
-                        {item.isPublished ? 'Publié' : 'Brouillon'}
+                      <Badge variant={item.status === 'PUBLISHED' ? 'success' : 'secondary'}>
+                        {item.status === 'PUBLISHED' ? 'Publié' : 'Brouillon'}
                       </Badge>
                       <Badge variant="outline">
-                        {item.tier}
+                        {item.isPpv ? 'PPV' : item.visibility}
                       </Badge>
                     </div>
                     {item.description && (
@@ -184,7 +215,7 @@ export default function CreatorDashboard() {
                     <p className="font-medium">
                       {transaction.type === 'SUBSCRIPTION' && 'Abonnement'}
                       {transaction.type === 'TIP' && 'Pourboire'}
-                      {transaction.type === 'PPV' && 'Contenu PPV'}
+                      {transaction.type === 'PPV_UNLOCK' && 'Contenu PPV'}
                     </p>
                     <p className="text-sm text-muted-foreground">
                       {formatDistanceToNow(new Date(transaction.createdAt), {
@@ -195,7 +226,7 @@ export default function CreatorDashboard() {
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-green-600">
-                      +{(transaction.amount / 100).toFixed(2)} €
+                      +{formatEuros(transaction.netAmount ?? transaction.amount)}
                     </p>
                     <Badge variant={transaction.status === 'COMPLETED' ? 'success' : 'secondary'}>
                       {transaction.status}

@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios'
+import axios, { AxiosError, AxiosResponse } from 'axios'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
@@ -21,9 +21,19 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// Response interceptor - Handle errors and token refresh
+// The API wraps every payload as { success, statusCode, data, timestamp }.
+// Unwrap it so callers can read `response.data` as the payload itself.
+function unwrapEnvelope(response: AxiosResponse) {
+  const body = response.data
+  if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
+    response.data = body.data
+  }
+  return response
+}
+
+// Response interceptor - Unwrap envelope, handle errors and token refresh
 api.interceptors.response.use(
-  (response) => response,
+  unwrapEnvelope,
   async (error: AxiosError) => {
     const originalRequest = error.config as any
 
@@ -66,13 +76,33 @@ api.interceptors.response.use(
 export const authApi = {
   register: (data: { email: string; username: string; password: string; role?: string }) =>
     api.post('/auth/register', data),
+  // `_retry: true` stops the 401 interceptor from trying a token refresh (and
+  // redirecting to /login) when the credentials or the 2FA code are wrong.
   login: (data: { email: string; password: string; totpCode?: string }) =>
-    api.post('/auth/login', data),
+    api.post('/auth/login', data, { _retry: true } as any),
   logout: () => api.post('/auth/logout'),
   getMe: () => api.get('/auth/me'),
   enable2FA: () => api.post('/auth/2fa/enable'),
   verify2FA: (code: string) => api.post('/auth/2fa/verify', { code }),
   disable2FA: (code: string) => api.post('/auth/2fa/disable', { code }),
+  verifyEmail: (token: string) => api.post('/auth/verify-email', { token }),
+  resendVerification: (email: string) => api.post('/auth/resend-verification', { email }),
+  forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
+  resetPassword: (token: string, password: string) =>
+    api.post('/auth/reset-password', { token, password }),
+}
+
+export const pushApi = {
+  getVapidPublicKey: () =>
+    api.get<{ publicKey: string | null; enabled: boolean }>('/notifications/push/vapid-public-key'),
+  subscribe: (subscription: PushSubscriptionJSON) =>
+    api.post('/notifications/push/subscribe', {
+      endpoint: subscription.endpoint,
+      expirationTime: subscription.expirationTime ?? undefined,
+      keys: subscription.keys,
+    }),
+  unsubscribe: (endpoint: string) =>
+    api.delete('/notifications/push/unsubscribe', { data: { endpoint } }),
 }
 
 export const usersApi = {
@@ -81,6 +111,34 @@ export const usersApi = {
   getByUsername: (username: string) => api.get(`/users/${username}`),
   updateProfile: (data: any) => api.put('/users/profile', data),
   getStats: () => api.get('/users/stats'),
+  // Maps the /social/discover/creators response to the discover page's creator shape
+  discover: async (params: { search?: string; category?: string; sortBy?: string; page?: number; limit?: number } = {}) => {
+    const sortMap: Record<string, 'POPULAR' | 'NEW' | 'RECOMMENDED'> = {
+      popular: 'POPULAR',
+      subscribers: 'POPULAR',
+      recent: 'NEW',
+    }
+    const response = await api.get('/social/discover/creators', {
+      params: {
+        query: params.search || undefined,
+        sortBy: params.sortBy ? sortMap[params.sortBy] ?? 'RECOMMENDED' : undefined,
+        page: params.page,
+        limit: params.limit,
+      },
+    })
+    const items: any[] = Array.isArray(response.data?.items) ? response.data.items : []
+    return {
+      ...response,
+      data: items.map((creator) => ({
+        ...creator,
+        subscriberCount: creator.creatorProfile?.totalSubscribers ?? 0,
+        postCount: creator.creatorProfile?.totalContent ?? 0,
+        subscriptionPrice: creator.subscriptionPrice ?? undefined,
+        isVerified: creator.kycStatus === 'VERIFIED',
+        categories: [],
+      })),
+    }
+  },
 }
 
 export const mediaApi = {
@@ -89,9 +147,9 @@ export const mediaApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
       ...config,
     }),
-  uploadImage: (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
+  uploadImage: (fileOrFormData: File | FormData) => {
+    const formData = fileOrFormData instanceof FormData ? fileOrFormData : new FormData()
+    if (fileOrFormData instanceof File) formData.append('file', fileOrFormData)
     return api.post('/media/upload/image', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -113,12 +171,20 @@ export const paymentsApi = {
   createConnectAccount: () => api.post('/payments/connect/create'),
   getOnboardingLink: () => api.get('/payments/connect/onboarding-link'),
   getOnboardingStatus: () => api.get('/payments/connect/status'),
+  // Amounts are in euros everywhere (requests and responses)
   requestPayout: (amount: number) => api.post('/payments/payout/request', { amount }),
   getEarnings: () => api.get('/payments/earnings'),
   getCreatorEarnings: () => api.get('/payments/creator/earnings'),
   getTransactions: (page: number = 1, limit: number = 20) =>
     api.get(`/payments/transactions?page=${page}&limit=${limit}`),
   getPayouts: () => api.get('/payments/payouts'),
+  // Tips stay pending until the payment is confirmed (saved card or Stripe Elements)
+  sendTip: (
+    creatorId: string,
+    data: { amount: number; message?: string; streamId?: string; paymentMethodId?: string },
+  ) => api.post(`/payments/tip/${creatorId}`, data),
+  confirmTip: (creatorId: string, paymentIntentId: string) =>
+    api.post(`/payments/tip/${creatorId}/confirm`, { paymentIntentId }),
   createPaymentIntent: (data: { amount: number; currency?: string }) =>
     api.post('/payments/create-intent', data),
   getFilteredTransactions: (filters: any) =>
@@ -129,6 +195,13 @@ export const paymentsApi = {
     api.get(`/payments/refunds?page=${page}&limit=${limit}`),
   getRevenueStats: (filters: any) =>
     api.get('/payments/stats/revenue', { params: filters }),
+  // Saved payment methods (cards)
+  getPaymentMethods: () => api.get('/payments/methods'),
+  createSetupIntent: () => api.post('/payments/methods/setup-intent'),
+  setDefaultPaymentMethod: (paymentMethodId: string) =>
+    api.post(`/payments/methods/${paymentMethodId}/default`),
+  deletePaymentMethod: (paymentMethodId: string) =>
+    api.delete(`/payments/methods/${paymentMethodId}`),
 }
 
 export const subscriptionsApi = {
@@ -157,6 +230,20 @@ export const subscriptionsApi = {
     isActive?: boolean
   }) => api.put(`/subscriptions/tiers/${tierId}`, data),
   deleteTier: (tierId: string) => api.delete(`/subscriptions/tiers/${tierId}`),
+  // Subscription lifecycle
+  getStatusForCreator: (creatorId: string) =>
+    api.get(`/subscriptions/creator/${creatorId}/status`),
+  // Returns { requiresPayment, subscription?, clientSecret?, stripeSubscriptionId? }
+  subscribe: (data: { tierId: string; paymentMethodId?: string }) =>
+    api.post('/subscriptions/subscribe', data),
+  confirm: (stripeSubscriptionId: string) =>
+    api.post('/subscriptions/confirm', { stripeSubscriptionId }),
+  cancel: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/cancel`),
+  resume: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/resume`),
+  // Upgrade / downgrade within the same creator; same result shape as subscribe.
+  // paymentMethodId only applies to free → paid (new Stripe subscription).
+  changeTier: (subscriptionId: string, data: { tierId: string; paymentMethodId?: string }) =>
+    api.post(`/subscriptions/${subscriptionId}/change-tier`, data),
 }
 
 export const contentApi = {
@@ -168,30 +255,41 @@ export const contentApi = {
     api.get(`/content/creator/${creatorId}`),
   getMyContent: (params: { page?: number; limit?: number } = {}) =>
     api.get('/content/my-content', { params }),
+  getById: (id: string) => api.get(`/content/${id}`),
+  // Created as a draft; call publish() to make it visible
   create: (data: {
-    title: string
+    type: 'PHOTO' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'ALBUM'
+    visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PPV' | 'PRIVATE'
+    title?: string
     description?: string
-    tier: string
-    type: string
-    mediaIds?: string[]
+    caption?: string
     fileIds?: string[]
-    isPPV?: boolean
-    ppvPrice?: number
+    isPpv?: boolean
+    ppvPrice?: number // euros
   }) => api.post('/content', data),
+  publish: (id: string) => api.post(`/content/${id}/publish`),
   update: (id: string, data: any) => api.put(`/content/${id}`, data),
   delete: (id: string) => api.delete(`/content/${id}`),
   likeContent: (id: string) => api.post(`/content/${id}/like`),
-  unlockPPV: (id: string) => api.post(`/content/${id}/unlock`),
+  // PPV access is granted once the payment is confirmed (saved card or Stripe Elements)
+  unlockPPV: (id: string, paymentMethodId?: string) =>
+    api.post(`/content/${id}/unlock`, paymentMethodId ? { paymentMethodId } : {}),
+  confirmUnlock: (id: string, paymentIntentId: string) =>
+    api.post(`/content/${id}/unlock/confirm`, { paymentIntentId }),
 }
 
 export const messagesApi = {
   getConversations: () => api.get('/messages/conversations'),
-  getMessages: (partnerId: string) => api.get(`/messages/${partnerId}`),
+  // Open (or create) the conversation with a user, by id or username
+  startConversation: (user: string) => api.post('/messages/conversations', { user }),
+  getMessages: (partnerId: string, params: { page?: number; limit?: number } = {}) =>
+    api.get(`/messages/${partnerId}`, { params }),
+  deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
 }
 
 export const notificationsApi = {
   getAll: (unreadOnly: boolean = false) =>
-    api.get(`/notifications?unreadOnly=${unreadOnly}`),
+    api.get('/notifications', { params: { unreadOnly } }),
   markAsRead: (id: string) => api.put(`/notifications/${id}/read`),
   markAllAsRead: () => api.put('/notifications/read-all'),
   deleteNotification: (id: string) => api.delete(`/notifications/${id}`),
@@ -200,7 +298,7 @@ export const notificationsApi = {
 export const socialApi = {
   // Comments
   getComments: (contentId: string, page: number = 1, limit: number = 20) =>
-    api.get(`/social/comments/${contentId}?page=${page}&limit=${limit}`),
+    api.get('/social/comments', { params: { contentId, page, limit } }),
   createComment: (contentId: string, text: string) =>
     api.post('/social/comments', { contentId, text }),
   updateComment: (commentId: string, text: string) =>
@@ -210,23 +308,25 @@ export const socialApi = {
 
   // Follow/Unfollow
   followCreator: (creatorId: string) =>
-    api.post(`/social/follow/${creatorId}`),
+    api.post('/social/follow', { creatorId }),
   unfollowCreator: (creatorId: string) =>
     api.delete(`/social/follow/${creatorId}`),
+  getFollowStatus: (creatorId: string) =>
+    api.get(`/social/follow/${creatorId}`),
   getFollowing: () =>
     api.get('/social/following'),
 
   // Discover
   discoverCreators: (params?: {
-    search?: string
+    query?: string
+    sortBy?: 'POPULAR' | 'NEW' | 'RECOMMENDED'
     page?: number
     limit?: number
-    sort?: string
-  }) => api.get('/social/discover', { params }),
+  }) => api.get('/social/discover/creators', { params }),
 
   // Search
-  searchCreators: (query: string) =>
-    api.get(`/social/search?q=${encodeURIComponent(query)}`),
+  searchCreators: (query: string, limit?: number) =>
+    api.get('/social/search', { params: { q: query, limit } }),
 }
 
 export const analyticsApi = {
@@ -269,4 +369,147 @@ export const analyticsApi = {
     startDate?: string
     endDate?: string
   }) => api.get('/analytics/report/detailed', { params }),
+}
+
+export const adminApi = {
+  getStats: (params?: { startDate?: string; endDate?: string }) =>
+    api.get('/admin/stats/platform', { params }),
+  getUsers: (params?: { query?: string; role?: string; status?: string; page?: number; limit?: number }) =>
+    api.get('/admin/users', { params }),
+  getRecentUsers: (limit: number = 5) =>
+    api.get('/admin/users', { params: { page: 1, limit } }),
+  getUserDetails: (userId: string) => api.get(`/admin/users/${userId}`),
+  moderateUser: (data: { userId: string; action: string; reason?: string; durationDays?: number }) =>
+    api.post('/admin/users/moderate', data),
+  getReports: (params?: { status?: string; type?: string; page?: number; limit?: number }) =>
+    api.get('/admin/reports', { params }),
+  getPendingReports: (limit: number = 5) =>
+    api.get('/admin/reports', { params: { status: 'PENDING', page: 1, limit } }),
+  handleReport: (data: {
+    reportId: string
+    status: 'PENDING' | 'REVIEWING' | 'RESOLVED' | 'REJECTED'
+    adminNotes?: string
+    action?: 'SUSPEND' | 'BAN' | 'ACTIVATE' | 'WARN'
+    durationDays?: number
+    removeContent?: boolean
+  }) => api.post('/admin/reports/handle', data),
+  deleteUser: (userId: string, reason?: string) =>
+    api.delete(`/admin/users/${userId}`, { data: { reason } }),
+  // Content moderation: filter ALL | FLAGGED (under review / reported) | REMOVED
+  getContent: (params?: {
+    query?: string
+    status?: string
+    type?: string
+    filter?: 'ALL' | 'FLAGGED' | 'REMOVED'
+    page?: number
+    limit?: number
+  }) => api.get('/admin/content', { params }),
+  removeContent: (contentId: string, reason?: string) =>
+    api.post(`/admin/content/${contentId}/remove`, { reason }),
+  restoreContent: (contentId: string, reason?: string) =>
+    api.post(`/admin/content/${contentId}/restore`, { reason }),
+  getActivityLogs: (page: number = 1, limit: number = 20) =>
+    api.get('/admin/activity-logs', { params: { page, limit } }),
+  getAuditLogs: (params?: { action?: string; resource?: string; userId?: string; page?: number; limit?: number }) =>
+    api.get('/admin/audit-logs', { params }),
+  // Time series grouped by day | week | month; amounts in euros
+  getAnalytics: (params?: { startDate?: string; endDate?: string; interval?: 'day' | 'week' | 'month' }) =>
+    api.get('/admin/stats/analytics', { params }),
+  // Reports received/handled over the last `days` days, handling time, actions taken
+  getModerationStats: (days: number = 30) =>
+    api.get('/admin/moderation/stats', { params: { days } }),
+  getSettings: () => api.get('/admin/settings'),
+  updateSettings: (data: {
+    platformFeePercentage?: number
+    minimumPayoutAmount?: number
+    registrationOpen?: boolean
+    maintenanceMode?: boolean
+    maintenanceMessage?: string
+  }) => api.put('/admin/settings', data),
+  // Remove the database override so the setting falls back to the environment value
+  resetSetting: (key: string) => api.delete(`/admin/settings/${key}`),
+}
+
+export const moderationApi = {
+  createReport: (data: { reportedType: string; reportedId: string; reason: string; description?: string }) =>
+    api.post('/moderation/reports', data),
+  // Listing/handling reports: use adminApi.getReports / adminApi.handleReport (single format)
+  banUser: (userId: string, reason: string) =>
+    api.post(`/moderation/users/${userId}/ban`, { reason }),
+  suspendUser: (userId: string, reason: string, durationDays: number) =>
+    api.post(`/moderation/users/${userId}/suspend`, { reason, durationDays }),
+  unsuspendUser: (userId: string) =>
+    api.post(`/moderation/users/${userId}/unsuspend`),
+}
+
+export const liveApi = {
+  getLiveStreams: () => api.get('/streaming/live'),
+  getScheduledStreams: () => api.get('/streaming/scheduled'),
+  getCreatorStreams: (creatorId: string) => api.get(`/streaming/creator/${creatorId}`),
+  getStream: (streamId: string) => api.get(`/streaming/${streamId}`),
+  // Without scheduledFor the stream goes live immediately; with it, it is SCHEDULED
+  create: (data: {
+    title: string
+    description?: string
+    thumbnailUrl?: string
+    visibility?: 'PUBLIC' | 'SUBSCRIBERS_ONLY' | 'PREMIUM_SUBSCRIBERS' | 'PRIVATE'
+    isPpv?: boolean
+    ppvPrice?: number
+    scheduledFor?: string
+  }) => api.post('/streaming', data),
+  start: (streamId: string) => api.post(`/streaming/${streamId}/start`),
+  end: (streamId: string) => api.post(`/streaming/${streamId}/end`),
+  delete: (streamId: string) => api.delete(`/streaming/${streamId}`),
+  join: (streamId: string) => api.post(`/streaming/${streamId}/join`),
+  leave: (streamId: string) => api.post(`/streaming/${streamId}/leave`),
+  // PPV streams: access is granted once the payment is confirmed
+  purchase: (streamId: string, paymentMethodId?: string) =>
+    api.post(`/streaming/${streamId}/purchase`, paymentMethodId ? { paymentMethodId } : {}),
+  confirmPurchase: (streamId: string, paymentIntentId: string) =>
+    api.post(`/streaming/${streamId}/purchase/confirm`, { paymentIntentId }),
+  // Tips go to the stream's creator through the payments endpoint; once paid
+  // they are announced in the live chat
+  sendTip: (
+    creatorId: string,
+    amount: number,
+    options: { streamId?: string; message?: string; paymentMethodId?: string } = {},
+  ) => paymentsApi.sendTip(creatorId, { amount, ...options }),
+  confirmTip: (creatorId: string, paymentIntentId: string) =>
+    paymentsApi.confirmTip(creatorId, paymentIntentId),
+}
+
+export const storiesApi = {
+  getFeed: () => api.get('/stories/feed'),
+  getCreatorStories: (creatorId: string) => api.get(`/stories/creator/${creatorId}`),
+  // Groups a creator's active stories into the shape the stories viewer expects
+  getGroup: async (creatorId: string) => {
+    const response = await api.get(`/stories/creator/${creatorId}`)
+    const stories: any[] = Array.isArray(response.data) ? response.data : []
+    const creator = stories[0]?.creator ?? { id: creatorId, username: '' }
+    return {
+      ...response,
+      data: {
+        userId: creatorId,
+        user: creator,
+        stories: stories
+          .map((story) => ({
+            ...story,
+            user: story.creator,
+            mediaType: story.type === 'VIDEO' ? 'VIDEO' : story.type === 'TEXT' ? 'TEXT' : 'IMAGE',
+            views: story._count?.views ?? 0,
+            likes: story._count?.likes ?? 0,
+          }))
+          .reverse(),
+      },
+    }
+  },
+  getStory: (storyId: string) => api.get(`/stories/${storyId}`),
+  markAsViewed: (storyId: string) => api.post(`/stories/${storyId}/view`),
+  getViewers: (storyId: string) => api.get(`/stories/${storyId}/viewers`),
+  // Toggles the like; resolves to { liked, likesCount }
+  like: (storyId: string) => api.post(`/stories/${storyId}/like`),
+  // Delivered to the creator as a direct message
+  reply: (storyId: string, message: string) =>
+    api.post(`/stories/${storyId}/reply`, { message }),
+  delete: (storyId: string) => api.delete(`/stories/${storyId}`),
 }

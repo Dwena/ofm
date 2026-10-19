@@ -6,6 +6,8 @@ import { StripeService } from './stripe.service';
 import { StripeWebhookController } from './stripe-webhook.controller';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { BillingService } from './billing.service';
+import { SubscriptionSyncService } from './subscription-sync.service';
+import { OneTimePaymentService } from './one-time-payment.service';
 
 @Module({
   imports: [ConfigModule],
@@ -15,7 +17,15 @@ import { BillingService } from './billing.service';
     StripeService,
     StripeWebhookService,
     BillingService,
+    SubscriptionSyncService,
+    OneTimePaymentService,
   ],
-  exports: [PaymentsService, StripeService, BillingService],
+  exports: [
+    PaymentsService,
+    StripeService,
+    BillingService,
+    SubscriptionSyncService,
+    OneTimePaymentService,
+  ],
 })
 export class PaymentsModule {}

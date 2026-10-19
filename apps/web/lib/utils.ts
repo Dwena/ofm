@@ -12,6 +12,15 @@ export function formatCurrency(amount: number, currency: string = 'EUR'): string
   }).format(amount)
 }
 
+/**
+ * Format a euro amount, as returned by the API (euros, never cents), e.g. "9,99 €".
+ * Accepts numbers or numeric strings; missing values display as 0.
+ */
+export function formatEuros(amount: number | string | null | undefined): string {
+  const value = Number(amount ?? 0)
+  return formatCurrency(Number.isFinite(value) ? value : 0, 'EUR')
+}
+
 export function formatDate(date: string | Date): string {
   return new Intl.DateTimeFormat('fr-FR', {
     year: 'numeric',

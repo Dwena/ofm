@@ -58,48 +58,37 @@ npx playwright show-report
 
 ## Structure des tests
 
-### payment-flow.spec.ts
-- ✅ Achat d'abonnement complet
-- ✅ Envoi de pourboire
-- ✅ Gestion des erreurs de paiement
-- ✅ Annulation d'abonnement
+Les sélecteurs suivent l'interface en français : rôles ARIA (`getByRole`), libellés et
+`data-testid` ajoutés aux composants (`login-email`, `upload-file-input`, `publish-content`,
+`media-job-status`, `reports-queue`, `nav-link-*`, ...). Les fixtures `asCreator`, `asSubscriber`
+et `asAdmin` (voir `fixtures/auth.fixture.ts`) connectent le compte correspondant.
 
-### content-upload.spec.ts
-- ✅ Upload d'image
-- ✅ Upload de vidéo avec traitement
-- ✅ Upload de galerie (multiple images)
-- ✅ Gestion d'erreurs (type invalide, fichier trop grand)
-- ✅ Annulation d'upload
-- ✅ Édition de contenu
-- ✅ Suppression de contenu
+- `auth.spec.ts` : connexion, inscription, validations, session / déconnexion
+- `creator-dashboard.spec.ts` : dashboard, navigation, analytics et abonnements créateur
+- `content-upload.spec.ts` : upload d'image, PPV, album, erreurs de type, suivi du traitement vidéo
+  (« Traitement de la vidéo » → « Vidéo prête »)
+- `subscriber-feed.spec.ts` : feed, abonnements, messagerie côté abonné
+- `messaging.spec.ts` : messages temps réel entre créateur et abonné, indicateur de saisie, image
+- `payment-flow.spec.ts` : paiement sécurisé d'un abonnement, cartes Stripe, PPV, pourboire, résiliation
+- `admin.spec.ts` : back-office (analytique, paramètres, signalements, statistiques de modération, journaux)
 
-### messaging.spec.ts
-- ✅ Envoi et réception de messages
-- ✅ Indicateur de saisie (typing)
-- ✅ Envoi d'image dans message
-- ✅ Suppression de message
-- ✅ Marquer comme lu
-- ✅ Recherche de messages
-- ✅ Blocage d'utilisateur
+Les scénarios dépendant de données absentes (aucune conversation, aucun live...) sont ignorés
+(`test.skip`) ; les fonctionnalités pas encore présentes dans l'interface sont marquées `test.fixme`.
 
 ## Fixtures
 
-### Test Users (test-users.json)
-Utilisateurs de test pour l'authentification :
-- **Creator**: alice@ofm.com
-- **Subscriber**: david@ofm.com
-- **Admin**: admin@ofm.com
+### Comptes de test (test-users.json)
+Comptes créés par `npm run seed` (apps/api), mot de passe `SecurePass123!` :
+- **Créateur** : creator@demo.com (`demo_creator`, Alice Martin)
+- **Abonné** : subscriber@demo.com (`demo_subscriber`, David Bernard)
+- **Admin** : admin@ofm.com
 
-Mot de passe pour tous : `SecurePass123!`
+Surchargeables via `TEST_CREATOR_EMAIL`, `TEST_SUBSCRIBER_PASSWORD`, etc.
 
-### Test Files
-Les fichiers suivants doivent être placés dans `apps/web/e2e/fixtures/` :
-
-- `test-image.jpg` - Image de test (1920x1080 recommandé)
-- `test-image-2.jpg` - Deuxième image pour galerie
-- `test-video.mp4` - Vidéo courte (5-10 secondes)
-- `test-file.txt` - Fichier texte pour test d'erreur
-- `large-video.mp4` - Vidéo large pour test de limite de taille (optionnel)
+### Fichiers
+Les images et fichiers texte sont générés en mémoire (`fixtures/files.ts`).
+Pour tester le traitement vidéo, fournissez un fichier : `E2E_VIDEO_PATH=/chemin/video.mp4`.
+Les paiements par carte ne sont exécutés qu'avec `E2E_STRIPE=1` (API configurée avec des clés Stripe de test).
 
 ## Cartes de test Stripe
 

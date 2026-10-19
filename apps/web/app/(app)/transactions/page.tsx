@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { paymentsApi } from '@/lib/api';
+import { formatEuros } from '@/lib/utils';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -34,7 +35,7 @@ export default function TransactionsPage() {
   });
 
   const formatAmount = (amount: number, type: string) => {
-    const formatted = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(amount);
+    const formatted = formatEuros(amount);
     return type === 'PAYOUT' || type === 'REFUND' || type === 'PLATFORM_FEE' ? `-${formatted}` : `+${formatted}`;
   };
 

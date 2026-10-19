@@ -76,6 +76,17 @@ export class MediaController {
     return this.mediaService.uploadVideo(file, userId);
   }
 
+  /**
+   * Processing status/progress of an image or video job returned by an upload
+   */
+  @Get('jobs/:jobId/status')
+  async getJobStatus(
+    @Param('jobId') jobId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.mediaService.getJobStatus(jobId, userId);
+  }
+
   @Get('signed-url/:contentFileId')
   async getSignedUrl(
     @Param('contentFileId') contentFileId: string,

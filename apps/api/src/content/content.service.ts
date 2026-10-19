@@ -1,5 +1,8 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/database/prisma.service';
+import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { StorageService } from '../storage/storage.service';
 import { CreateContentDto } from './dto/create-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
 import { SearchContentDto, ContentSortBy } from './dto/search-content.dto';
@@ -8,31 +11,78 @@ import { SearchContentDto, ContentSortBy } from './dto/search-content.dto';
 export class ContentService {
   private readonly logger = new Logger(ContentService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private oneTimePayments: OneTimePaymentService,
+    private storageService: StorageService,
+    private configService: ConfigService,
+  ) {}
+
+  private readonly contentInclude = {
+    creator: {
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        avatar: true,
+      },
+    },
+    files: {
+      orderBy: { order: 'asc' as const },
+    },
+    _count: {
+      select: {
+        likes: true,
+        comments: true,
+      },
+    },
+  };
 
   async getCreatorContent(creatorId: string, userId?: string) {
-    return this.prisma.content.findMany({
+    const items = await this.prisma.content.findMany({
       where: {
         creatorId,
         status: 'PUBLISHED',
         deletedAt: null,
+        ...(creatorId !== userId && { visibility: { not: 'PRIVATE' } }),
       },
-      include: {
-        files: true,
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
-      },
+      include: this.contentInclude,
       orderBy: {
         publishedAt: 'desc',
       },
     });
+
+    return this.withViewerAccess(items, userId);
   }
 
+  /**
+   * Global feed: published content from all creators. Media the viewer
+   * is not entitled to is stripped and the item is flagged as locked.
+   */
   async getFeed(userId: string, page: number = 1, limit: number = 20) {
+    const skip = (page - 1) * limit;
+
+    const items = await this.prisma.content.findMany({
+      where: {
+        status: 'PUBLISHED',
+        deletedAt: null,
+        visibility: { not: 'PRIVATE' },
+      },
+      include: this.contentInclude,
+      orderBy: {
+        publishedAt: 'desc',
+      },
+      skip,
+      take: limit,
+    });
+
+    return this.withViewerAccess(items, userId);
+  }
+
+  /**
+   * Feed restricted to creators the user has an active subscription with
+   */
+  async getSubscriptionsFeed(userId: string, page: number = 1, limit: number = 20) {
     const skip = (page - 1) * limit;
 
     // Get subscriptions
@@ -52,42 +102,29 @@ export class ContentService {
 
     const creatorIds = subscriptions.map((sub: any) => sub.tier.creatorId);
 
+    if (creatorIds.length === 0) {
+      return [];
+    }
+
     // Get content from subscribed creators
-    return this.prisma.content.findMany({
+    const items = await this.prisma.content.findMany({
       where: {
         creatorId: {
           in: creatorIds,
         },
         status: 'PUBLISHED',
         deletedAt: null,
-        OR: [
-          { visibility: 'SUBSCRIBERS_ONLY' },
-          { visibility: 'PUBLIC' },
-        ],
+        visibility: { not: 'PRIVATE' },
       },
-      include: {
-        creator: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatar: true,
-          },
-        },
-        files: true,
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
-      },
+      include: this.contentInclude,
       orderBy: {
         publishedAt: 'desc',
       },
       skip,
       take: limit,
     });
+
+    return this.withViewerAccess(items, userId);
   }
 
   async createContent(userId: string, dto: CreateContentDto) {
@@ -156,7 +193,7 @@ export class ContentService {
     }
 
     // Update content
-    return this.prisma.content.update({
+    const updated = await this.prisma.content.update({
       where: { id: contentId },
       data: {
         visibility: dto.visibility,
@@ -168,10 +205,11 @@ export class ContentService {
         scheduledFor: dto.scheduledFor,
         updatedAt: new Date(),
       },
-      include: {
-        files: true,
-      },
+      include: this.contentInclude,
     });
+
+    const [serialized] = await this.withViewerAccess([updated], userId);
+    return serialized;
   }
 
   async publishContent(userId: string, contentId: string) {
@@ -192,16 +230,17 @@ export class ContentService {
       throw new BadRequestException('Content is already published');
     }
 
-    return this.prisma.content.update({
+    const published = await this.prisma.content.update({
       where: { id: contentId },
       data: {
         status: 'PUBLISHED',
         publishedAt: new Date(),
       },
-      include: {
-        files: true,
-      },
+      include: this.contentInclude,
     });
+
+    const [serialized] = await this.withViewerAccess([published], userId);
+    return serialized;
   }
 
   async deleteContent(userId: string, contentId: string) {
@@ -238,6 +277,7 @@ export class ContentService {
     const where: any = {
       status: 'PUBLISHED',
       deletedAt: null,
+      visibility: { not: 'PRIVATE' },
     };
 
     if (query) {
@@ -256,7 +296,7 @@ export class ContentService {
       where.type = type;
     }
 
-    if (visibility) {
+    if (visibility && visibility !== 'PRIVATE') {
       where.visibility = visibility;
     }
 
@@ -284,23 +324,7 @@ export class ContentService {
     const [items, total] = await Promise.all([
       this.prisma.content.findMany({
         where,
-        include: {
-          creator: {
-            select: {
-              id: true,
-              username: true,
-              displayName: true,
-              avatar: true,
-            },
-          },
-          files: true,
-          _count: {
-            select: {
-              likes: true,
-              comments: true,
-            },
-          },
-        },
+        include: this.contentInclude,
         orderBy,
         skip,
         take: limit,
@@ -309,7 +333,7 @@ export class ContentService {
     ]);
 
     return {
-      items,
+      items: await this.withViewerAccess(items, userId),
       total,
       page,
       limit,
@@ -320,26 +344,16 @@ export class ContentService {
   async getContentById(contentId: string, userId?: string) {
     const content = await this.prisma.content.findUnique({
       where: { id: contentId },
-      include: {
-        creator: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatar: true,
-          },
-        },
-        files: true,
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
-      },
+      include: this.contentInclude,
     });
 
     if (!content || content.deletedAt) {
+      throw new NotFoundException('Content not found');
+    }
+
+    // Drafts and private content are only visible to their creator
+    const isOwner = content.creatorId === userId;
+    if (!isOwner && (content.status !== 'PUBLISHED' || content.visibility === 'PRIVATE')) {
       throw new NotFoundException('Content not found');
     }
 
@@ -349,7 +363,8 @@ export class ContentService {
       data: { viewCount: { increment: 1 } },
     });
 
-    return content;
+    const [serialized] = await this.withViewerAccess([content], userId);
+    return serialized;
   }
 
   // Moderation methods
@@ -534,5 +549,188 @@ export class ContentService {
     });
 
     return !!like;
+  }
+
+  // PPV methods
+
+  /**
+   * Start a PPV purchase. Access is granted only once the payment succeeds:
+   * through the Stripe webhook or confirmUnlock(), whichever comes first.
+   */
+  async unlockContent(userId: string, contentId: string, paymentMethodId?: string) {
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      include: {
+        creator: {
+          select: {
+            id: true,
+            username: true,
+          },
+        },
+      },
+    });
+
+    if (!content || content.deletedAt || content.status !== 'PUBLISHED') {
+      throw new NotFoundException('Content not found');
+    }
+
+    if (!content.isPpv || !content.ppvPrice || Number(content.ppvPrice) <= 0) {
+      throw new BadRequestException('This content is not pay-per-view');
+    }
+
+    if (content.creatorId === userId) {
+      throw new BadRequestException('You cannot unlock your own content');
+    }
+
+    // Already unlocked: nothing to charge
+    const existingUnlock = await this.prisma.contentUnlock.findUnique({
+      where: {
+        contentId_userId: {
+          contentId,
+          userId,
+        },
+      },
+    });
+
+    if (existingUnlock) {
+      return { unlocked: true, alreadyUnlocked: true, contentId };
+    }
+
+    const payment = await this.oneTimePayments.startPayment({
+      payerId: userId,
+      creatorId: content.creatorId,
+      kind: 'content_unlock',
+      amount: Number(content.ppvPrice),
+      contentId,
+      paymentMethodId,
+      description: `Contenu PPV de @${content.creator.username}`,
+    });
+
+    this.logger.log(`PPV unlock started: ${contentId} by user ${userId} (${payment.status})`);
+
+    return {
+      ...payment,
+      unlocked: payment.completed,
+      alreadyUnlocked: false,
+      contentId,
+    };
+  }
+
+  /**
+   * Re-check a PPV payment with Stripe after client-side confirmation (idempotent)
+   */
+  async confirmUnlock(userId: string, contentId: string, paymentIntentId: string) {
+    const payment = await this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+      kind: 'content_unlock',
+      contentId,
+    });
+
+    return {
+      ...payment,
+      unlocked: payment.completed,
+      contentId,
+    };
+  }
+
+  /**
+   * Attach the viewer's access state (locked, unlocked, liked) to content
+   * and strip media the viewer is not entitled to see.
+   */
+  private async withViewerAccess(items: any[], viewerId?: string) {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const contentIds = items.map((item) => item.id);
+    const creatorIds = [...new Set(items.map((item) => item.creatorId))];
+
+    const [subscriptions, unlocks, likes] = viewerId
+      ? await Promise.all([
+          this.prisma.subscription.findMany({
+            where: {
+              subscriberId: viewerId,
+              status: 'ACTIVE',
+              currentPeriodEnd: { gte: new Date() },
+              tier: { creatorId: { in: creatorIds } },
+            },
+            select: { tier: { select: { creatorId: true } } },
+          }),
+          this.prisma.contentUnlock.findMany({
+            where: { userId: viewerId, contentId: { in: contentIds } },
+            select: { contentId: true },
+          }),
+          this.prisma.contentLike.findMany({
+            where: { userId: viewerId, contentId: { in: contentIds } },
+            select: { contentId: true },
+          }),
+        ])
+      : [[], [], []];
+
+    const subscribedCreatorIds = new Set(subscriptions.map((sub: any) => sub.tier.creatorId));
+    const unlockedIds = new Set(unlocks.map((unlock: any) => unlock.contentId));
+    const likedIds = new Set(likes.map((like: any) => like.contentId));
+
+    return Promise.all(
+      items.map((item) =>
+        this.serializeContent(item, {
+          isOwner: !!viewerId && item.creatorId === viewerId,
+          isSubscribed: subscribedCreatorIds.has(item.creatorId),
+          hasUnlocked: unlockedIds.has(item.id),
+          isLiked: likedIds.has(item.id),
+        }),
+      ),
+    );
+  }
+
+  private async serializeContent(
+    content: any,
+    access: { isOwner: boolean; isSubscribed: boolean; hasUnlocked: boolean; isLiked: boolean },
+  ) {
+    const { files = [], ...rest } = content;
+
+    let canAccess: boolean;
+    if (access.isOwner) {
+      canAccess = true;
+    } else if (content.visibility === 'PRIVATE') {
+      canAccess = false;
+    } else if (content.isPpv) {
+      // PPV media requires a purchase, even for subscribers
+      canAccess = access.hasUnlocked;
+    } else {
+      canAccess = content.visibility === 'PUBLIC' || access.isSubscribed;
+    }
+
+    return {
+      ...rest,
+      ppvPrice: content.ppvPrice != null ? Number(content.ppvPrice) : null,
+      files: canAccess ? await Promise.all(files.map((file: any) => this.serializeFile(file))) : [],
+      mediaCount: files.length,
+      isLocked: !canAccess,
+      hasUnlocked: access.hasUnlocked,
+      isLiked: access.isLiked,
+      isSubscribed: access.isSubscribed,
+    };
+  }
+
+  private async serializeFile(file: any) {
+    const { storagePath, thumbnailPath, size, ...rest } = file;
+
+    const [url, thumbnailUrl] = await Promise.all([
+      this.storageService.getSignedUrl(storagePath, 3600),
+      thumbnailPath ? this.storageService.getSignedUrl(thumbnailPath, 3600) : null,
+    ]);
+
+    let type: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE' = 'FILE';
+    if (file.mimeType?.startsWith('image/')) type = 'IMAGE';
+    else if (file.mimeType?.startsWith('video/')) type = 'VIDEO';
+    else if (file.mimeType?.startsWith('audio/')) type = 'AUDIO';
+
+    return {
+      ...rest,
+      type,
+      size: Number(size),
+      url,
+      thumbnailUrl,
+    };
   }
 }

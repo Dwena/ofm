@@ -1,6 +1,6 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
-import { Queue } from 'bull';
+import { Queue, Job } from 'bull';
 import { ConfigService } from '@nestjs/config';
 
 import { StorageService } from '../storage/storage.service';
@@ -70,8 +70,9 @@ export class MediaService {
     });
 
     // Queue for processing if needed
+    let jobId: string | null = null;
     if (queue) {
-      await queue.add(`process-${type.toLowerCase()}`, {
+      const job = await queue.add(`process-${type.toLowerCase()}`, {
         contentFileId: contentFile.id,
         key,
         userId,
@@ -79,6 +80,7 @@ export class MediaService {
         mimeType: file.mimetype,
         size: file.size,
       });
+      jobId = this.formatJobId(type === 'VIDEO' ? 'video' : 'image', job);
 
       this.logger.log(`${type} queued for processing: ${key}`);
     }
@@ -88,6 +90,8 @@ export class MediaService {
       filename: contentFile.filename,
       url: url,
       size: Number(contentFile.size),
+      jobId,
+      status: queue ? 'processing' : 'ready',
       message: queue
         ? `${type} uploaded and queued for processing`
         : 'File uploaded successfully',
@@ -117,7 +121,7 @@ export class MediaService {
     );
 
     // Queue for processing (resize, watermark, optimize)
-    await this.imageQueue.add('process-image', {
+    const job = await this.imageQueue.add('process-image', {
       key,
       userId,
       contentId,
@@ -131,6 +135,7 @@ export class MediaService {
     return {
       key,
       url,
+      jobId: this.formatJobId('image', job),
       status: 'processing',
       message: 'Image uploaded and queued for processing',
     };
@@ -159,7 +164,7 @@ export class MediaService {
     );
 
     // Queue for processing (transcode, thumbnail, watermark)
-    await this.videoQueue.add('process-video', {
+    const job = await this.videoQueue.add('process-video', {
       key,
       userId,
       contentId,
@@ -173,8 +178,67 @@ export class MediaService {
     return {
       key,
       url,
+      jobId: this.formatJobId('video', job),
       status: 'processing',
       message: 'Video uploaded and queued for processing',
+    };
+  }
+
+  /**
+   * Public job id: "<queue>-<bull job id>" so the status endpoint knows which queue to query
+   */
+  private formatJobId(kind: 'image' | 'video', job: Job | null | undefined): string | null {
+    return job?.id !== undefined && job?.id !== null ? `${kind}-${job.id}` : null;
+  }
+
+  /**
+   * Get the processing status of a media job owned by the user
+   */
+  async getJobStatus(jobId: string, userId: string) {
+    const match = /^(image|video)-(.+)$/.exec(jobId || '');
+    if (!match) {
+      throw new BadRequestException('Invalid job id');
+    }
+
+    const [, kind, bullId] = match;
+    const queue = kind === 'video' ? this.videoQueue : this.imageQueue;
+    const job = await queue.getJob(bullId);
+
+    // Don't reveal other users' jobs
+    if (!job || job.data?.userId !== userId) {
+      throw new NotFoundException('Job not found');
+    }
+
+    const state = await job.getState();
+    const rawProgress = job.progress();
+    const progress = typeof rawProgress === 'number' ? Math.max(0, Math.min(100, Math.round(rawProgress))) : 0;
+
+    let status: 'queued' | 'processing' | 'completed' | 'failed';
+    switch (state) {
+      case 'completed':
+        status = 'completed';
+        break;
+      case 'failed':
+        status = 'failed';
+        break;
+      case 'active':
+        status = 'processing';
+        break;
+      default:
+        status = 'queued';
+    }
+
+    return {
+      jobId,
+      type: kind === 'video' ? 'VIDEO' : 'IMAGE',
+      status,
+      state,
+      progress: status === 'completed' ? 100 : progress,
+      attemptsMade: job.attemptsMade,
+      failedReason: status === 'failed' ? job.failedReason || null : null,
+      result: status === 'completed' ? job.returnvalue ?? null : null,
+      createdAt: job.timestamp ? new Date(job.timestamp).toISOString() : null,
+      finishedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
     };
   }
 

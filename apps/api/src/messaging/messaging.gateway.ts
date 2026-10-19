@@ -11,6 +11,7 @@ import { Server, Socket } from 'socket.io';
 import { Logger, UseGuards } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
+import { MessagingService } from './messaging.service';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -33,6 +34,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private messagingService: MessagingService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket) {
@@ -92,47 +94,19 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
         return { error: 'Unauthorized' };
       }
 
-      // Create message in database
-      const message = await this.prisma.message.create({
-        data: {
-          senderId: client.userId,
-          receiverId: recipientId,
-          content,
-          status: 'SENT' as any,
-          hasAttachment: !!attachmentUrl,
-          attachmentUrl: attachmentUrl || null,
-        },
-        include: {
-          sender: {
-            select: {
-              id: true,
-              username: true,
-              displayName: true,
-              avatar: true,
-            },
-          },
-        },
-      });
-
-      // Update or create conversation
-      await this.updateConversation(client.userId, recipientId, message.id);
+      // Create message and update conversation
+      const message = await this.messagingService.sendMessage(
+        client.userId,
+        recipientId,
+        content,
+        attachmentUrl,
+      );
 
       // Prepare message data to emit
-      const messageData = {
-        id: message.id,
-        content: message.content,
-        senderId: message.senderId,
-        receiverId: message.receiverId,
-        createdAt: message.createdAt,
-        hasAttachment: message.hasAttachment,
-        attachmentUrl: message.attachmentUrl,
-        sender: message.sender,
-      };
+      const messageData = this.toMessagePayload(message);
 
       // Emit to recipient if online
-      this.server.to(`user:${recipientId}`).emit('message:new', {
-        message: messageData,
-      });
+      this.emitNewMessage(recipientId, messageData);
 
       // Emit to sender for confirmation
       client.emit('message:sent', {
@@ -205,41 +179,28 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     }
   }
 
-  private async updateConversation(userId1: string, userId2: string, lastMessageId: string) {
-    // Find existing conversation
-    const conversation = await this.prisma.conversation.findFirst({
-      where: {
-        OR: [
-          { participant1Id: userId1, participant2Id: userId2 },
-          { participant1Id: userId2, participant2Id: userId1 },
-        ],
-      },
-    });
+  // Shape a persisted message for socket clients
+  toMessagePayload(message: any) {
+    return {
+      id: message.id,
+      content: message.content,
+      senderId: message.senderId,
+      receiverId: message.receiverId,
+      createdAt: message.createdAt,
+      hasAttachment: message.hasAttachment,
+      attachmentUrl: message.attachmentUrl,
+      sender: message.sender,
+    };
+  }
 
-    if (conversation) {
-      // Update existing conversation
-      await this.prisma.conversation.update({
-        where: { id: conversation.id },
-        data: {
-          lastMessageId,
-          updatedAt: new Date(),
-        },
-      });
-    } else {
-      // Create new conversation
-      await this.prisma.conversation.create({
-        data: {
-          participant1Id: userId1,
-          participant2Id: userId2,
-          lastMessageId,
-        },
-      });
-    }
+  // Push a new message to the recipient's room (no-op if offline)
+  emitNewMessage(recipientId: string, message: any) {
+    this.server?.to(`user:${recipientId}`).emit('message:new', { message });
   }
 
   // Utility method to send notification to user
   sendNotificationToUser(userId: string, notification: any) {
-    this.server.to(`user:${userId}`).emit('notification:new', notification);
+    this.server?.to(`user:${userId}`).emit('notification:new', notification);
   }
 
   // Check if user is online

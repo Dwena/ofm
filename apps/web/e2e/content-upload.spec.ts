@@ -1,203 +1,99 @@
-import { test, expect } from '@playwright/test';
-import path from 'path';
+import { test, expect } from './fixtures/auth.fixture';
+import { pngFile, textFile, videoPath } from './fixtures/files';
 
-test.describe('Content Upload', () => {
-  test.beforeEach(async ({ page }) => {
-    // Login as creator
-    await page.goto('http://localhost:3000/login');
-    await page.fill('[name="email"]', 'alice@ofm.com');
-    await page.fill('[name="password"]', 'SecurePass123!');
-    await page.click('button[type="submit"]');
-    await page.waitForURL('**/feed');
+test.describe('Publication de contenu', () => {
+  test.beforeEach(async ({ asCreator, uploadPage }) => {
+    await uploadPage.goto();
   });
 
-  test('upload image content', async ({ page }) => {
-    // Navigate to upload page
-    await page.goto('http://localhost:3000/creator/upload');
+  test('publie une image réservée aux abonnés', async ({ uploadPage, page }) => {
+    await uploadPage.uploadFiles(pngFile('e2e-image.png'));
 
-    // Upload image file
-    const filePath = path.join(__dirname, 'fixtures', 'test-image.jpg');
-    await page.setInputFiles('input[type="file"]', filePath);
+    await uploadPage.expectFileListed('e2e-image.png');
+    await expect(page.getByRole('img', { name: 'Preview' })).toBeVisible({ timeout: 10000 });
 
-    // Wait for preview to appear
-    await expect(page.locator('img[alt="Preview"]')).toBeVisible({ timeout: 10000 });
+    const title = `Contenu E2E ${Date.now()}`;
+    await uploadPage.fillContentDetails(title, 'Publication créée par les tests E2E');
+    await uploadPage.selectTier('Basic');
+    await uploadPage.waitForUploads();
+    await uploadPage.publish();
 
-    // Fill metadata
-    await page.fill('[name="title"]', 'Test Content Upload');
-    await page.fill('[name="description"]', 'This is a test upload from E2E tests');
-
-    // Select visibility
-    await page.click('text=Subscribers Only');
-
-    // Set price (PPV - Pay Per View)
-    const ppvCheckbox = page.locator('[name="isPpv"]');
-    if (await ppvCheckbox.isVisible()) {
-      await ppvCheckbox.check();
-      await page.fill('[name="ppvPrice"]', '9.99');
-    }
-
-    // Submit
-    await page.click('button:has-text("Publish")');
-
-    // Verify success
-    await expect(page.locator('text=Content published')).toBeVisible({ timeout: 15000 });
-
-    // Verify content appears in creator's content list
-    await page.goto('http://localhost:3000/creator/content');
-    await expect(page.locator('text=Test Content Upload')).toBeVisible({ timeout: 5000 });
+    await uploadPage.expectUploadSuccess();
+    // The new content shows up in « Contenus Récents »
+    await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
   });
 
-  test('upload video content with processing', async ({ page }) => {
-    // Navigate to upload page
-    await page.goto('http://localhost:3000/creator/upload');
+  test('publie un contenu Pay-Per-View', async ({ uploadPage }) => {
+    await uploadPage.uploadFiles(pngFile('e2e-ppv.png'));
+    await uploadPage.fillContentDetails(`PPV E2E ${Date.now()}`);
+    await uploadPage.enablePpv('9.99');
+    await uploadPage.waitForUploads();
+    await uploadPage.publish();
 
-    // Upload video file
-    const videoPath = path.join(__dirname, 'fixtures', 'test-video.mp4');
-    await page.setInputFiles('input[type="file"]', videoPath);
-
-    // Wait for video processing indicator
-    await expect(page.locator('text=Processing video')).toBeVisible({ timeout: 5000 });
-
-    // Wait for processing completion (may take time)
-    await expect(page.locator('text=Video ready')).toBeVisible({ timeout: 60000 });
-
-    // Fill metadata
-    await page.fill('[name="title"]', 'Test Video Upload');
-    await page.fill('[name="description"]', 'Test video from E2E tests');
-
-    // Select visibility
-    await page.click('text=Public');
-
-    // Publish
-    await page.click('button:has-text("Publish")');
-
-    // Verify success
-    await expect(page.locator('text=Content published')).toBeVisible({ timeout: 15000 });
+    await uploadPage.expectUploadSuccess();
   });
 
-  test('upload multiple images as gallery', async ({ page }) => {
-    await page.goto('http://localhost:3000/creator/upload');
+  test('suit le traitement d’une vidéo', async ({ uploadPage }) => {
+    test.skip(!videoPath, 'Définissez E2E_VIDEO_PATH (fichier .mp4) pour tester le traitement vidéo');
 
-    // Upload multiple images
-    const image1 = path.join(__dirname, 'fixtures', 'test-image.jpg');
-    const image2 = path.join(__dirname, 'fixtures', 'test-image-2.jpg');
+    await uploadPage.uploadFiles(videoPath!);
 
-    // Check if multiple file upload is supported
-    const fileInput = page.locator('input[type="file"]');
-    const multiple = await fileInput.getAttribute('multiple');
-
-    if (multiple !== null) {
-      await page.setInputFiles('input[type="file"]', [image1, image2]);
-
-      // Wait for previews
-      await expect(page.locator('img[alt="Preview"]').first()).toBeVisible({ timeout: 10000 });
-
-      await page.fill('[name="title"]', 'Test Gallery Upload');
-      await page.click('button:has-text("Publish")');
-
-      await expect(page.locator('text=Content published')).toBeVisible({ timeout: 15000 });
-    }
-  });
-
-  test('handle upload error for invalid file type', async ({ page }) => {
-    await page.goto('http://localhost:3000/creator/upload');
-
-    // Try to upload an invalid file type
-    const textFilePath = path.join(__dirname, 'fixtures', 'test-file.txt');
-
-    // Create a temporary text file
-    await page.evaluate(() => {
-      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-      if (input) {
-        input.removeAttribute('accept'); // Remove file type restrictions for testing
-      }
+    // MediaJobProgress: « Vidéo en file d'attente » → « Traitement de la vidéo » → « Vidéo prête »
+    await expect(uploadPage.jobStatus.first()).toHaveText(/Vidéo en file d'attente|Traitement de la vidéo|Vidéo prête/, {
+      timeout: 30000,
     });
+    await expect(uploadPage.jobStatus.first()).toHaveAttribute('data-status', 'completed', { timeout: 120000 });
+    await expect(uploadPage.jobStatus.first()).toHaveText(/Vidéo prête/);
 
-    await page.setInputFiles('input[type="file"]', textFilePath);
-
-    // Verify error message
-    await expect(page.locator('text=Invalid file type')).toBeVisible({ timeout: 5000 });
+    await uploadPage.fillContentDetails(`Vidéo E2E ${Date.now()}`, 'Vidéo publique');
+    await uploadPage.publish();
+    await uploadPage.expectUploadSuccess();
   });
 
-  test('handle upload error for file too large', async ({ page }) => {
-    await page.goto('http://localhost:3000/creator/upload');
+  test('accepte plusieurs images (album)', async ({ uploadPage, page }) => {
+    await expect(uploadPage.fileInput).toHaveAttribute('multiple', '');
 
-    // This test assumes there's a large test file
-    // In practice, you'd create or use a file larger than the allowed limit
-    const largeFilePath = path.join(__dirname, 'fixtures', 'large-video.mp4');
+    await uploadPage.uploadFiles([pngFile('album-1.png'), pngFile('album-2.png')]);
+    await expect(uploadPage.fileItems).toHaveCount(2);
+    await expect(page.getByText(/2.*fichiers/)).toBeVisible();
 
-    // Check if file exists before attempting upload
-    const fs = require('fs');
-    if (fs.existsSync(largeFilePath)) {
-      await page.setInputFiles('input[type="file"]', largeFilePath);
-
-      // Verify error message
-      await expect(page.locator('text=File too large')).toBeVisible({ timeout: 5000 });
-    }
+    await uploadPage.fillContentDetails(`Album E2E ${Date.now()}`);
+    await uploadPage.waitForUploads();
+    await uploadPage.publish();
+    await uploadPage.expectUploadSuccess();
   });
 
-  test('cancel upload in progress', async ({ page }) => {
-    await page.goto('http://localhost:3000/creator/upload');
+  test('refuse un type de fichier non supporté', async ({ uploadPage }) => {
+    await uploadPage.uploadFiles(textFile());
 
-    const videoPath = path.join(__dirname, 'fixtures', 'test-video.mp4');
-    await page.setInputFiles('input[type="file"]', videoPath);
-
-    // Wait for processing to start
-    await expect(page.locator('text=Processing video')).toBeVisible({ timeout: 5000 });
-
-    // Click cancel button
-    await page.click('button:has-text("Cancel")');
-
-    // Verify upload was cancelled
-    await expect(page.locator('text=Upload cancelled')).toBeVisible({ timeout: 5000 });
+    await expect(uploadPage.fileErrors.first()).toHaveText(/Type de fichier non supporté/);
+    await expect(uploadPage.publishButton).toBeDisabled();
   });
 
-  test('edit uploaded content', async ({ page }) => {
-    // First upload content
-    await page.goto('http://localhost:3000/creator/upload');
+  test('retire un fichier de la liste', async ({ uploadPage, page }) => {
+    await uploadPage.uploadFiles(textFile('a-retirer.txt'));
+    await uploadPage.expectFileListed('a-retirer.txt');
 
-    const filePath = path.join(__dirname, 'fixtures', 'test-image.jpg');
-    await page.setInputFiles('input[type="file"]', filePath);
-
-    await expect(page.locator('img[alt="Preview"]')).toBeVisible({ timeout: 10000 });
-
-    await page.fill('[name="title"]', 'Test Edit Content');
-    await page.click('button:has-text("Publish")');
-    await expect(page.locator('text=Content published')).toBeVisible({ timeout: 15000 });
-
-    // Navigate to content management
-    await page.goto('http://localhost:3000/creator/content');
-
-    // Find and edit the content
-    await page.click('text=Test Edit Content');
-    await page.click('button:has-text("Edit")');
-
-    // Update title
-    await page.fill('[name="title"]', 'Test Edit Content - Updated');
-
-    // Save changes
-    await page.click('button:has-text("Save Changes")');
-
-    // Verify update success
-    await expect(page.locator('text=Content updated')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('text=Test Edit Content - Updated')).toBeVisible();
+    await page.getByRole('button', { name: 'Retirer le fichier' }).click();
+    await expect(uploadPage.fileItems).toHaveCount(0);
   });
 
-  test('delete uploaded content', async ({ page }) => {
-    // Navigate to content management
-    await page.goto('http://localhost:3000/creator/content');
+  test('exige un titre avant publication', async ({ uploadPage, page }) => {
+    await uploadPage.uploadFiles(pngFile());
 
-    // Find content to delete
-    const firstContent = page.locator('[data-testid="content-item"]').first();
-    await firstContent.click();
-
-    // Click delete button
-    await page.click('button:has-text("Delete")');
-
-    // Confirm deletion
-    await page.click('button:has-text("Confirm Delete")');
-
-    // Verify deletion success
-    await expect(page.locator('text=Content deleted')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/Ajoutez un titre/)).toBeVisible();
+    await expect(uploadPage.publishButton).toBeDisabled();
   });
+
+  test('annuler revient à la page précédente', async ({ uploadPage, page }) => {
+    await page.goto('/creator/dashboard');
+    await uploadPage.goto();
+    await uploadPage.cancelButton.click();
+
+    await expect(page).toHaveURL(/\/creator\/dashboard/);
+  });
+
+  // No creator content-management screen (edit / delete) exists yet in the web app
+  test.fixme('modifier un contenu publié', async () => {});
+  test.fixme('supprimer un contenu publié', async () => {});
 });

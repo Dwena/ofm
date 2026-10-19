@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { usersApi, subscriptionsApi, contentApi } from '@/lib/api'
+import { usersApi, subscriptionsApi, contentApi, socialApi } from '@/lib/api'
 import { useParams, useRouter } from 'next/navigation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,10 +20,18 @@ import {
   MessageCircle,
   Lock,
   CheckCircle,
-  ExternalLink
+  ExternalLink,
+  UserPlus,
+  UserCheck
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
-import { formatRelativeTime } from '@/lib/utils'
+import { formatEuros, formatRelativeTime } from '@/lib/utils'
+import { toast } from '@/hooks/use-toast'
+import ChangeTierDialog, {
+  getPendingChangeLabel,
+  getTierChangeLabel,
+} from '@/components/subscriptions/change-tier-dialog'
+import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 
 export default function CreatorProfilePage() {
   const params = useParams()
@@ -33,6 +41,8 @@ export default function CreatorProfilePage() {
   const queryClient = useQueryClient()
 
   const [selectedTier, setSelectedTier] = useState<string | null>(null)
+  // Tier picked for an upgrade / downgrade (confirmation dialog)
+  const [changeTarget, setChangeTarget] = useState<any | null>(null)
 
   // Fetch creator profile
   const { data: creator, isLoading: loadingCreator, error: creatorError } = useQuery({
@@ -42,6 +52,43 @@ export default function CreatorProfilePage() {
       return response.data
     },
   })
+
+  // Free follow (independent from paid subscriptions)
+  const canFollow = !!creator?.id && creator.role === 'CREATOR' && currentUser?.id !== creator.id
+  const { data: followStatus } = useQuery({
+    queryKey: ['follow-status', creator?.id],
+    queryFn: async () => {
+      const response = await socialApi.getFollowStatus(creator.id)
+      return response.data as { isFollowing: boolean; followersCount: number }
+    },
+    enabled: canFollow,
+  })
+
+  const followMutation = useMutation({
+    mutationFn: async (follow: boolean) => {
+      const response = follow
+        ? await socialApi.followCreator(creator.id)
+        : await socialApi.unfollowCreator(creator.id)
+      return response.data as { isFollowing: boolean; followersCount: number }
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(['follow-status', creator?.id], data)
+      queryClient.invalidateQueries({ queryKey: ['following'] })
+      toast({
+        title: data.isFollowing ? 'Vous suivez ce créateur' : 'Vous ne suivez plus ce créateur',
+      })
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Erreur',
+        description: error?.response?.data?.message || 'Action impossible pour le moment.',
+        variant: 'destructive',
+      })
+    },
+  })
+
+  const isFollowing = followStatus?.isFollowing ?? false
+  const followersCount = followStatus?.followersCount ?? creator?.followersCount ?? 0
 
   // Fetch creator's subscription tiers
   const { data: tiers, isLoading: loadingTiers } = useQuery({
@@ -54,6 +101,109 @@ export default function CreatorProfilePage() {
     enabled: !!creator?.id,
   })
 
+  const isOwnProfile = currentUser?.username === username
+
+  // Fetch my subscription to this creator
+  const { data: subscriptionStatus } = useQuery({
+    queryKey: ['subscription-status', creator?.id],
+    queryFn: async () => {
+      const response = await subscriptionsApi.getStatusForCreator(creator.id)
+      return response.data as { isSubscribed: boolean; subscription: any | null }
+    },
+    enabled: !!creator?.id && !!currentUser && !isOwnProfile,
+  })
+
+  const refreshSubscription = () => {
+    queryClient.invalidateQueries({ queryKey: ['subscription-status', creator?.id] })
+    queryClient.invalidateQueries({ queryKey: ['my-subscriptions'] })
+    queryClient.invalidateQueries({ queryKey: ['creator-profile', username] })
+    queryClient.invalidateQueries({ queryKey: ['creator-content', creator?.id] })
+  }
+
+  const onSubscriptionError = (error: any) => {
+    toast({
+      title: 'Erreur',
+      description: error.response?.data?.message || 'Une erreur est survenue',
+      variant: 'destructive',
+    })
+  }
+
+  // Free tiers are activated directly; paid tiers go through checkout
+  const subscribeMutation = useMutation({
+    mutationFn: (tierId: string) => subscriptionsApi.subscribe({ tierId }),
+    onSuccess: () => {
+      refreshSubscription()
+      toast({ title: 'Abonnement activé' })
+    },
+    onError: onSubscriptionError,
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (subscriptionId: string) => subscriptionsApi.cancel(subscriptionId),
+    onSuccess: () => {
+      refreshSubscription()
+      toast({ title: 'Abonnement annulé' })
+    },
+    onError: onSubscriptionError,
+  })
+
+  const resumeMutation = useMutation({
+    mutationFn: (subscriptionId: string) => subscriptionsApi.resume(subscriptionId),
+    onSuccess: () => {
+      refreshSubscription()
+      toast({ title: 'Abonnement repris' })
+    },
+    onError: onSubscriptionError,
+  })
+
+  const currentSubscription =
+    subscriptionStatus?.subscription &&
+    ['ACTIVE', 'PAST_DUE'].includes(subscriptionStatus.subscription.status)
+      ? subscriptionStatus.subscription
+      : null
+
+  const handleSubscribe = (tier: any) => {
+    if (!currentUser) {
+      router.push('/login')
+      return
+    }
+
+    const price = Number(tier.price)
+    if (price <= 0) {
+      subscribeMutation.mutate(tier.id)
+      return
+    }
+
+    const params = new URLSearchParams({
+      type: 'subscription',
+      itemId: tier.id,
+      amount: String(price), // euros
+      description: `${tier.name} - @${username}`,
+      returnUrl: `/${username}`,
+    })
+    router.push(`/checkout?${params.toString()}`)
+  }
+
+  const handleCancel = (subscription: any) => {
+    const message =
+      subscription.stripeSubscriptionId
+        ? `Votre abonnement restera actif jusqu'au ${new Date(subscription.currentPeriodEnd).toLocaleDateString('fr-FR')}. Confirmer l'annulation ?`
+        : 'Confirmer l\'annulation de votre abonnement ?'
+    if (window.confirm(message)) {
+      cancelMutation.mutate(subscription.id)
+    }
+  }
+
+  // PPV content is paid in a dialog; access is granted once the payment is confirmed
+  const [unlocking, setUnlocking] = useState<any | null>(null)
+  const handleUnlock = (item: any) => {
+    if (!currentUser) {
+      router.push('/login')
+      return
+    }
+    setUnlocking({ ...item, creator: { username } })
+  }
+
   // Fetch creator's content
   const { data: content, isLoading: loadingContent } = useQuery({
     queryKey: ['creator-content', creator?.id],
@@ -64,8 +214,6 @@ export default function CreatorProfilePage() {
     },
     enabled: !!creator?.id,
   })
-
-  const isOwnProfile = currentUser?.username === username
 
   if (loadingCreator) {
     return (
@@ -184,6 +332,12 @@ export default function CreatorProfilePage() {
                 <span className="text-muted-foreground ml-1">Abonnés</span>
               </div>
               <div>
+                <span className="font-bold text-lg">{followersCount}</span>
+                <span className="text-muted-foreground ml-1">
+                  {followersCount > 1 ? 'Followers' : 'Follower'}
+                </span>
+              </div>
+              <div>
                 <span className="font-bold text-lg">
                   {creator.creatorProfile.totalContent || 0}
                 </span>
@@ -201,18 +355,49 @@ export default function CreatorProfilePage() {
           )}
 
           {/* Actions */}
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             {isOwnProfile ? (
               <Button onClick={() => router.push('/settings')}>
                 Modifier le profil
               </Button>
             ) : (
               <>
-                <Button size="lg" onClick={() => document.getElementById('tiers-section')?.scrollIntoView({ behavior: 'smooth' })}>
-                  S'abonner
+                <Button
+                  size="lg"
+                  variant={currentSubscription ? 'outline' : 'default'}
+                  onClick={() => document.getElementById('tiers-section')?.scrollIntoView({ behavior: 'smooth' })}
+                >
+                  {currentSubscription ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Abonné
+                    </>
+                  ) : (
+                    'S\'abonner'
+                  )}
                 </Button>
+                {canFollow && (
+                  <Button
+                    variant={isFollowing ? 'secondary' : 'outline'}
+                    size="lg"
+                    onClick={() => followMutation.mutate(!isFollowing)}
+                    disabled={followMutation.isPending}
+                  >
+                    {isFollowing ? (
+                      <>
+                        <UserCheck className="h-4 w-4 mr-2" />
+                        Ne plus suivre
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="h-4 w-4 mr-2" />
+                        Suivre
+                      </>
+                    )}
+                  </Button>
+                )}
                 {creator.creatorProfile?.allowMessages && (
-                  <Button variant="outline" size="lg" onClick={() => router.push(`/messages?user=${creator.id}`)}>
+                  <Button variant="outline" size="lg" onClick={() => router.push(`/messages?user=${encodeURIComponent(creator.username)}`)}>
                     <MessageCircle className="h-4 w-4 mr-2" />
                     Message
                   </Button>
@@ -248,9 +433,9 @@ export default function CreatorProfilePage() {
                 <CardContent className="space-y-4">
                   <div>
                     <p className="text-3xl font-bold">
-                      {tier.price === 0 ? 'Gratuit' : `${(tier.price / 100).toFixed(2)}€`}
+                      {Number(tier.price) === 0 ? 'Gratuit' : `${Number(tier.price).toFixed(2)}€`}
                     </p>
-                    {tier.price > 0 && (
+                    {Number(tier.price) > 0 && (
                       <p className="text-sm text-muted-foreground">
                         par {tier.interval === 'year' ? 'an' : 'mois'}
                       </p>
@@ -271,19 +456,106 @@ export default function CreatorProfilePage() {
                     </div>
                   )}
                 </CardContent>
-                <CardFooter>
-                  <Button
-                    className="w-full"
-                    variant={selectedTier === tier.id ? 'default' : 'outline'}
-                  >
-                    {tier.price === 0 ? 'Suivre' : 'S\'abonner'}
-                  </Button>
+                <CardFooter className="flex-col gap-2">
+                  {currentSubscription?.tierId === tier.id ? (
+                    <>
+                      <p className="text-xs text-muted-foreground text-center">
+                        {currentSubscription.status === 'PAST_DUE'
+                          ? 'Paiement en échec : mettez à jour votre moyen de paiement'
+                          : getPendingChangeLabel(currentSubscription) ||
+                            (currentSubscription.cancelAtPeriodEnd
+                              ? `Se termine le ${new Date(currentSubscription.currentPeriodEnd).toLocaleDateString('fr-FR')}`
+                              : 'Vous êtes abonné')}
+                      </p>
+                      {currentSubscription.pendingTierId ? (
+                        <Button
+                          className="w-full"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setChangeTarget(tier)
+                          }}
+                        >
+                          Conserver cette offre
+                        </Button>
+                      ) : currentSubscription.cancelAtPeriodEnd ? (
+                        <Button
+                          className="w-full"
+                          disabled={resumeMutation.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            resumeMutation.mutate(currentSubscription.id)
+                          }}
+                        >
+                          Reprendre l'abonnement
+                        </Button>
+                      ) : (
+                        <Button
+                          className="w-full"
+                          variant="outline"
+                          disabled={cancelMutation.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleCancel(currentSubscription)
+                          }}
+                        >
+                          Se désabonner
+                        </Button>
+                      )}
+                    </>
+                  ) : currentSubscription?.status === 'ACTIVE' ? (
+                    <>
+                      {currentSubscription.pendingTierId === tier.id && (
+                        <p className="text-xs text-muted-foreground text-center">
+                          Prévu à partir du {new Date(currentSubscription.currentPeriodEnd).toLocaleDateString('fr-FR')}
+                        </p>
+                      )}
+                      <Button
+                        className="w-full"
+                        variant={selectedTier === tier.id ? 'default' : 'outline'}
+                        disabled={currentSubscription.pendingTierId === tier.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setChangeTarget(tier)
+                        }}
+                      >
+                        {getTierChangeLabel(currentSubscription, tier)}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      className="w-full"
+                      variant={selectedTier === tier.id ? 'default' : 'outline'}
+                      disabled={!!currentSubscription || subscribeMutation.isPending}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleSubscribe(tier)
+                      }}
+                    >
+                      {currentSubscription
+                        ? 'Abonné à une autre offre'
+                        : Number(tier.price) === 0 ? 'Suivre' : 'S\'abonner'}
+                    </Button>
+                  )}
                 </CardFooter>
               </Card>
             ))}
           </div>
+          <ChangeTierDialog
+            subscription={currentSubscription}
+            tier={changeTarget}
+            creatorUsername={username}
+            returnUrl={`/${username}`}
+            onOpenChange={(open) => !open && setChangeTarget(null)}
+            onChanged={refreshSubscription}
+          />
         </div>
       )}
+
+      <PpvUnlockDialog
+        content={unlocking}
+        onClose={() => setUnlocking(null)}
+        onUnlocked={() => queryClient.invalidateQueries({ queryKey: ['creator-content', creator?.id] })}
+      />
 
       {/* Content Gallery */}
       <Tabs defaultValue="all" className="w-full">
@@ -294,14 +566,15 @@ export default function CreatorProfilePage() {
         </TabsList>
 
         <TabsContent value="all" className="mt-6">
-          <ContentGallery content={content} isLoading={loadingContent} isOwnProfile={isOwnProfile} />
+          <ContentGallery content={content} isLoading={loadingContent} isOwnProfile={isOwnProfile} onUnlock={handleUnlock} />
         </TabsContent>
 
         <TabsContent value="images" className="mt-6">
           <ContentGallery
-            content={content?.filter((c: any) => c.type === 'IMAGE')}
+            content={content?.filter((c: any) => c.type === 'PHOTO' || c.type === 'ALBUM')}
             isLoading={loadingContent}
             isOwnProfile={isOwnProfile}
+            onUnlock={handleUnlock}
           />
         </TabsContent>
 
@@ -310,6 +583,7 @@ export default function CreatorProfilePage() {
             content={content?.filter((c: any) => c.type === 'VIDEO')}
             isLoading={loadingContent}
             isOwnProfile={isOwnProfile}
+            onUnlock={handleUnlock}
           />
         </TabsContent>
       </Tabs>
@@ -320,11 +594,13 @@ export default function CreatorProfilePage() {
 function ContentGallery({
   content,
   isLoading,
-  isOwnProfile
+  isOwnProfile,
+  onUnlock,
 }: {
   content: any[] | undefined
   isLoading: boolean
   isOwnProfile: boolean
+  onUnlock: (item: any) => void
 }) {
   const router = useRouter()
 
@@ -368,14 +644,14 @@ function ContentGallery({
             {/* Thumbnail */}
             {item.files && item.files[0] && (
               <>
-                {item.type === 'IMAGE' && (
+                {item.files[0].type === 'IMAGE' && (
                   <img
                     src={item.files[0].thumbnailUrl || item.files[0].url}
                     alt={item.title || 'Content'}
                     className="w-full h-full object-cover"
                   />
                 )}
-                {item.type === 'VIDEO' && (
+                {item.files[0].type === 'VIDEO' && (
                   <div className="relative w-full h-full">
                     <img
                       src={item.files[0].thumbnailUrl || '/placeholder-video.jpg'}
@@ -390,12 +666,26 @@ function ContentGallery({
               </>
             )}
 
-            {/* PPV Lock Overlay */}
-            {item.isPpv && !isOwnProfile && (
+            {/* Lock Overlay (PPV not unlocked, or subscribers-only) */}
+            {item.isLocked && (
               <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
                 <div className="text-center text-white">
                   <Lock className="h-8 w-8 mx-auto mb-2" />
-                  <p className="text-sm font-medium">{(item.ppvPrice / 100).toFixed(2)}€</p>
+                  <p className="text-sm font-medium">
+                    {item.isPpv ? formatEuros(item.ppvPrice) : 'Abonnés'}
+                  </p>
+                  {item.isPpv && !isOwnProfile && (
+                    <Button
+                      size="sm"
+                      className="mt-2 relative z-10"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onUnlock(item)
+                      }}
+                    >
+                      Débloquer
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Upload, X, Image as ImageIcon, Video, FileText, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
+import { MediaJobProgress } from '@/components/media/media-job-progress'
+import { MediaJobState, isFinalJobState, trackMediaJobs } from '@/hooks/use-media-jobs'
 
 interface UploadedFile {
   file: File
@@ -18,6 +20,9 @@ interface UploadedFile {
   uploading: boolean
   progress: number
   mediaId?: string
+  // Server-side processing job (encoding, thumbnail, watermark) returned by /media/upload
+  jobId?: string
+  processing?: MediaJobState
   error?: string
   validationError?: string
 }
@@ -86,7 +91,7 @@ export default function UploadPage() {
       formData.append('file', file)
 
       const response = await mediaApi.upload(formData, {
-        onUploadProgress: (progressEvent) => {
+        onUploadProgress: (progressEvent: { loaded: number; total?: number }) => {
           const progress = progressEvent.total
             ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
             : 0
@@ -113,21 +118,40 @@ export default function UploadPage() {
       // Determine content type based on files
       const hasVideo = uploadedFiles.some(f => f.type === 'VIDEO')
       const hasImage = uploadedFiles.some(f => f.type === 'IMAGE')
-      const contentType = hasVideo ? 'VIDEO' : hasImage ? 'IMAGE' : 'POST'
+      const contentType = uploadedFiles.length > 1 ? 'ALBUM' : hasVideo ? 'VIDEO' : hasImage ? 'PHOTO' : 'TEXT'
+      const visibilityByTier = {
+        FREE: 'PUBLIC',
+        BASIC: 'SUBSCRIBERS_ONLY',
+        PREMIUM: 'PREMIUM_SUBSCRIBERS',
+        VIP: 'PREMIUM_SUBSCRIBERS',
+      } as const
 
       const response = await contentApi.create({
         title,
         description,
-        tier,
+        visibility: visibilityByTier[tier],
         fileIds: uploadedFiles.map(f => f.mediaId!),
         type: contentType,
-        isPPV,
-        ppvPrice: isPPV ? Math.round(parseFloat(price) * 100) : undefined,
+        isPpv: isPPV,
+        ppvPrice: isPPV ? Math.round(parseFloat(price) * 100) / 100 : undefined,
       })
 
-      return response.data
+      // Content is created as a draft; publish it right away
+      const published = await contentApi.publish(response.data.id)
+      return published.data
     },
     onSuccess: () => {
+      // Keep following unfinished processing jobs from the creator dashboard
+      trackMediaJobs(
+        files
+          .filter(f => f.jobId && !isFinalJobState(f.processing) && f.type !== 'FILE')
+          .map(f => ({
+            jobId: f.jobId!,
+            fileName: f.file.name,
+            title,
+            type: f.type as 'IMAGE' | 'VIDEO',
+          }))
+      )
       queryClient.invalidateQueries({ queryKey: ['creator-content'] })
       router.push('/creator/dashboard')
     },
@@ -163,7 +187,7 @@ export default function UploadPage() {
           type,
           uploading: false,
           progress: 0,
-          validationError,
+          validationError: validationError ?? undefined,
         }
       })
 
@@ -182,7 +206,14 @@ export default function UploadPage() {
 
         setFiles(prev => prev.map(f =>
           f.file === uploadFile.file
-            ? { ...f, uploading: false, mediaId: result.id, progress: 100 }
+            ? {
+                ...f,
+                uploading: false,
+                mediaId: result.id,
+                progress: 100,
+                jobId: result.jobId ?? undefined,
+                processing: result.jobId ? 'queued' : undefined,
+              }
             : f
         ))
       } catch (error: any) {
@@ -282,6 +313,11 @@ export default function UploadPage() {
   const uploadedCount = files.filter(f => f.mediaId).length
   const errorCount = files.filter(f => f.error || f.validationError).length
   const uploadingCount = files.filter(f => f.uploading).length
+  const processingCount = files.filter(f => f.jobId && !isFinalJobState(f.processing)).length
+
+  const setProcessingState = (file: File, processing: MediaJobState) => {
+    setFiles(prev => prev.map(f => (f.file === file ? { ...f, processing } : f)))
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -318,6 +354,7 @@ export default function UploadPage() {
             <input
               ref={fileInputRef}
               type="file"
+              data-testid="upload-file-input"
               multiple
               accept="image/*,video/*,.pdf"
               onChange={handleFileSelect}
@@ -352,6 +389,12 @@ export default function UploadPage() {
                     {uploadingCount} en cours
                   </Badge>
                 )}
+                {processingCount > 0 && (
+                  <Badge variant="secondary">
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    {processingCount} en traitement
+                  </Badge>
+                )}
                 {uploadedCount > 0 && (
                   <Badge variant="default" className="bg-green-600">
                     <CheckCircle className="h-3 w-3 mr-1" />
@@ -378,6 +421,7 @@ export default function UploadPage() {
                 return (
                   <div
                     key={index}
+                    data-testid="upload-file-item"
                     className={`flex items-center space-x-4 p-3 border rounded-lg transition-colors ${
                       hasError ? 'border-red-300 bg-red-50 dark:bg-red-950/20' : 'border-border'
                     }`}
@@ -425,9 +469,18 @@ export default function UploadPage() {
                         </div>
                       )}
 
+                      {/* Server-side processing (encoding / optimisation) */}
+                      {!file.uploading && file.jobId && file.type !== 'FILE' && (
+                        <MediaJobProgress
+                          jobId={file.jobId}
+                          type={file.type}
+                          onStatusChange={(status) => setProcessingState(file.file, status.status)}
+                        />
+                      )}
+
                       {/* Errors */}
                       {file.validationError && (
-                        <div className="flex items-center mt-2 text-xs text-red-600 dark:text-red-400">
+                        <div className="flex items-center mt-2 text-xs text-red-600 dark:text-red-400" data-testid="upload-file-error">
                           <AlertCircle className="h-3 w-3 mr-1 flex-shrink-0" />
                           <span>{file.validationError}</span>
                         </div>
@@ -443,7 +496,13 @@ export default function UploadPage() {
                     {/* Status & Actions */}
                     <div className="flex items-center space-x-2 flex-shrink-0">
                       {file.uploading && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
-                      {file.mediaId && <CheckCircle className="h-5 w-5 text-green-600" />}
+                      {file.mediaId && file.jobId && !isFinalJobState(file.processing) && (
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      )}
+                      {file.mediaId && (!file.jobId || file.processing === 'completed') && (
+                        <CheckCircle className="h-5 w-5 text-green-600" />
+                      )}
+                      {file.processing === 'failed' && <AlertCircle className="h-5 w-5 text-red-600" />}
                       {hasError && <AlertCircle className="h-5 w-5 text-red-600" />}
 
                       <Button
@@ -451,6 +510,8 @@ export default function UploadPage() {
                         size="sm"
                         onClick={() => handleRemoveFile(index)}
                         disabled={file.uploading}
+                        aria-label="Retirer le fichier"
+                        data-testid="upload-file-remove"
                         className="h-8 w-8 p-0"
                       >
                         <X className="h-4 w-4" />
@@ -478,6 +539,9 @@ export default function UploadPage() {
               Titre <span className="text-red-500">*</span>
             </label>
             <Input
+              name="title"
+              data-testid="content-title"
+              aria-label="Titre"
               placeholder="Donnez un titre accrocheur à votre contenu"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -491,6 +555,9 @@ export default function UploadPage() {
           <div className="space-y-2">
             <label className="text-sm font-medium">Description</label>
             <textarea
+              name="description"
+              data-testid="content-description"
+              aria-label="Description"
               placeholder="Décrivez votre contenu, ajoutez des hashtags, etc."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -506,7 +573,7 @@ export default function UploadPage() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Niveau d'abonnement minimum</label>
               <Select value={tier} onValueChange={(value: any) => setTier(value)}>
-                <SelectTrigger>
+                <SelectTrigger data-testid="content-tier" aria-label="Niveau d'abonnement minimum">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -521,7 +588,7 @@ export default function UploadPage() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Type de contenu</label>
               <Select value={isPPV ? 'ppv' : 'normal'} onValueChange={(value) => setIsPPV(value === 'ppv')}>
-                <SelectTrigger>
+                <SelectTrigger data-testid="content-kind" aria-label="Type de contenu">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -539,6 +606,9 @@ export default function UploadPage() {
               </label>
               <Input
                 type="number"
+                name="ppvPrice"
+                data-testid="content-ppv-price"
+                aria-label="Prix PPV (€)"
                 step="0.01"
                 min="0.50"
                 max="999.99"
@@ -572,10 +642,16 @@ export default function UploadPage() {
               {!files.some(f => f.mediaId) && 'Attendez la fin des uploads'}
             </p>
           )}
+          {canPublish && processingCount > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {processingCount} fichier(s) encore en traitement : vous pouvez publier, le suivi continue sur votre dashboard
+            </p>
+          )}
 
           <Button
             onClick={handlePublish}
             disabled={!canPublish}
+            data-testid="publish-content"
             size="lg"
           >
             {createContentMutation.isPending ? (

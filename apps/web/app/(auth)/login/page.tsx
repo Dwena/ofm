@@ -7,6 +7,14 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import Link from 'next/link'
 
+const LOGIN_ERRORS: Record<string, string> = {
+  'Invalid credentials': 'Email ou mot de passe incorrect.',
+  'Account suspended': 'Votre compte est suspendu.',
+  'Account banned': 'Votre compte a été banni.',
+  'Too Many Requests': 'Trop de tentatives. Veuillez réessayer dans une minute.',
+  'ThrottlerException: Too Many Requests': 'Trop de tentatives. Veuillez réessayer dans une minute.',
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -25,11 +33,15 @@ export default function LoginPage() {
     try {
       await login(email, password, needs2FA ? totpCode : undefined)
     } catch (err: any) {
-      if (err.response?.data?.message?.includes('2FA')) {
+      const raw = err.response?.data?.message
+      const message: string = Array.isArray(raw) ? raw[0] : raw || ''
+      if (message === '2FA code required') {
         setNeeds2FA(true)
-        setError('Code 2FA requis')
+      } else if (message === 'Invalid 2FA code') {
+        setTotpCode('')
+        setError('Code 2FA invalide. Réessayez avec un nouveau code.')
       } else {
-        setError(err.response?.data?.message || 'Erreur de connexion')
+        setError(LOGIN_ERRORS[message] || message || 'Erreur de connexion')
       }
     } finally {
       setLoading(false)
@@ -52,58 +64,89 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
             {error && (
-              <div className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 rounded-md">
+              <div role="alert" data-testid="login-error" className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 rounded-md">
                 {error}
               </div>
             )}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+              <label className="text-sm font-medium" htmlFor="login-email">Email</label>
               <Input
+                id="login-email"
+                name="email"
+                data-testid="login-email"
                 type="email"
                 placeholder="email@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                disabled={loading}
+                disabled={loading || needs2FA}
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Mot de passe</label>
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium" htmlFor="login-password">Mot de passe</label>
+                <Link href="/forgot-password" className="text-sm text-primary hover:underline">
+                  Mot de passe oublié ?
+                </Link>
+              </div>
               <Input
+                id="login-password"
+                name="password"
+                data-testid="login-password"
                 type="password"
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                disabled={loading}
+                disabled={loading || needs2FA}
               />
             </div>
             {needs2FA && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Code 2FA</label>
+                <label className="text-sm font-medium" htmlFor="totpCode">Code 2FA</label>
+                <p className="text-sm text-muted-foreground">
+                  Saisissez le code à 6 chiffres affiché par votre application d'authentification.
+                </p>
                 <Input
+                  id="totpCode"
                   type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]{6}"
                   placeholder="123456"
                   value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value)}
+                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   required
                   disabled={loading}
                   maxLength={6}
+                  autoFocus
                 />
+                <button
+                  type="button"
+                  className="text-sm text-muted-foreground hover:underline"
+                  onClick={() => {
+                    setNeeds2FA(false)
+                    setTotpCode('')
+                    setError('')
+                  }}
+                >
+                  Utiliser un autre compte
+                </button>
               </div>
             )}
           </CardContent>
           <CardFooter className="flex flex-col space-y-4">
             <Button
               type="submit"
+              data-testid="login-submit"
               className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg py-6"
               disabled={loading}
             >
-              {loading ? 'Connexion...' : 'Se connecter'}
+              {loading ? 'Connexion...' : needs2FA ? 'Vérifier' : 'Se connecter'}
             </Button>
             <p className="text-sm text-center text-muted-foreground">
               Pas encore de compte ?{' '}
-              <Link href="/register" className="text-primary hover:underline">
+              <Link href="/register" className="text-primary hover:underline" data-testid="register-link">
                 S'inscrire
               </Link>
             </p>

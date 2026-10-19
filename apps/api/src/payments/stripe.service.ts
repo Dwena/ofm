@@ -2,23 +2,27 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PrismaService } from '../common/database/prisma.service';
+import { toCents } from '../common/utils/money';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class StripeService {
   private readonly logger = new Logger(StripeService.name);
   private stripe: Stripe;
-  private platformFeePercentage: number;
 
   constructor(
     private configService: ConfigService,
     private prisma: PrismaService,
+    private settingsService: SettingsService,
   ) {
     this.stripe = new Stripe(this.configService.get('STRIPE_SECRET_KEY')!, {
       apiVersion: '2023-10-16',
     });
-    this.platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
+  }
+
+  /** Platform commission (percent), editable from /admin/settings */
+  private getPlatformFeePercentage(): Promise<number> {
+    return this.settingsService.getPlatformFeePercentage();
   }
 
   /**
@@ -57,7 +61,7 @@ export class StripeService {
 
     // If connected account, add application fee
     if (connectedAccountId) {
-      const platformFee = Math.round((amount * this.platformFeePercentage) / 100 * 100);
+      const platformFee = Math.round((amount * (await this.getPlatformFeePercentage())) / 100 * 100);
       paymentIntentData.application_fee_amount = platformFee;
       paymentIntentData.transfer_data = {
         destination: connectedAccountId,
@@ -65,6 +69,48 @@ export class StripeService {
     }
 
     return this.stripe.paymentIntents.create(paymentIntentData);
+  }
+
+  /**
+   * Create a one-off card payment (tip, PPV) as a destination charge on the
+   * creator's connected account. Amounts are in euros and converted to cents
+   * here. With a saved card the intent is confirmed immediately (it may still
+   * require 3D Secure); otherwise the client confirms it with Stripe Elements.
+   */
+  async createOneTimePaymentIntent(params: {
+    amount: number;
+    platformFee: number;
+    customerId: string;
+    connectedAccountId: string;
+    paymentMethodId?: string;
+    description?: string;
+    metadata: Record<string, string>;
+  }) {
+    return this.stripe.paymentIntents.create({
+      amount: toCents(params.amount),
+      currency: 'eur',
+      customer: params.customerId,
+      payment_method_types: ['card'],
+      application_fee_amount: toCents(params.platformFee),
+      transfer_data: {
+        destination: params.connectedAccountId,
+      },
+      ...(params.description && { description: params.description }),
+      ...(params.paymentMethodId
+        ? { payment_method: params.paymentMethodId, confirm: true }
+        : { setup_future_usage: 'on_session' as const }),
+      metadata: {
+        ...params.metadata,
+        platform: 'ofm',
+      },
+    });
+  }
+
+  /**
+   * Retrieve a payment intent
+   */
+  async retrievePaymentIntent(paymentIntentId: string) {
+    return this.stripe.paymentIntents.retrieve(paymentIntentId);
   }
 
   /**
@@ -125,7 +171,7 @@ export class StripeService {
     priceId: string,
     connectedAccountId: string,
   ) {
-    const platformFee = this.platformFeePercentage;
+    const platformFee = await this.getPlatformFeePercentage();
 
     return this.stripe.subscriptions.create({
       customer: customerId,
@@ -138,6 +184,147 @@ export class StripeService {
         platform: 'ofm',
       },
     });
+  }
+
+  /**
+   * Create a fan subscription to a creator tier.
+   * Uses destination charges like one-off payments: the subscription lives on
+   * the platform account and each invoice is transferred to the creator minus
+   * the platform fee. The first invoice is left incomplete until the fan
+   * confirms the payment client-side, unless a saved card is provided.
+   */
+  async createTierSubscription(params: {
+    customerId: string;
+    priceId: string;
+    connectedAccountId: string;
+    paymentMethodId?: string;
+    metadata: Record<string, string>;
+  }) {
+    return this.stripe.subscriptions.create({
+      customer: params.customerId,
+      items: [{ price: params.priceId }],
+      application_fee_percent: await this.getPlatformFeePercentage(),
+      transfer_data: {
+        destination: params.connectedAccountId,
+      },
+      ...(params.paymentMethodId
+        ? {
+            default_payment_method: params.paymentMethodId,
+            payment_behavior: 'allow_incomplete' as const,
+          }
+        : {
+            payment_behavior: 'default_incomplete' as const,
+          }),
+      payment_settings: {
+        payment_method_types: ['card'],
+        save_default_payment_method: 'on_subscription',
+      },
+      expand: ['latest_invoice.payment_intent'],
+      metadata: {
+        ...params.metadata,
+        platform: 'ofm',
+      },
+    });
+  }
+
+  /**
+   * Retrieve subscription (with latest invoice payment intent)
+   */
+  async retrieveSubscription(subscriptionId: string) {
+    return this.stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ['latest_invoice.payment_intent'],
+    });
+  }
+
+  /**
+   * Schedule (or unschedule) cancellation at the end of the current period
+   */
+  async setCancelAtPeriodEnd(subscriptionId: string, cancelAtPeriodEnd: boolean) {
+    return this.stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: cancelAtPeriodEnd,
+    });
+  }
+
+  /**
+   * Update a fan subscription (tier change, metadata), returning it with the
+   * latest invoice payment intent so a payment needing action can be confirmed
+   */
+  async updateTierSubscription(subscriptionId: string, params: Stripe.SubscriptionUpdateParams) {
+    return this.stripe.subscriptions.update(subscriptionId, {
+      ...params,
+      expand: ['latest_invoice.payment_intent'],
+    });
+  }
+
+  /**
+   * List `incomplete` subscriptions (first payment never completed), for a
+   * customer and/or created before a date (unix seconds)
+   */
+  async listIncompleteSubscriptions(params: { customerId?: string; createdBefore?: number }) {
+    return this.stripe.subscriptions
+      .list({
+        status: 'incomplete',
+        limit: 100,
+        ...(params.customerId && { customer: params.customerId }),
+        ...(params.createdBefore && { created: { lt: params.createdBefore } }),
+      })
+      .autoPagingToArray({ limit: 1000 });
+  }
+
+  /**
+   * Retrieve customer
+   */
+  async getCustomer(customerId: string) {
+    return this.stripe.customers.retrieve(customerId);
+  }
+
+  /**
+   * List saved cards of a customer
+   */
+  async listPaymentMethods(customerId: string) {
+    return this.stripe.paymentMethods.list({
+      customer: customerId,
+      type: 'card',
+    });
+  }
+
+  /**
+   * Retrieve a payment method
+   */
+  async retrievePaymentMethod(paymentMethodId: string) {
+    return this.stripe.paymentMethods.retrieve(paymentMethodId);
+  }
+
+  /**
+   * Create setup intent to save a card for future payments
+   */
+  async createSetupIntent(customerId: string) {
+    return this.stripe.setupIntents.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      usage: 'off_session',
+      metadata: {
+        platform: 'ofm',
+      },
+    });
+  }
+
+  /**
+   * Set customer's default payment method for invoices
+   */
+  async setDefaultPaymentMethod(customerId: string, paymentMethodId: string) {
+    return this.stripe.customers.update(customerId, {
+      invoice_settings: {
+        default_payment_method: paymentMethodId,
+      },
+    });
+  }
+
+  /**
+   * Detach payment method from its customer
+   */
+  async detachPaymentMethod(paymentMethodId: string) {
+    return this.stripe.paymentMethods.detach(paymentMethodId);
   }
 
   /**
@@ -203,13 +390,13 @@ export class StripeService {
   /**
    * Create payout to connected account
    * @param accountId Stripe connected account ID
-   * @param amount Amount in cents
+   * @param amountCents Amount in cents (use toCents() on euro amounts)
    * @param currency Currency code (default: eur)
    */
-  async createPayout(accountId: string, amount: number, currency: string = 'eur') {
+  async createPayout(accountId: string, amountCents: number, currency: string = 'eur') {
     return this.stripe.payouts.create(
       {
-        amount: Math.round(amount), // Already in cents
+        amount: Math.round(amountCents),
         currency,
       },
       {
@@ -412,7 +599,7 @@ export class StripeService {
       });
 
       if (subscription) {
-        const platformFee = (invoice.amount_paid / 100) * (this.platformFeePercentage / 100);
+        const platformFee = (invoice.amount_paid / 100) * ((await this.getPlatformFeePercentage()) / 100);
         const netAmount = invoice.amount_paid / 100 - platformFee;
 
         await this.prisma.transaction.create({

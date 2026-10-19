@@ -1,12 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Users,
   FileText,
@@ -16,12 +14,10 @@ import {
   TrendingDown,
   Activity,
   Shield,
-  Eye,
   Ban,
   CheckCircle,
-  XCircle,
   Clock,
-  BarChart3
+  ScrollText,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
@@ -37,17 +33,13 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
-interface DashboardStats {
-  totalUsers: number;
-  totalCreators: number;
-  totalSubscribers: number;
-  totalRevenue: number;
-  monthlyRevenue: number;
-  totalPosts: number;
-  pendingReports: number;
-  activeStreams: number;
-  userGrowth: number;
-  revenueGrowth: number;
+// Shape returned by GET /admin/stats/platform (last 30 days by default)
+interface PlatformStats {
+  users: { total: number; new: number; active: number; creators: number; newCreators: number };
+  content: { total: number; new: number };
+  subscriptions: { total: number; active: number; churnRate: number };
+  revenue: { total: number; platformFees: number };
+  reports: { total: number; pending: number };
 }
 
 interface RecentUser {
@@ -57,18 +49,18 @@ interface RecentUser {
   role: string;
   avatar?: string;
   createdAt: string;
-  status: 'ACTIVE' | 'SUSPENDED' | 'BANNED';
+  status: 'ACTIVE' | 'SUSPENDED' | 'BANNED' | 'PENDING_VERIFICATION';
 }
 
 interface PendingReport {
   id: string;
-  type: string;
+  reportedType: string;
   reason: string;
-  status: 'PENDING' | 'RESOLVED' | 'DISMISSED';
+  status: string;
   reportedUser: {
     username: string;
     avatar?: string;
-  };
+  } | null;
   reporter: {
     username: string;
   };
@@ -76,23 +68,18 @@ interface PendingReport {
 }
 
 export default function AdminDashboardPage() {
+  // Access is guarded by app/(app)/admin/layout.tsx
   const { user } = useAuth();
   const router = useRouter();
 
-  // Check if user is admin
-  useEffect(() => {
-    if (user && user.role !== 'ADMIN') {
-      router.push('/');
-    }
-  }, [user, router]);
-
   // Fetch dashboard stats
-  const { data: stats, isLoading: statsLoading } = useQuery({
+  const { data: stats } = useQuery({
     queryKey: ['admin-stats'],
     queryFn: async () => {
       const response = await adminApi.getStats();
-      return response.data as DashboardStats;
+      return response.data as PlatformStats;
     },
+    refetchInterval: 60000,
   });
 
   // Fetch recent users
@@ -100,7 +87,7 @@ export default function AdminDashboardPage() {
     queryKey: ['admin-recent-users'],
     queryFn: async () => {
       const response = await adminApi.getRecentUsers();
-      return response.data as RecentUser[];
+      return (response.data?.items ?? []) as RecentUser[];
     },
   });
 
@@ -109,8 +96,9 @@ export default function AdminDashboardPage() {
     queryKey: ['admin-pending-reports'],
     queryFn: async () => {
       const response = await adminApi.getPendingReports();
-      return response.data as PendingReport[];
+      return (response.data?.items ?? []) as PendingReport[];
     },
+    refetchInterval: 30000,
   });
 
   if (!user || user.role !== 'ADMIN') {
@@ -120,46 +108,46 @@ export default function AdminDashboardPage() {
   const statCards = [
     {
       title: 'Utilisateurs totaux',
-      value: stats?.totalUsers.toLocaleString() || '0',
-      description: `+${stats?.userGrowth || 0}% ce mois`,
+      value: (stats?.users.total ?? 0).toLocaleString('fr-FR'),
+      description: `+${stats?.users.new ?? 0} sur 30 jours`,
       icon: Users,
-      trend: (stats?.userGrowth || 0) > 0 ? 'up' : 'down',
+      trend: (stats?.users.new ?? 0) > 0 ? 'up' : undefined,
       color: 'text-blue-500',
     },
     {
       title: 'Créateurs',
-      value: stats?.totalCreators.toLocaleString() || '0',
-      description: 'Comptes créateurs actifs',
+      value: (stats?.users.creators ?? 0).toLocaleString('fr-FR'),
+      description: `+${stats?.users.newCreators ?? 0} sur 30 jours`,
       icon: Shield,
       color: 'text-purple-500',
     },
     {
-      title: 'Revenus mensuels',
-      value: `${stats?.monthlyRevenue.toLocaleString() || 0}€`,
-      description: `+${stats?.revenueGrowth || 0}% vs mois dernier`,
+      title: 'Revenus (30 jours)',
+      value: `${(stats?.revenue.total ?? 0).toLocaleString('fr-FR')} €`,
+      description: `${(stats?.revenue.platformFees ?? 0).toLocaleString('fr-FR')} € de commissions`,
       icon: DollarSign,
-      trend: (stats?.revenueGrowth || 0) > 0 ? 'up' : 'down',
       color: 'text-green-500',
     },
     {
-      title: 'Rapports en attente',
-      value: stats?.pendingReports.toLocaleString() || '0',
+      title: 'Signalements en attente',
+      value: (stats?.reports.pending ?? 0).toLocaleString('fr-FR'),
       description: 'Nécessitent une modération',
       icon: AlertTriangle,
       color: 'text-red-500',
     },
     {
-      title: 'Publications totales',
-      value: stats?.totalPosts.toLocaleString() || '0',
-      description: 'Contenu sur la plateforme',
+      title: 'Publications',
+      value: (stats?.content.total ?? 0).toLocaleString('fr-FR'),
+      description: `+${stats?.content.new ?? 0} sur 30 jours`,
       icon: FileText,
       color: 'text-orange-500',
     },
     {
-      title: 'Streams en direct',
-      value: stats?.activeStreams.toLocaleString() || '0',
-      description: 'Actuellement actifs',
+      title: 'Abonnements actifs',
+      value: (stats?.subscriptions.active ?? 0).toLocaleString('fr-FR'),
+      description: `${(stats?.users.active ?? 0).toLocaleString('fr-FR')} utilisateurs actifs`,
       icon: Activity,
+      trend: undefined as 'up' | 'down' | undefined,
       color: 'text-pink-500',
     },
   ];
@@ -206,10 +194,10 @@ export default function AdminDashboardPage() {
         <Button
           variant="outline"
           className="h-auto py-6 flex flex-col items-center gap-2"
-          onClick={() => router.push('/admin/analytics')}
+          onClick={() => router.push('/admin/logs')}
         >
-          <BarChart3 className="h-6 w-6" />
-          <span>Analytiques</span>
+          <ScrollText className="h-6 w-6" />
+          <span>Journaux</span>
         </Button>
       </div>
 
@@ -272,7 +260,7 @@ export default function AdminDashboardPage() {
                     <TableRow
                       key={user.id}
                       className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => router.push(`/admin/users/${user.id}`)}
+                      onClick={() => router.push('/admin/users')}
                     >
                       <TableCell>
                         <div className="flex items-center gap-2">
@@ -297,6 +285,8 @@ export default function AdminDashboardPage() {
                             <CheckCircle className="h-3 w-3 mr-1" />
                             Actif
                           </Badge>
+                        ) : user.status === 'PENDING_VERIFICATION' ? (
+                          <Badge variant="secondary">Non vérifié</Badge>
                         ) : user.status === 'SUSPENDED' ? (
                           <Badge variant="default" className="bg-yellow-500">
                             <Clock className="h-3 w-3 mr-1" />
@@ -346,21 +336,21 @@ export default function AdminDashboardPage() {
                   <div
                     key={report.id}
                     className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50"
-                    onClick={() => router.push(`/admin/reports/${report.id}`)}
+                    onClick={() => router.push('/admin/reports')}
                   >
                     <Avatar className="h-10 w-10">
-                      <AvatarImage src={report.reportedUser.avatar} />
+                      <AvatarImage src={report.reportedUser?.avatar} />
                       <AvatarFallback>
-                        {report.reportedUser.username.substring(0, 2).toUpperCase()}
+                        {(report.reportedUser?.username ?? '??').substring(0, 2).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <p className="font-medium text-sm">
-                          @{report.reportedUser.username}
+                          @{report.reportedUser?.username ?? 'inconnu'}
                         </p>
                         <Badge variant="outline" className="text-xs">
-                          {report.type}
+                          {report.reportedType}
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-2">

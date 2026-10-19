@@ -12,10 +12,15 @@ env:
   API_IMAGE_NAME: ofm-api
   WEB_IMAGE_NAME: ofm-web
 
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -74,9 +79,13 @@ jobs:
           npx prisma migrate deploy || echo "✓ Prisma migration skipped"
           npm test || echo "✓ API tests not configured yet"
 
+      # E2E needs the API, a seeded database and the web app running; it is
+      # opt-in until the workflow starts them (set repo variable RUN_E2E=true)
       - name: Run E2E tests
+        if: vars.RUN_E2E == 'true'
         working-directory: apps/web
         continue-on-error: true
+        timeout-minutes: 20
         env:
           NEXT_PUBLIC_API_URL: http://localhost:3001
           TEST_CREATOR_EMAIL: creator@test.com
@@ -189,12 +198,15 @@ jobs:
     name: Notify Deployment
     needs: deploy
     runs-on: ubuntu-latest
-    if: always()
+    # Only report when a deployment actually ran
+    if: always() && needs.deploy.result != 'skipped'
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Send deployment notification
         uses: 8398a7/action-slack@v3
-        if: always()
+        if: env.SLACK_WEBHOOK_URL != ''
         with:
           status: ${{ job.status }}
           text: |

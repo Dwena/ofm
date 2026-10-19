@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
+import { roundMoney, toCents } from '../common/utils/money';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class BillingService {
@@ -10,6 +12,7 @@ export class BillingService {
   constructor(
     private prisma: PrismaService,
     private stripeService: StripeService,
+    private settingsService: SettingsService,
   ) {}
 
   /**
@@ -22,10 +25,12 @@ export class BillingService {
 
     const now = new Date();
 
-    // Find subscriptions that need renewal (current period ends today or before)
+    // Find subscriptions that need renewal (current period ends today or before).
+    // Stripe-billed subscriptions renew on Stripe and are synced by webhooks.
     const subscriptionsToRenew = await this.prisma.subscription.findMany({
       where: {
         status: 'ACTIVE',
+        stripeSubscriptionId: null,
         currentPeriodEnd: {
           lte: now,
         },
@@ -73,61 +78,29 @@ export class BillingService {
 
     const { tier, subscriber } = subscription;
 
-    if (!subscriber.stripeCustomerId) {
-      throw new Error('Subscriber has no Stripe customer ID');
-    }
-
     try {
-      // Stripe subscriptions are handled automatically by Stripe
-      // This is mainly for tracking and notification purposes
+      // Paid tiers are billed through Stripe subscriptions; a paid subscription
+      // without one cannot be charged here
+      if (Number(tier.price) > 0) {
+        throw new Error('Paid subscription has no Stripe subscription to bill');
+      }
 
-      // Calculate new period
+      // Free tier: just roll the period over
       const currentPeriodStart = new Date();
       const currentPeriodEnd = new Date();
 
-      switch (tier.billingPeriod) {
-        case 'MONTHLY':
-          currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
-          break;
-        case 'YEARLY':
-          currentPeriodEnd.setFullYear(currentPeriodEnd.getFullYear() + 1);
-          break;
-        default:
-          currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
+      if (tier.interval === 'year') {
+        currentPeriodEnd.setFullYear(currentPeriodEnd.getFullYear() + 1);
+      } else {
+        currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
       }
 
-      // Update subscription
       await this.prisma.subscription.update({
         where: { id: subscription.id },
         data: {
           currentPeriodStart,
           currentPeriodEnd,
-          updatedAt: new Date(),
         },
-      });
-
-      // Create transaction record
-      await this.prisma.transaction.create({
-        data: {
-          fromUserId: subscriber.id,
-          toUserId: tier.creatorId,
-          type: 'SUBSCRIPTION',
-          status: 'COMPLETED',
-          amount: tier.price,
-          currency: 'EUR',
-          platformFee: Math.floor(Number(tier.price) * 0.1), // 10% platform fee
-          netAmount: Math.floor(Number(tier.price) * 0.9),
-          subscriptionId: subscription.id,
-          processedAt: new Date(),
-        },
-      });
-
-      // Notify creator
-      await this.createNotification({
-        userId: tier.creatorId,
-        type: 'SUBSCRIPTION_RENEWAL',
-        title: 'Renouvellement d\'abonnement',
-        message: `L'abonnement de ${subscriber.username} a été renouvelé`,
       });
 
       this.logger.log(`Subscription ${subscription.id} renewed successfully`);
@@ -222,7 +195,8 @@ export class BillingService {
   async processPendingPayouts() {
     this.logger.log('Processing pending payouts...');
 
-    const minimumPayoutAmount = 5000; // 50 EUR in cents
+    // Balances are computed from transaction net amounts, in EUR
+    const minimumPayoutAmount = await this.settingsService.getMinimumPayoutAmount();
 
     // Get creators with completed transactions
     const creatorsWithBalance = await this.prisma.user.findMany({
@@ -283,8 +257,11 @@ export class BillingService {
 
   /**
    * Create a payout for a creator
+   * @param amount Amount in euros
    */
   private async createPayout(creatorId: string, amount: number) {
+    amount = roundMoney(amount);
+
     const creator = await this.prisma.user.findUnique({
       where: { id: creatorId },
     });
@@ -308,7 +285,7 @@ export class BillingService {
       // Create payout in Stripe
       const stripePayout = await this.stripeService.createPayout(
         creator.stripeAccountId,
-        amount,
+        toCents(amount),
       );
 
       // Update with Stripe payout ID
@@ -321,14 +298,14 @@ export class BillingService {
         },
       });
 
-      this.logger.log(`Payout created for creator ${creatorId}: ${amount / 100} EUR`);
+      this.logger.log(`Payout created for creator ${creatorId}: ${amount.toFixed(2)} EUR`);
 
       // Notify creator
       await this.createNotification({
         userId: creatorId,
         type: 'PAYOUT_PROCESSING',
         title: 'Paiement en cours',
-        message: `Votre paiement de ${(amount / 100).toFixed(2)}€ est en cours de traitement.`,
+        message: `Votre paiement de ${amount.toFixed(2)}€ est en cours de traitement.`,
       });
 
       return payout;

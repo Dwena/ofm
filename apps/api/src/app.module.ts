@@ -11,6 +11,7 @@ import { AppService } from './app.service';
 import { DatabaseModule } from './common/database/database.module';
 import { RedisModule } from './common/redis/redis.module';
 import { LoggerModule } from './common/logger/logger.module';
+import { MailModule } from './common/mail/mail.module';
 
 // Feature modules
 import { AuthModule } from './auth/auth.module';
@@ -28,6 +29,7 @@ import { AdminModule } from './admin/admin.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { StoriesModule } from './stories/stories.module';
 import { StreamingModule } from './streaming/streaming.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -74,6 +76,8 @@ import { StreamingModule } from './streaming/streaming.module';
     DatabaseModule,
     RedisModule,
     LoggerModule,
+    MailModule,
+    SettingsModule,
 
     // Feature modules
     AuthModule,

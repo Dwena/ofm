@@ -4,7 +4,11 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { StripeService } from './stripe.service';
-import { FilterTransactionsDto, GetStatsDto, StatsInterval } from './dto/payments.dto';
+import { StripeWebhookService } from './stripe-webhook.service';
+import { OneTimePaymentService } from './one-time-payment.service';
+import { FilterTransactionsDto, GetStatsDto, SendTipDto, StatsInterval } from './dto/payments.dto';
+import { roundMoney, sumBalanceEntries, toCents } from '../common/utils/money';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class PaymentsService {
@@ -14,6 +18,9 @@ export class PaymentsService {
     private prisma: PrismaService,
     private stripeService: StripeService,
     private configService: ConfigService,
+    private stripeWebhookService: StripeWebhookService,
+    private oneTimePayments: OneTimePaymentService,
+    private settingsService: SettingsService,
   ) {}
 
   /**
@@ -129,6 +136,7 @@ export class PaymentsService {
 
   /**
    * Request manual payout for creator
+   * @param amount Amount in euros
    */
   async requestPayout(userId: string, amount: number) {
     const user = await this.prisma.user.findUnique({
@@ -143,20 +151,22 @@ export class PaymentsService {
       throw new BadRequestException('Stripe account not fully onboarded');
     }
 
-    // Get available balance
-    const balance = await this.stripeService.getAccountBalance(user.stripeAccountId);
-    const availableBalance = balance.available[0]?.amount || 0;
+    amount = roundMoney(amount);
 
-    if (amount * 100 > availableBalance) {
+    // Get available balance (Stripe returns cents)
+    const balance = await this.stripeService.getAccountBalance(user.stripeAccountId);
+    const availableBalance = sumBalanceEntries(balance.available, 'eur');
+
+    if (amount > availableBalance) {
       throw new BadRequestException(
-        `Insufficient balance. Available: ${availableBalance / 100}`,
+        `Insufficient balance. Available: ${availableBalance.toFixed(2)}€`,
       );
     }
 
-    // Create payout
+    // Create payout (Stripe expects cents)
     const payout = await this.stripeService.createPayout(
       user.stripeAccountId,
-      amount,
+      toCents(amount),
     );
 
     // Save payout record
@@ -220,10 +230,30 @@ export class PaymentsService {
       },
     });
 
-    // Pending balance (to be paid out)
-    const pendingBalance = user.stripeAccountId
-      ? await this.stripeService.getAccountBalance(user.stripeAccountId)
+    // Stripe balance of the connected account (cents, converted to euros below)
+    const balance = user.stripeAccountId
+      ? await this.stripeService.getAccountBalance(user.stripeAccountId).catch((error) => {
+          this.logger.warn(`Unable to read Stripe balance for ${userId}: ${error.message}`);
+          return null;
+        })
       : null;
+    const availableBalance = sumBalanceEntries(balance?.available, 'eur');
+    const pendingBalance = sumBalanceEntries(balance?.pending, 'eur');
+
+    const recentTransactions = await this.prisma.transaction.findMany({
+      where: { toUserId: userId, type: { in: ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'] } },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        amount: true,
+        netAmount: true,
+        currency: true,
+        createdAt: true,
+      },
+    });
 
     // Total payouts
     const totalPayouts = await this.prisma.payout.aggregate({
@@ -236,13 +266,20 @@ export class PaymentsService {
       },
     });
 
+    // Every amount is in euros
     return {
-      totalEarnings: totalEarnings._sum.netAmount || 0,
-      monthlyEarnings: monthlyEarnings._sum.netAmount || 0,
-      pendingBalance: pendingBalance?.available[0]?.amount || 0,
-      totalPayouts: totalPayouts._sum?.amount || 0,
-      availableForPayout:
-        (pendingBalance?.available[0]?.amount || 0) / 100,
+      currency: 'EUR',
+      totalEarnings: Number(totalEarnings._sum.netAmount ?? 0),
+      monthlyEarnings: Number(monthlyEarnings._sum.netAmount ?? 0),
+      availableBalance,
+      pendingBalance,
+      availableForPayout: availableBalance,
+      totalPayouts: Number(totalPayouts._sum?.amount ?? 0),
+      recentTransactions: recentTransactions.map((transaction) => ({
+        ...transaction,
+        amount: Number(transaction.amount),
+        netAmount: Number(transaction.netAmount),
+      })),
     };
   }
 
@@ -295,7 +332,7 @@ export class PaymentsService {
     ]);
 
     return {
-      transactions,
+      items: transactions,
       pagination: {
         page,
         limit,
@@ -324,7 +361,7 @@ export class PaymentsService {
   async processAutomatedPayouts() {
     this.logger.log('Running automated payouts...');
 
-    const minPayoutAmount = 50; // Minimum 50 EUR for payout
+    const minPayoutAmount = await this.settingsService.getMinimumPayoutAmount(); // EUR, see /admin/settings
 
     // Get all creators with Stripe accounts
     const creators = await this.prisma.user.findMany({
@@ -344,16 +381,14 @@ export class PaymentsService {
         const balance = await this.stripeService.getAccountBalance(
           creator.stripeAccountId!,
         );
-        const availableAmount = balance.available[0]?.amount || 0;
+        const amount = sumBalanceEntries(balance.available, 'eur');
 
         // Check if balance exceeds minimum
-        if (availableAmount >= minPayoutAmount * 100) {
-          const amount = availableAmount / 100;
-
-          // Create payout
+        if (amount >= minPayoutAmount) {
+          // Create payout (Stripe expects cents)
           const payout = await this.stripeService.createPayout(
             creator.stripeAccountId!,
-            amount,
+            toCents(amount),
           );
 
           // Save record
@@ -386,6 +421,7 @@ export class PaymentsService {
 
   /**
    * Create payment intent
+   * @param amount Amount in euros (converted to cents for Stripe)
    */
   async createPaymentIntent(userId: string, amount: number, currency: string = 'eur') {
     const user = await this.prisma.user.findUnique({
@@ -397,16 +433,7 @@ export class PaymentsService {
     }
 
     // Create or get Stripe customer
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await this.stripeService.createCustomer(user.email, user.username);
-      customerId = customer.id;
-
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { stripeCustomerId: customerId },
-      });
-    }
+    const customerId = await this.getOrCreateCustomerId(user);
 
     // Create payment intent
     const paymentIntent = await this.stripeService.createPaymentIntent(
@@ -422,10 +449,135 @@ export class PaymentsService {
   }
 
   /**
+   * Get the user's Stripe customer ID, creating the customer on first use
+   */
+  async getOrCreateCustomerId(user: {
+    id: string;
+    email: string;
+    username: string;
+    stripeCustomerId: string | null;
+  }) {
+    return this.oneTimePayments.getOrCreateCustomerId(user);
+  }
+
+  /**
+   * List the user's saved cards
+   */
+  async listPaymentMethods(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { stripeCustomerId: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.stripeCustomerId) {
+      return [];
+    }
+
+    const [methods, customer] = await Promise.all([
+      this.stripeService.listPaymentMethods(user.stripeCustomerId),
+      this.stripeService.getCustomer(user.stripeCustomerId),
+    ]);
+
+    const defaultPaymentMethod = customer.deleted
+      ? null
+      : customer.invoice_settings?.default_payment_method;
+    const defaultId =
+      typeof defaultPaymentMethod === 'string'
+        ? defaultPaymentMethod
+        : defaultPaymentMethod?.id;
+
+    return methods.data.map((method) => ({
+      id: method.id,
+      type: 'card' as const,
+      brand: method.card?.brand,
+      last4: method.card?.last4,
+      expMonth: method.card?.exp_month,
+      expYear: method.card?.exp_year,
+      isDefault: method.id === defaultId,
+      createdAt: new Date(method.created * 1000).toISOString(),
+    }));
+  }
+
+  /**
+   * Create a setup intent so the client can save a new card with Stripe Elements
+   */
+  async createSetupIntent(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const customerId = await this.getOrCreateCustomerId(user);
+    const setupIntent = await this.stripeService.createSetupIntent(customerId);
+
+    return {
+      clientSecret: setupIntent.client_secret,
+      setupIntentId: setupIntent.id,
+    };
+  }
+
+  /**
+   * Set a saved card as the default one
+   */
+  async setDefaultPaymentMethod(userId: string, paymentMethodId: string) {
+    const customerId = await this.assertPaymentMethodOwnership(userId, paymentMethodId);
+
+    await this.stripeService.setDefaultPaymentMethod(customerId, paymentMethodId);
+
+    return { message: 'Default payment method updated' };
+  }
+
+  /**
+   * Remove a saved card
+   */
+  async deletePaymentMethod(userId: string, paymentMethodId: string) {
+    await this.assertPaymentMethodOwnership(userId, paymentMethodId);
+
+    await this.stripeService.detachPaymentMethod(paymentMethodId);
+
+    this.logger.log(`Payment method ${paymentMethodId} removed by user ${userId}`);
+
+    return { message: 'Payment method removed' };
+  }
+
+  /**
+   * Ensure the payment method belongs to the user's Stripe customer
+   */
+  async assertPaymentMethodOwnership(userId: string, paymentMethodId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { stripeCustomerId: true },
+    });
+
+    if (!user?.stripeCustomerId) {
+      throw new NotFoundException('Payment method not found');
+    }
+
+    const method = await this.stripeService
+      .retrievePaymentMethod(paymentMethodId)
+      .catch(() => null);
+    const owner = typeof method?.customer === 'string' ? method.customer : method?.customer?.id;
+
+    if (!method || owner !== user.stripeCustomerId) {
+      throw new NotFoundException('Payment method not found');
+    }
+
+    return user.stripeCustomerId;
+  }
+
+  /**
    * Handle webhook
    */
   async handleWebhook(signature: string, payload: Buffer) {
-    return this.stripeService.handleWebhook(signature, payload);
+    // Same handling as /webhooks/stripe so both endpoints keep data consistent
+    return this.stripeWebhookService.handleWebhook(payload, signature);
   }
 
   /**
@@ -812,21 +964,21 @@ export class PaymentsService {
   }
 
   /**
-   * Send a tip to a creator
+   * Send a tip to a creator. The tip stays PENDING until Stripe confirms the
+   * payment (webhook or confirmTip), only then is the creator credited.
    */
-  async sendTip(userId: string, creatorId: string, amount: number, message?: string) {
-    // Validate users exist
-    const [user, creator] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: userId } }),
-      this.prisma.user.findUnique({
-        where: { id: creatorId },
-        include: { creatorProfile: true },
-      }),
-    ]);
+  async sendTip(userId: string, creatorId: string, dto: SendTipDto) {
+    const amount = roundMoney(dto.amount);
 
-    if (!user) {
-      throw new NotFoundException('User not found');
+    // Cannot tip yourself
+    if (userId === creatorId) {
+      throw new BadRequestException('You cannot tip yourself');
     }
+
+    const creator = await this.prisma.user.findUnique({
+      where: { id: creatorId },
+      include: { creatorProfile: true },
+    });
 
     if (!creator || creator.role !== 'CREATOR') {
       throw new NotFoundException('Creator not found');
@@ -841,109 +993,48 @@ export class PaymentsService {
       throw new BadRequestException('This creator does not accept tips');
     }
 
-    // Check minimum tip amount
-    const minimumTip = parseFloat(creator.creatorProfile.minimumTip.toString());
+    // Check minimum tip amount (euros)
+    const minimumTip = Number(creator.creatorProfile.minimumTip);
     if (amount < minimumTip) {
-      throw new BadRequestException(`Minimum tip amount is €${minimumTip}`);
+      throw new BadRequestException(`Minimum tip amount is €${minimumTip.toFixed(2)}`);
     }
 
-    // Cannot tip yourself
-    if (userId === creatorId) {
-      throw new BadRequestException('You cannot tip yourself');
+    // Tips sent from a live stream are announced in its chat once paid
+    if (dto.streamId) {
+      const stream = await this.prisma.liveStream.findUnique({
+        where: { id: dto.streamId },
+        select: { creatorId: true, status: true },
+      });
+      if (!stream || stream.creatorId !== creatorId) {
+        throw new BadRequestException('Invalid stream');
+      }
     }
 
-    // Calculate platform fee (15% default)
-    const platformFeePercentage = parseFloat(
-      this.configService.get('STRIPE_PLATFORM_FEE_PERCENTAGE', '15'),
-    );
-    const platformFee = (amount * platformFeePercentage) / 100;
-    const netAmount = amount - platformFee;
-
-    // Check if creator has Stripe account
-    if (!creator.stripeAccountId) {
-      throw new BadRequestException('Creator has not set up payment account');
-    }
-
-    if (!creator.stripeOnboarded) {
-      throw new BadRequestException('Creator payment account is not ready');
-    }
-
-    // Create Stripe payment intent
-    const paymentIntent = await this.stripeService.createPaymentIntent(
+    const result = await this.oneTimePayments.startPayment({
+      payerId: userId,
+      creatorId,
+      kind: 'tip',
       amount,
-      'EUR',
-      user.stripeCustomerId || undefined,
-      creator.stripeAccountId,
-    );
-
-    // Create transaction record
-    const transaction = await this.prisma.transaction.create({
-      data: {
-        fromUserId: userId,
-        toUserId: creatorId,
-        type: 'TIP',
-        status: 'COMPLETED',
-        amount,
-        currency: 'EUR',
-        platformFee,
-        netAmount,
-        stripePaymentIntentId: paymentIntent.id,
-        metadata: {
-          message: message || null,
-          type: 'tip',
-        },
-      },
-      include: {
-        fromUser: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatar: true,
-          },
-        },
-        toUser: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatar: true,
-          },
-        },
+      paymentMethodId: dto.paymentMethodId,
+      description: `Pourboire pour @${creator.username}`,
+      metadata: {
+        message: dto.message?.trim() || null,
+        streamId: dto.streamId,
       },
     });
 
-    // Update creator's total earnings
-    await this.prisma.creatorProfile.update({
-      where: { userId: creatorId },
-      data: {
-        totalEarnings: {
-          increment: netAmount,
-        },
-      },
+    this.logger.log(`Tip started: €${amount} from ${userId} to ${creatorId} (${result.status})`);
+
+    return result;
+  }
+
+  /**
+   * Confirm a tip after the client-side Stripe confirmation (idempotent)
+   */
+  async confirmTip(userId: string, creatorId: string, paymentIntentId: string) {
+    return this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+      kind: 'tip',
+      creatorId,
     });
-
-    // Create notification for creator
-    await this.prisma.notification.create({
-      data: {
-        userId: creatorId,
-        type: 'NEW_TIP',
-        title: 'New Tip Received!',
-        message: `${user.username || 'A fan'} sent you a €${amount} tip${message ? ': ' + message : ''}`,
-        metadata: {
-          fromUserId: userId,
-          amount,
-          transactionId: transaction.id,
-        },
-      },
-    });
-
-    this.logger.log(`Tip sent: €${amount} from ${userId} to ${creatorId}`);
-
-    return {
-      success: true,
-      transaction,
-      paymentIntentClientSecret: paymentIntent.client_secret,
-    };
   }
 }

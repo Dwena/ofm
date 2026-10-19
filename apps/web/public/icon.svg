@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>OFM</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f46e5"/>
+      <stop offset="1" stop-color="#9333ea"/>
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed background so the icon also works as a maskable icon -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- "OFM" drawn as shapes (no font dependency), kept inside the 80% safe zone -->
+  <g transform="translate(96 197.5) scale(0.78)" fill="#ffffff">
+    <circle cx="75" cy="75" r="58" fill="none" stroke="#ffffff" stroke-width="34"/>
+    <rect x="170" y="0" width="34" height="150"/>
+    <rect x="170" y="0" width="80" height="30"/>
+    <rect x="170" y="62" width="68" height="28"/>
+    <polygon points="270,150 270,0 304,0 340,70 376,0 410,0 410,150 378,150 378,58 348,114 332,114 302,58 302,150"/>
+  </g>
+</svg>

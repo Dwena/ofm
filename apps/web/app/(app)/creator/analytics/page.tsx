@@ -1,7 +1,11 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { LIVE_REFETCH_INTERVAL, useLiveAnalytics } from '@/hooks/use-live-analytics'
+import { LiveIndicator } from '@/components/live-indicator'
 import { analyticsApi, paymentsApi } from '@/lib/api'
+import { useAuth } from '@/contexts/auth-context'
+import { formatEuros } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -29,17 +33,34 @@ const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8']
 
 type Interval = 'day' | 'week' | 'month' | 'year'
 
+// Metrics refreshed live on new subscriber / tip / purchase events (prefix match)
+const LIVE_QUERY_KEYS = [
+  ['analytics-overview'],
+  ['analytics-subscriber-growth'],
+  ['analytics-engagement'],
+  ['payment-history'],
+]
+
 export default function AnalyticsPage() {
   const [interval, setInterval] = useState<Interval>('day')
   const [periods, setPeriods] = useState(30)
+  const queryClient = useQueryClient()
+  const { user } = useAuth()
+  const { connected } = useLiveAnalytics(LIVE_QUERY_KEYS)
 
   // Fetch overview analytics
-  const { data: overview, isLoading: overviewLoading } = useQuery({
+  const {
+    data: overview,
+    isLoading: overviewLoading,
+    isFetching: overviewFetching,
+    dataUpdatedAt,
+  } = useQuery({
     queryKey: ['analytics-overview'],
     queryFn: async () => {
       const response = await analyticsApi.getOverview()
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch subscriber growth
@@ -49,6 +70,7 @@ export default function AnalyticsPage() {
       const response = await analyticsApi.getSubscriberGrowth({ interval, periods })
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   // Fetch engagement stats
@@ -73,9 +95,10 @@ export default function AnalyticsPage() {
   const { data: paymentHistory, isLoading: paymentsLoading } = useQuery({
     queryKey: ['payment-history'],
     queryFn: async () => {
-      const response = await paymentsApi.getHistory()
+      const response = await paymentsApi.getTransactions(1, 100)
       return response.data
     },
+    refetchInterval: LIVE_REFETCH_INTERVAL,
   })
 
   const isLoading = overviewLoading || subscriberLoading || engagementLoading || contentLoading
@@ -101,7 +124,7 @@ export default function AnalyticsPage() {
   const stats = [
     {
       title: 'Revenus ce mois',
-      value: `${(overview.summary.monthlyRevenue / 100).toFixed(2)} €`,
+      value: formatEuros(overview.summary.monthlyRevenue),
       trend: '+12.5%',
       icon: DollarSign,
       color: 'text-green-600',
@@ -129,18 +152,25 @@ export default function AnalyticsPage() {
     },
   ]
 
+  // Revenue received by the creator (net, in euros) from completed payments
+  const receivedPayments = (paymentHistory?.items ?? []).filter(
+    (payment: any) =>
+      payment.status === 'COMPLETED' &&
+      payment.toUser?.id === user?.id &&
+      ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'].includes(payment.type),
+  )
+
   // Prepare revenue data from payments
-  const revenueData = paymentHistory?.items
-    ?.filter((payment: any) => payment.status === 'COMPLETED')
-    ?.reduce((acc: any[], payment: any) => {
+  const revenueData = receivedPayments
+    .reduce((acc: any[], payment: any) => {
       const date = new Date(payment.createdAt).toISOString().split('T')[0]
       const existing = acc.find(item => item.date === date)
       if (existing) {
-        existing.amount += payment.netAmount
+        existing.amount += Number(payment.netAmount)
       } else {
         acc.push({
           date,
-          amount: payment.netAmount,
+          amount: Number(payment.netAmount),
         })
       }
       return acc
@@ -149,22 +179,21 @@ export default function AnalyticsPage() {
     ?.slice(-30) || []
 
   // Calculate revenue by type
-  const revenueByType = paymentHistory?.items
-    ?.filter((payment: any) => payment.status === 'COMPLETED')
-    ?.reduce((acc: any[], payment: any) => {
-      const existing = acc.find(item => item.type === payment.type)
-      if (existing) {
-        existing.amount += payment.netAmount
-      } else {
-        acc.push({
-          type: payment.type === 'SUBSCRIPTION' ? 'Abonnements' :
-                payment.type === 'TIP' ? 'Pourboires' :
-                payment.type === 'PPV' ? 'PPV' : payment.type,
-          amount: payment.netAmount,
-        })
-      }
-      return acc
-    }, []) || []
+  const typeLabels: Record<string, string> = {
+    SUBSCRIPTION: 'Abonnements',
+    TIP: 'Pourboires',
+    PPV_UNLOCK: 'PPV',
+  }
+  const revenueByType = receivedPayments.reduce((acc: any[], payment: any) => {
+    const type = typeLabels[payment.type] ?? payment.type
+    const existing = acc.find(item => item.type === type)
+    if (existing) {
+      existing.amount += Number(payment.netAmount)
+    } else {
+      acc.push({ type, amount: Number(payment.netAmount) })
+    }
+    return acc
+  }, [])
 
   return (
     <div className="space-y-6">
@@ -174,6 +203,16 @@ export default function AnalyticsPage() {
           <p className="text-muted-foreground mt-2">
             Suivez vos performances et optimisez votre contenu
           </p>
+          <div className="mt-2">
+            <LiveIndicator
+              connected={connected}
+              updatedAt={dataUpdatedAt}
+              isFetching={overviewFetching}
+              onRefresh={() =>
+                LIVE_QUERY_KEYS.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }))
+              }
+            />
+          </div>
         </div>
         <div className="flex gap-2">
           <Select value={interval} onValueChange={(v) => setInterval(v as Interval)}>
@@ -250,9 +289,9 @@ export default function AnalyticsPage() {
                       dataKey="date"
                       tickFormatter={(value) => new Date(value).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric' })}
                     />
-                    <YAxis tickFormatter={(value) => `${(value / 100).toFixed(0)}€`} />
+                    <YAxis tickFormatter={(value) => `${Number(value).toFixed(0)}€`} />
                     <Tooltip
-                      formatter={(value: any) => [`${(value / 100).toFixed(2)}€`, 'Revenus']}
+                      formatter={(value: any) => [formatEuros(value), 'Revenus']}
                       labelFormatter={(label) => new Date(label).toLocaleDateString('fr-FR')}
                     />
                     <Area type="monotone" dataKey="amount" stroke="#8884d8" fill="#8884d8" fillOpacity={0.6} />
@@ -279,8 +318,8 @@ export default function AnalyticsPage() {
                   <BarChart data={revenueByType}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="type" />
-                    <YAxis tickFormatter={(value) => `${(value / 100).toFixed(0)}€`} />
-                    <Tooltip formatter={(value: any) => `${(value / 100).toFixed(2)}€`} />
+                    <YAxis tickFormatter={(value) => `${Number(value).toFixed(0)}€`} />
+                    <Tooltip formatter={(value: any) => formatEuros(value)} />
                     <Bar dataKey="amount" fill="#8884d8" />
                   </BarChart>
                 </ResponsiveContainer>

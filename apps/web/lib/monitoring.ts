@@ -162,9 +162,9 @@ export function identifyUser(user: {
   // LogRocket
   if (process.env.NEXT_PUBLIC_LOGROCKET_APP_ID && process.env.NODE_ENV === 'production') {
     LogRocket.identify(user.id, {
-      email: user.email,
-      username: user.username,
-      role: user.role,
+      email: user.email ?? '',
+      username: user.username ?? '',
+      role: user.role ?? '',
     });
   }
 }

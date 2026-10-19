@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Body, Query, Param, UseGuards } from '@nestjs/common';
 import { AdminService } from './admin.service';
+import { AdminAnalyticsService } from './admin-analytics.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -11,13 +12,22 @@ import {
   GetReportsDto,
   GetUsersDto,
   GetPlatformStatsDto,
+  GetAdminContentDto,
+  ModerateContentDto,
+  DeleteUserDto,
+  GetAuditLogsDto,
+  GetAnalyticsDto,
+  GetModerationStatsDto,
 } from './dto/admin.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('ADMIN')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly analyticsService: AdminAnalyticsService,
+  ) {}
 
   // ==================== User Management ====================
 
@@ -55,17 +65,52 @@ export class AdminController {
   async deleteUser(
     @CurrentUser('id') adminId: string,
     @Param('id') userId: string,
-    @Body() body: { reason: string },
+    @Body() body: DeleteUserDto,
   ) {
-    return this.adminService.deleteUser(adminId, userId, body.reason);
+    return this.adminService.deleteUser(adminId, userId, body?.reason);
+  }
+
+  // ==================== Content Management ====================
+
+  /**
+   * List content (all, flagged or removed) for moderation
+   */
+  @Get('content')
+  async getContent(@Query() dto: GetAdminContentDto) {
+    return this.adminService.getContent(dto);
+  }
+
+  /**
+   * Remove content (moderation takedown)
+   */
+  @Post('content/:id/remove')
+  async removeContent(
+    @CurrentUser('id') adminId: string,
+    @Param('id') contentId: string,
+    @Body() dto: ModerateContentDto,
+  ) {
+    return this.adminService.removeContent(adminId, contentId, dto.reason);
+  }
+
+  /**
+   * Restore removed content
+   */
+  @Post('content/:id/restore')
+  async restoreContent(
+    @CurrentUser('id') adminId: string,
+    @Param('id') contentId: string,
+    @Body() dto: ModerateContentDto,
+  ) {
+    return this.adminService.restoreContent(adminId, contentId, dto.reason);
   }
 
   // ==================== Reports Management ====================
 
   /**
-   * Get reports with filters
+   * Get reports with filters (moderators can triage reports too)
    */
   @Get('reports')
+  @Roles('ADMIN', 'MODERATOR')
   async getReports(@Query() dto: GetReportsDto) {
     return this.adminService.getReports(dto);
   }
@@ -74,11 +119,22 @@ export class AdminController {
    * Handle report (resolve, reject)
    */
   @Post('reports/handle')
+  @Roles('ADMIN', 'MODERATOR')
   async handleReport(
     @CurrentUser('id') adminId: string,
+    @CurrentUser('role') role: string,
     @Body() dto: HandleReportDto,
   ) {
-    return this.adminService.handleReport(adminId, dto);
+    return this.adminService.handleReport(adminId, dto, role);
+  }
+
+  /**
+   * Moderation statistics: reports over time, handling time, actions taken
+   */
+  @Get('moderation/stats')
+  @Roles('ADMIN', 'MODERATOR')
+  async getModerationStats(@Query() dto: GetModerationStatsDto) {
+    return this.analyticsService.getModerationStats(dto);
   }
 
   // ==================== Platform Statistics ====================
@@ -89,6 +145,14 @@ export class AdminController {
   @Get('stats/platform')
   async getPlatformStats(@Query() dto: GetPlatformStatsDto) {
     return this.adminService.getPlatformStats(dto);
+  }
+
+  /**
+   * Platform analytics time series (revenue, fees, users, content, subscriptions, top creators)
+   */
+  @Get('stats/analytics')
+  async getAnalytics(@Query() dto: GetAnalyticsDto) {
+    return this.analyticsService.getAnalytics(dto);
   }
 
   /**
@@ -103,5 +167,13 @@ export class AdminController {
       page ? parseInt(page) : 1,
       limit ? parseInt(limit) : 50,
     );
+  }
+
+  /**
+   * Get audit logs (admin & moderation actions)
+   */
+  @Get('audit-logs')
+  async getAuditLogs(@Query() dto: GetAuditLogsDto) {
+    return this.adminService.getAuditLogs(dto);
   }
 }

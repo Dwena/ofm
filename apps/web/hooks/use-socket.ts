@@ -28,9 +28,61 @@ interface Message {
   }
 }
 
+export interface RealtimeNotification {
+  id: string
+  userId: string
+  type: string
+  title: string
+  message: string
+  linkUrl?: string | null
+  isRead?: boolean
+  metadata?: { kind?: string; [key: string]: unknown } | null
+  createdAt: string
+}
+
+/**
+ * One socket per browser tab, shared by every component using the hook
+ * (notifications dropdown, messages page, live analytics...). It is opened by
+ * the first consumer and closed when the last one unmounts.
+ */
+let sharedSocket: Socket | null = null
+let sharedToken: string | null = null
+let consumers = 0
+
+function acquireSocket(token: string): Socket {
+  if (sharedSocket && sharedToken !== token) {
+    // Logged in as someone else: drop the stale connection
+    sharedSocket.disconnect()
+    sharedSocket = null
+  }
+  if (!sharedSocket) {
+    sharedSocket = io(`${SOCKET_URL}/messaging`, {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+    })
+    sharedToken = token
+  }
+  consumers += 1
+  return sharedSocket
+}
+
+function releaseSocket(socket: Socket) {
+  if (socket !== sharedSocket) {
+    socket.disconnect()
+    return
+  }
+  consumers = Math.max(0, consumers - 1)
+  if (consumers === 0) {
+    sharedSocket.disconnect()
+    sharedSocket = null
+    sharedToken = null
+  }
+}
+
 export function useSocket(options: UseSocketOptions = {}) {
   const { autoConnect = true } = options
   const socketRef = useRef<Socket | null>(null)
+  const [socket, setSocket] = useState<Socket | null>(null)
   const [connected, setConnected] = useState(false)
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set())
 
@@ -40,47 +92,42 @@ export function useSocket(options: UseSocketOptions = {}) {
     const token = localStorage.getItem('accessToken')
     if (!token) return
 
-    // Create socket connection
-    const socket = io(`${SOCKET_URL}/messaging`, {
-      auth: {
-        token,
-      },
-      transports: ['websocket', 'polling'],
-    })
-
+    const socket = acquireSocket(token)
     socketRef.current = socket
+    setSocket(socket)
+    setConnected(socket.connected)
 
-    // Connection events
-    socket.on('connect', () => {
-      console.log('Socket connected')
-      setConnected(true)
-    })
-
-    socket.on('disconnect', () => {
-      console.log('Socket disconnected')
-      setConnected(false)
-    })
-
-    socket.on('error', (error) => {
+    const handleConnect = () => setConnected(true)
+    const handleDisconnect = () => setConnected(false)
+    const handleError = (error: unknown) => {
       console.error('Socket error:', error)
-    })
-
-    // Online status events
-    socket.on('user:online', ({ userId }: { userId: string }) => {
+    }
+    const handleOnline = ({ userId }: { userId: string }) => {
       setOnlineUsers(prev => new Set(prev).add(userId))
-    })
-
-    socket.on('user:offline', ({ userId }: { userId: string }) => {
+    }
+    const handleOffline = ({ userId }: { userId: string }) => {
       setOnlineUsers(prev => {
         const next = new Set(prev)
         next.delete(userId)
         return next
       })
-    })
+    }
+
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('error', handleError)
+    socket.on('user:online', handleOnline)
+    socket.on('user:offline', handleOffline)
 
     // Cleanup
     return () => {
-      socket.disconnect()
+      socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
+      socket.off('error', handleError)
+      socket.off('user:online', handleOnline)
+      socket.off('user:offline', handleOffline)
+      socketRef.current = null
+      releaseSocket(socket)
     }
   }, [autoConnect])
 
@@ -177,8 +224,20 @@ export function useSocket(options: UseSocketOptions = {}) {
     }
   }
 
+  // Subscribe to realtime notifications (emitted for every Notification row created server-side)
+  const onNotification = (callback: (notification: RealtimeNotification) => void) => {
+    if (!socketRef.current) return () => {}
+
+    const target = socketRef.current
+    target.on('notification:new', callback)
+
+    return () => {
+      target.off('notification:new', callback)
+    }
+  }
+
   return {
-    socket: socketRef.current,
+    socket,
     connected,
     onlineUsers,
     sendMessage,
@@ -188,5 +247,6 @@ export function useSocket(options: UseSocketOptions = {}) {
     onMessageSent,
     onTyping,
     onMessageRead,
+    onNotification,
   }
 }

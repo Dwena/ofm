@@ -59,7 +59,7 @@ export default function RegisterPage() {
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
             {error && (
-              <div className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 rounded-md">
+              <div role="alert" data-testid="register-error" className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 rounded-md">
                 {error}
               </div>
             )}
@@ -69,6 +69,8 @@ export default function RegisterPage() {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
+                  data-testid="register-role-subscriber"
+                  aria-pressed={role === 'SUBSCRIBER'}
                   className={`p-4 rounded-lg border-2 transition-all ${
                     role === 'SUBSCRIBER'
                       ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950'
@@ -81,6 +83,8 @@ export default function RegisterPage() {
                 </button>
                 <button
                   type="button"
+                  data-testid="register-role-creator"
+                  aria-pressed={role === 'CREATOR'}
                   className={`p-4 rounded-lg border-2 transition-all ${
                     role === 'CREATOR'
                       ? 'border-purple-600 bg-purple-50 dark:bg-purple-950'
@@ -95,8 +99,11 @@ export default function RegisterPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+              <label className="text-sm font-medium" htmlFor="register-email">Email</label>
               <Input
+                id="register-email"
+                name="email"
+                data-testid="register-email"
                 type="email"
                 placeholder="email@example.com"
                 value={email}
@@ -107,8 +114,11 @@ export default function RegisterPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Nom d'utilisateur</label>
+              <label className="text-sm font-medium" htmlFor="register-username">Nom d'utilisateur</label>
               <Input
+                id="register-username"
+                name="username"
+                data-testid="register-username"
                 type="text"
                 placeholder="username"
                 value={username}
@@ -120,8 +130,11 @@ export default function RegisterPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Mot de passe</label>
+              <label className="text-sm font-medium" htmlFor="register-password">Mot de passe</label>
               <Input
+                id="register-password"
+                name="password"
+                data-testid="register-password"
                 type="password"
                 placeholder="••••••••"
                 value={password}
@@ -133,8 +146,11 @@ export default function RegisterPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Confirmer le mot de passe</label>
+              <label className="text-sm font-medium" htmlFor="register-password-confirm">Confirmer le mot de passe</label>
               <Input
+                id="register-password-confirm"
+                name="confirmPassword"
+                data-testid="register-password-confirm"
                 type="password"
                 placeholder="••••••••"
                 value={confirmPassword}
@@ -147,6 +163,7 @@ export default function RegisterPage() {
           <CardFooter className="flex flex-col space-y-4">
             <Button
               type="submit"
+              data-testid="register-submit"
               className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-lg py-6"
               disabled={loading}
             >

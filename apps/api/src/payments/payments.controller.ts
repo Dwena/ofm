@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Query,
   Headers,
@@ -21,6 +22,8 @@ import {
   CreateRefundDto,
   FilterTransactionsDto,
   GetStatsDto,
+  SendTipDto,
+  ConfirmPaymentDto,
 } from './dto/payments.dto';
 
 @Controller('payments')
@@ -65,9 +68,9 @@ export class PaymentsController {
   @Roles('CREATOR')
   async requestPayout(
     @CurrentUser('id') userId: string,
-    @Body() body: { amount: number },
+    @Body() dto: RequestPayoutDto,
   ) {
-    return this.paymentsService.requestPayout(userId, body.amount);
+    return this.paymentsService.requestPayout(userId, dto.amount);
   }
 
   /**
@@ -134,21 +137,72 @@ export class PaymentsController {
   }
 
   /**
-   * Send a tip to a creator
+   * List saved payment methods (cards)
+   */
+  @Get('methods')
+  @UseGuards(JwtAuthGuard)
+  async listPaymentMethods(@CurrentUser('id') userId: string) {
+    return this.paymentsService.listPaymentMethods(userId);
+  }
+
+  /**
+   * Create setup intent to add a payment method with Stripe Elements
+   */
+  @Post('methods/setup-intent')
+  @UseGuards(JwtAuthGuard)
+  async createSetupIntent(@CurrentUser('id') userId: string) {
+    return this.paymentsService.createSetupIntent(userId);
+  }
+
+  /**
+   * Set default payment method
+   */
+  @Post('methods/:paymentMethodId/default')
+  @UseGuards(JwtAuthGuard)
+  async setDefaultPaymentMethod(
+    @CurrentUser('id') userId: string,
+    @Param('paymentMethodId') paymentMethodId: string,
+  ) {
+    return this.paymentsService.setDefaultPaymentMethod(userId, paymentMethodId);
+  }
+
+  /**
+   * Remove a payment method
+   */
+  @Delete('methods/:paymentMethodId')
+  @UseGuards(JwtAuthGuard)
+  async deletePaymentMethod(
+    @CurrentUser('id') userId: string,
+    @Param('paymentMethodId') paymentMethodId: string,
+  ) {
+    return this.paymentsService.deletePaymentMethod(userId, paymentMethodId);
+  }
+
+  /**
+   * Send a tip to a creator (amount in euros). Returns a pending payment to
+   * confirm client-side; the creator is credited once Stripe confirms it.
    */
   @Post('tip/:creatorId')
   @UseGuards(JwtAuthGuard)
   async sendTip(
     @CurrentUser('id') userId: string,
     @Param('creatorId') creatorId: string,
-    @Body() body: { amount: number; message?: string },
+    @Body() dto: SendTipDto,
   ) {
-    return this.paymentsService.sendTip(
-      userId,
-      creatorId,
-      body.amount,
-      body.message,
-    );
+    return this.paymentsService.sendTip(userId, creatorId, dto);
+  }
+
+  /**
+   * Re-check a tip payment with Stripe after client-side confirmation (idempotent)
+   */
+  @Post('tip/:creatorId/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirmTip(
+    @CurrentUser('id') userId: string,
+    @Param('creatorId') creatorId: string,
+    @Body() dto: ConfirmPaymentDto,
+  ) {
+    return this.paymentsService.confirmTip(userId, creatorId, dto.paymentIntentId);
   }
 
   /**

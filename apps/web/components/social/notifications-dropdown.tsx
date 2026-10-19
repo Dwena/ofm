@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { notificationsApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -14,7 +14,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   Bell,
-  Heart,
   MessageCircle,
   UserPlus,
   DollarSign,
@@ -24,15 +23,19 @@ import {
 } from 'lucide-react'
 import { formatRelativeTime } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
+import { useSocket, type RealtimeNotification } from '@/hooks/use-socket'
+import { useToast } from '@/hooks/use-toast'
 
+// Shape returned by GET /notifications
 interface Notification {
   id: string
   userId: string
-  type: 'LIKE' | 'COMMENT' | 'FOLLOW' | 'SUBSCRIPTION' | 'TIP' | 'SYSTEM'
+  type: string // NotificationType enum (NEW_SUBSCRIBER, NEW_MESSAGE, NEW_TIP, ...)
   title: string
   message: string
-  read: boolean
-  relatedId?: string
+  isRead: boolean
+  linkUrl?: string | null
+  metadata?: { kind?: string; [key: string]: unknown } | null
   createdAt: string
 }
 
@@ -40,6 +43,8 @@ export default function NotificationsDropdown() {
   const router = useRouter()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  const { socket, connected } = useSocket()
+  const { toast } = useToast()
 
   // Fetch notifications
   const { data: notifications, isLoading } = useQuery({
@@ -51,8 +56,33 @@ export default function NotificationsDropdown() {
     refetchInterval: 30000, // Refetch every 30 seconds
   })
 
+  // Realtime: every notification created server-side is pushed on the socket
+  useEffect(() => {
+    if (!socket || !connected) return
+
+    const handleNotification = (notification: RealtimeNotification) => {
+      // Show it immediately (badge + list), then resync with the server
+      queryClient.setQueryData<Notification[]>(['notifications'], (current) => {
+        if (!current) return current
+        if (current.some((n) => n.id === notification.id)) return current
+        return [{ ...notification, isRead: notification.isRead ?? false }, ...current]
+      })
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+
+      toast({
+        title: notification.title,
+        description: notification.message,
+      })
+    }
+
+    socket.on('notification:new', handleNotification)
+    return () => {
+      socket.off('notification:new', handleNotification)
+    }
+  }, [socket, connected, queryClient, toast])
+
   // Count unread
-  const unreadCount = notifications?.filter(n => !n.read).length || 0
+  const unreadCount = notifications?.filter(n => !n.isRead).length || 0
 
   // Mark as read mutation
   const markAsReadMutation = useMutation({
@@ -86,41 +116,38 @@ export default function NotificationsDropdown() {
 
   const getNotificationIcon = (type: Notification['type']) => {
     switch (type) {
-      case 'LIKE':
-        return <Heart className="h-4 w-4 text-red-500" />
-      case 'COMMENT':
+      case 'NEW_COMMENT':
         return <MessageCircle className="h-4 w-4 text-blue-500" />
-      case 'FOLLOW':
+      case 'NEW_MESSAGE':
+        return <MessageCircle className="h-4 w-4 text-purple-500" />
+      case 'NEW_SUBSCRIBER':
         return <UserPlus className="h-4 w-4 text-green-500" />
-      case 'SUBSCRIPTION':
+      case 'NEW_FOLLOWER':
+        return <UserPlus className="h-4 w-4 text-pink-500" />
+      case 'SUBSCRIPTION_RENEWAL':
+      case 'CONTENT_APPROVED':
         return <CheckCircle className="h-4 w-4 text-purple-500" />
-      case 'TIP':
+      case 'NEW_TIP':
+      case 'PAYOUT_COMPLETED':
         return <DollarSign className="h-4 w-4 text-yellow-500" />
-      case 'SYSTEM':
-        return <Bell className="h-4 w-4 text-gray-500" />
+      case 'CONTENT_REJECTED':
+        return <Bell className="h-4 w-4 text-red-500" />
       default:
-        return <Bell className="h-4 w-4" />
+        return <Bell className="h-4 w-4 text-gray-500" />
     }
   }
 
   const handleNotificationClick = (notification: Notification) => {
     // Mark as read if unread
-    if (!notification.read) {
+    if (!notification.isRead) {
       markAsReadMutation.mutate(notification.id)
     }
 
-    // Navigate to related content if available
-    if (notification.relatedId) {
-      switch (notification.type) {
-        case 'LIKE':
-        case 'COMMENT':
-          router.push(`/content/${notification.relatedId}`)
-          break
-        case 'FOLLOW':
-        case 'SUBSCRIPTION':
-          // Could navigate to user profile
-          break
-      }
+    // Navigate to the linked page if available
+    if (notification.linkUrl) {
+      router.push(notification.linkUrl)
+    } else if (notification.type === 'NEW_MESSAGE') {
+      router.push('/messages')
     }
 
     setOpen(false)
@@ -170,7 +197,7 @@ export default function NotificationsDropdown() {
               <DropdownMenuItem
                 key={notification.id}
                 className={`flex gap-3 p-3 cursor-pointer ${
-                  !notification.read ? 'bg-accent' : ''
+                  !notification.isRead ? 'bg-accent' : ''
                 }`}
                 onClick={() => handleNotificationClick(notification)}
               >

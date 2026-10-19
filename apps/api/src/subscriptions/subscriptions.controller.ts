@@ -5,6 +5,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateTierDto, UpdateTierDto } from './dto/subscription-tier.dto';
+import { SubscribeDto, ConfirmSubscriptionDto, ChangeTierDto } from './dto/subscribe.dto';
 
 @Controller('subscriptions')
 @UseGuards(JwtAuthGuard)
@@ -26,6 +27,57 @@ export class SubscriptionsController {
   @Get('creator/:creatorId/tiers')
   async getCreatorTiers(@Param('creatorId') creatorId: string) {
     return this.subscriptionsService.getCreatorTiers(creatorId);
+  }
+
+  @Get('creator/:creatorId/status')
+  async getSubscriptionStatus(
+    @CurrentUser('id') userId: string,
+    @Param('creatorId') creatorId: string,
+  ) {
+    return this.subscriptionsService.getSubscriptionStatus(userId, creatorId);
+  }
+
+  // Subscription Lifecycle Routes
+  @Post('subscribe')
+  async subscribe(
+    @CurrentUser('id') userId: string,
+    @Body() dto: SubscribeDto,
+  ) {
+    return this.subscriptionsService.subscribe(userId, dto);
+  }
+
+  @Post('confirm')
+  async confirmSubscription(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ConfirmSubscriptionDto,
+  ) {
+    return this.subscriptionsService.confirmSubscription(userId, dto.stripeSubscriptionId);
+  }
+
+  @Post(':subscriptionId/cancel')
+  async cancelSubscription(
+    @CurrentUser('id') userId: string,
+    @Param('subscriptionId') subscriptionId: string,
+  ) {
+    return this.subscriptionsService.cancelSubscription(userId, subscriptionId);
+  }
+
+  @Post(':subscriptionId/resume')
+  async resumeSubscription(
+    @CurrentUser('id') userId: string,
+    @Param('subscriptionId') subscriptionId: string,
+  ) {
+    return this.subscriptionsService.resumeSubscription(userId, subscriptionId);
+  }
+
+  // Upgrade / downgrade to another tier of the same creator
+  @Post(':subscriptionId/change-tier')
+  async changeTier(
+    @CurrentUser('id') userId: string,
+    @Param('subscriptionId') subscriptionId: string,
+    @Body() dto: ChangeTierDto,
+  ) {
+    return this.subscriptionsService.changeTier(userId, subscriptionId, dto);
   }
 
   // Tier Management Routes

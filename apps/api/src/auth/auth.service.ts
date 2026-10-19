@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -10,17 +11,28 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
-import { nanoid } from 'nanoid';
+import { createHash, randomBytes } from 'crypto';
 
 import { PrismaService } from '../common/database/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { UsersService } from '../users/users.service';
+import {
+  MailService,
+  EMAIL_VERIFICATION_TTL_HOURS,
+  PASSWORD_RESET_TTL_MINUTES,
+} from '../common/mail/mail.service';
 
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { Enable2FaDto } from './dto/enable-2fa.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
+import { ResetPasswordDto } from './dto/email-token.dto';
+import { SettingsService } from '../settings/settings.service';
+
+/** Redis key holding the unix time (s) of the user's last password change. */
+export const PASSWORD_CHANGED_KEY = (userId: string) => `auth:pwd-changed:${userId}`;
+const PASSWORD_CHANGED_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 @Injectable()
 export class AuthService {
@@ -32,10 +44,16 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private usersService: UsersService,
+    private mailService: MailService,
+    private settingsService: SettingsService,
   ) {}
 
   async register(registerDto: RegisterDto) {
     const { email, username, password, role } = registerDto;
+
+    if (!(await this.settingsService.isRegistrationOpen())) {
+      throw new ForbiddenException('Les inscriptions sont actuellement fermées');
+    }
 
     // Check if user exists
     const existingUser = await this.prisma.user.findFirst({
@@ -87,7 +105,7 @@ export class AuthService {
 
     this.logger.log(`New user registered: ${user.email}`);
 
-    // TODO: Send verification email
+    await this.issueEmailVerification(user);
 
     return {
       user,
@@ -160,6 +178,8 @@ export class AuthService {
         status: user.status,
         avatar: user.avatar,
         displayName: user.displayName,
+        emailVerified: user.emailVerified,
+        twoFactorEnabled: user.twoFactorEnabled,
       },
       ...tokens,
     };
@@ -224,6 +244,133 @@ export class AuthService {
     this.logger.log(`User logged out: ${userId}`);
 
     return { message: 'Logged out successfully' };
+  }
+
+  async verifyEmail(token: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { emailVerificationToken: this.hashToken(token) },
+    });
+
+    if (
+      !user ||
+      !user.emailVerificationExpires ||
+      user.emailVerificationExpires < new Date()
+    ) {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        emailVerifiedAt: new Date(),
+        emailVerificationToken: null,
+        emailVerificationExpires: null,
+        ...(user.status === 'PENDING_VERIFICATION' && { status: 'ACTIVE' }),
+      },
+    });
+
+    this.logger.log(`Email verified for user: ${user.id}`);
+
+    return { message: 'Email verified successfully' };
+  }
+
+  async resendVerification(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, username: true, emailVerified: true, deletedAt: true },
+    });
+
+    // Same response whether or not the account exists (no user enumeration)
+    if (user && !user.emailVerified && !user.deletedAt) {
+      await this.issueEmailVerification(user);
+    }
+
+    return {
+      message: 'If an unverified account exists for this email, a verification email has been sent.',
+    };
+  }
+
+  async forgotPassword(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, username: true, status: true, deletedAt: true },
+    });
+
+    if (user && !user.deletedAt && user.status !== 'BANNED') {
+      const token = this.generateToken();
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordResetToken: this.hashToken(token),
+          passwordResetExpires: new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000),
+        },
+      });
+      await this.mailService.sendPasswordResetEmail(user.email, user.username, token);
+      this.logger.log(`Password reset requested for user: ${user.id}`);
+    }
+
+    return {
+      message: 'If an account exists for this email, a password reset link has been sent.',
+    };
+  }
+
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    const { token, password } = resetPasswordDto;
+
+    const user = await this.prisma.user.findUnique({
+      where: { passwordResetToken: this.hashToken(token) },
+    });
+
+    if (!user || !user.passwordResetExpires || user.passwordResetExpires < new Date()) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    const hashedPassword = await this.hashPassword(password);
+    const now = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          password: hashedPassword,
+          passwordResetToken: null,
+          passwordResetExpires: null,
+          // The reset link proves ownership of the mailbox
+          ...(!user.emailVerified && { emailVerified: true, emailVerifiedAt: now }),
+          ...(user.status === 'PENDING_VERIFICATION' && { status: 'ACTIVE' }),
+        },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: user.id, isRevoked: false },
+        data: { isRevoked: true, revokedAt: now },
+      }),
+      this.prisma.session.deleteMany({ where: { userId: user.id } }),
+    ]);
+
+    // Invalidate access tokens issued before this point (checked by JwtStrategy)
+    await this.redis.set(
+      PASSWORD_CHANGED_KEY(user.id),
+      String(Math.floor(now.getTime() / 1000)),
+      PASSWORD_CHANGED_TTL_SECONDS,
+    );
+
+    await this.mailService.sendPasswordChangedEmail(user.email, user.username);
+
+    this.logger.log(`Password reset for user: ${user.id}`);
+
+    return { message: 'Password reset successfully' };
+  }
+
+  /**
+   * True when the access token was issued before the user's last password reset.
+   */
+  async isTokenIssuedBeforePasswordChange(userId: string, issuedAt?: number): Promise<boolean> {
+    if (!issuedAt) {
+      return false;
+    }
+    const changedAt = await this.redis.get(PASSWORD_CHANGED_KEY(userId));
+    return !!changedAt && issuedAt < parseInt(changedAt, 10);
   }
 
   async enable2FA(userId: string) {
@@ -396,7 +543,7 @@ export class AuthService {
     const expiresIn = this.configService.get('JWT_REFRESH_EXPIRES_IN', '7d');
 
     // Parse expiration (e.g., "7d" -> 7 days)
-    let expirationDate = new Date();
+    const expirationDate = new Date();
     const match = expiresIn.match(/^(\d+)([dhms])$/);
     if (match) {
       const value = parseInt(match[1]);
@@ -424,6 +571,29 @@ export class AuthService {
         expiresAt: expirationDate,
       },
     });
+  }
+
+  private async issueEmailVerification(user: { id: string; email: string; username: string }) {
+    const token = this.generateToken();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerificationToken: this.hashToken(token),
+        emailVerificationExpires: new Date(
+          Date.now() + EMAIL_VERIFICATION_TTL_HOURS * 60 * 60 * 1000,
+        ),
+      },
+    });
+    await this.mailService.sendVerificationEmail(user.email, user.username, token);
+  }
+
+  /** 32 random bytes as hex (64 chars). Only the SHA-256 hash is stored. */
+  private generateToken(): string {
+    return randomBytes(32).toString('hex');
+  }
+
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
   }
 
   private async hashPassword(password: string): Promise<string> {

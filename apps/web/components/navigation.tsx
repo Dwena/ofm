@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import NotificationsDropdown from '@/components/social/notifications-dropdown'
 import {
   Home,
   Upload,
@@ -13,7 +14,9 @@ import {
   Settings,
   LogOut,
   MessageSquare,
-  BarChart3
+  BarChart3,
+  Radio,
+  Shield
 } from 'lucide-react'
 
 export function Navigation() {
@@ -33,7 +36,8 @@ export function Navigation() {
   const creatorLinks = [
     { href: '/creator/dashboard', label: 'Dashboard', icon: Home },
     { href: '/creator/upload', label: 'Upload', icon: Upload },
-    { href: '/creator/subscribers', label: 'Abonnés', icon: Users },
+    { href: '/creator/live', label: 'Live', icon: Radio },
+    { href: '/creator/subscriptions', label: 'Abonnés', icon: Users },
     { href: '/creator/earnings', label: 'Revenus', icon: DollarSign },
     { href: '/creator/analytics', label: 'Analytics', icon: BarChart3 },
     { href: '/messages', label: 'Messages', icon: MessageSquare },
@@ -43,18 +47,22 @@ export function Navigation() {
   const subscriberLinks = [
     { href: '/feed', label: 'Feed', icon: Home },
     { href: '/subscriptions', label: 'Abonnements', icon: Users },
+    { href: '/live', label: 'Lives', icon: Radio },
     { href: '/messages', label: 'Messages', icon: MessageSquare },
     { href: '/settings', label: 'Paramètres', icon: Settings },
   ]
 
-  const links = isCreator ? creatorLinks : subscriberLinks
+  const isAdmin = user.role === 'ADMIN'
+  const adminLinks = [{ href: '/admin', label: 'Admin', icon: Shield }]
+
+  const links = [...(isAdmin ? adminLinks : []), ...(isCreator ? creatorLinks : subscriberLinks)]
 
   return (
-    <nav className="border-b bg-background">
+    <nav className="border-b bg-background" data-testid="main-nav">
       <div className="container mx-auto px-4">
         <div className="flex h-16 items-center justify-between">
           <div className="flex items-center space-x-8">
-            <Link href={isCreator ? '/creator/dashboard' : '/feed'} className="text-2xl font-bold">
+            <Link href={isAdmin ? '/admin' : isCreator ? '/creator/dashboard' : '/feed'} className="text-2xl font-bold">
               OFM
             </Link>
             <div className="hidden md:flex space-x-4">
@@ -65,6 +73,7 @@ export function Navigation() {
                   <Link
                     key={link.href}
                     href={link.href}
+                    data-testid={`nav-link-${link.href.replace(/^\//, '').replace(/\//g, '-')}`}
                     className={`flex items-center space-x-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                       isActive
                         ? 'bg-primary text-primary-foreground'
@@ -79,15 +88,16 @@ export function Navigation() {
             </div>
           </div>
           <div className="flex items-center space-x-4">
+            <NotificationsDropdown />
             <Link href="/settings">
               <Avatar>
-                <AvatarImage src={user.creatorProfile?.profilePicture || undefined} />
+                <AvatarImage src={user.avatar || undefined} />
                 <AvatarFallback>
                   {user.username.substring(0, 2).toUpperCase()}
                 </AvatarFallback>
               </Avatar>
             </Link>
-            <Button variant="ghost" size="sm" onClick={handleLogout}>
+            <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-button">
               <LogOut className="h-4 w-4 mr-2" />
               Déconnexion
             </Button>

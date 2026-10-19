@@ -56,7 +56,7 @@ export default function CommentsSection({ contentId, initialCount = 0 }: Comment
     },
   })
 
-  const comments = commentsData?.data || []
+  const comments: Comment[] = commentsData?.items || []
   const pagination = commentsData?.pagination
 
   // Create comment mutation
