@@ -137,6 +137,12 @@ model User {
   phoneVerified    Boolean @default(false)
   phoneVerifiedAt  DateTime?
 
+  // Email verification / password reset (SHA-256 hashed tokens)
+  emailVerificationToken   String?   @unique
+  emailVerificationExpires DateTime?
+  passwordResetToken       String?   @unique
+  passwordResetExpires     DateTime?
+
   // KYC
   kycStatus        KycStatus @default(NOT_STARTED)
   kycProvider      String?
@@ -190,6 +196,7 @@ model User {
   notifications           Notification[]
   sessions                Session[]
   refreshTokens           RefreshToken[]
+  pushSubscriptions       PushSubscription[]
   contentLikes            ContentLike[]
   comments                Comment[]
   reports                 Report[]
@@ -654,6 +661,22 @@ model RefreshToken {
   @@index([userId])
   @@index([token])
   @@index([expiresAt])
+}
+
+model PushSubscription {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
 }
 
 model Report {

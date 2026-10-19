@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { ModerationService } from './moderation.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { MailService } from '../common/mail/mail.service';
+import { DailyModerationReport } from '../common/mail/mail.templates';
 
 @Injectable()
 export class SuspensionSchedulerService {
@@ -10,6 +13,8 @@ export class SuspensionSchedulerService {
   constructor(
     private prisma: PrismaService,
     private moderationService: ModerationService,
+    private notificationsService: NotificationsService,
+    private mailService: MailService,
   ) {}
 
   /**
@@ -138,7 +143,7 @@ export class SuspensionSchedulerService {
         }),
       ]);
 
-      const report = {
+      const report: DailyModerationReport = {
         date: yesterday.toISOString().split('T')[0],
         newReports,
         resolvedReports,
@@ -151,12 +156,56 @@ export class SuspensionSchedulerService {
 
       this.logger.log('Daily moderation report:', report);
 
-      // TODO: Send this report to admins via email or notification
+      await this.sendReportToAdmins(report);
 
       return report;
     } catch (error) {
       this.logger.error('Failed to generate daily report:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Deliver the daily report to every active admin (in-app notification + email).
+   * Failures are logged but never fail the report generation.
+   */
+  private async sendReportToAdmins(report: DailyModerationReport) {
+    try {
+      const admins = await this.prisma.user.findMany({
+        where: { role: 'ADMIN', status: 'ACTIVE', deletedAt: null },
+        select: { id: true, email: true },
+      });
+
+      if (admins.length === 0) {
+        this.logger.warn('No active admin to send the daily moderation report to');
+        return;
+      }
+
+      const message =
+        `${report.newReports} nouveau(x) signalement(s), ${report.resolvedReports} traité(s), ` +
+        `${report.pendingReports} en attente, ${report.bannedUsers} banni(s), ${report.suspendedUsers} suspendu(s).`;
+
+      await Promise.all(
+        admins.map((admin) =>
+          this.notificationsService.create({
+            userId: admin.id,
+            type: 'SYSTEM',
+            title: `Rapport de modération du ${report.date}`,
+            message,
+            linkUrl: '/admin/moderation',
+            metadata: { kind: 'daily_moderation_report', report },
+          }),
+        ),
+      );
+
+      // One email per admin so addresses are not disclosed to each other
+      await Promise.all(
+        admins.map((admin) => this.mailService.sendDailyModerationReport(admin.email, report)),
+      );
+
+      this.logger.log(`Daily moderation report sent to ${admins.length} admin(s)`);
+    } catch (error) {
+      this.logger.error('Failed to send daily moderation report to admins:', error);
     }
   }
 }

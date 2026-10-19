@@ -19,11 +19,13 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  Shield,
   Bell,
   CreditCard
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { AccountSecuritySettings } from '@/components/account-security-settings'
+import { TwoFactorSettings } from '@/components/two-factor-settings'
+import { NotificationsManager } from '@/components/notifications-manager'
 import { useRouter } from 'next/navigation'
 
 export default function SettingsPage() {
@@ -430,39 +432,16 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Shield className="h-5 w-5 text-muted-foreground" />
-                  <div>
-                    <p className="font-medium">Mot de passe</p>
-                    <p className="text-sm text-muted-foreground">
-                      Dernière modification il y a 30 jours
-                    </p>
-                  </div>
-                </div>
-                <Button variant="outline">Changer</Button>
-              </div>
-
-              <div className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Shield className="h-5 w-5 text-muted-foreground" />
-                  <div>
-                    <p className="font-medium">Authentification à deux facteurs</p>
-                    <p className="text-sm text-muted-foreground">
-                      {user.twoFactorEnabled ? 'Activée' : 'Désactivée'}
-                    </p>
-                  </div>
-                </div>
-                <Button variant="outline">
-                  {user.twoFactorEnabled ? 'Désactiver' : 'Activer'}
-                </Button>
-              </div>
+              <AccountSecuritySettings />
+              <TwoFactorSettings />
             </CardContent>
           </Card>
         </TabsContent>
 
         {/* Notifications Tab */}
         <TabsContent value="notifications" className="space-y-6">
+          <NotificationsManager />
+
           <Card>
             <CardHeader>
               <CardTitle>Préférences de notifications</CardTitle>

@@ -81,14 +81,20 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
-  const urlToOpen = event.notification.data?.url || '/';
+  const urlToOpen = new URL(event.notification.data?.url || '/', self.location.origin).href;
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // Check if a window is already open
+      // Check if a window is already open on that page
       for (let client of clientList) {
         if (client.url === urlToOpen && 'focus' in client) {
           return client.focus();
+        }
+      }
+      // Otherwise reuse an open window of the app
+      for (let client of clientList) {
+        if (new URL(client.url).origin === self.location.origin && 'navigate' in client) {
+          return client.navigate(urlToOpen).then((c) => (c || client).focus());
         }
       }
       // Open a new window

@@ -76,13 +76,33 @@ api.interceptors.response.use(
 export const authApi = {
   register: (data: { email: string; username: string; password: string; role?: string }) =>
     api.post('/auth/register', data),
+  // `_retry: true` stops the 401 interceptor from trying a token refresh (and
+  // redirecting to /login) when the credentials or the 2FA code are wrong.
   login: (data: { email: string; password: string; totpCode?: string }) =>
-    api.post('/auth/login', data),
+    api.post('/auth/login', data, { _retry: true } as any),
   logout: () => api.post('/auth/logout'),
   getMe: () => api.get('/auth/me'),
   enable2FA: () => api.post('/auth/2fa/enable'),
   verify2FA: (code: string) => api.post('/auth/2fa/verify', { code }),
   disable2FA: (code: string) => api.post('/auth/2fa/disable', { code }),
+  verifyEmail: (token: string) => api.post('/auth/verify-email', { token }),
+  resendVerification: (email: string) => api.post('/auth/resend-verification', { email }),
+  forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
+  resetPassword: (token: string, password: string) =>
+    api.post('/auth/reset-password', { token, password }),
+}
+
+export const pushApi = {
+  getVapidPublicKey: () =>
+    api.get<{ publicKey: string | null; enabled: boolean }>('/notifications/push/vapid-public-key'),
+  subscribe: (subscription: PushSubscriptionJSON) =>
+    api.post('/notifications/push/subscribe', {
+      endpoint: subscription.endpoint,
+      expirationTime: subscription.expirationTime ?? undefined,
+      keys: subscription.keys,
+    }),
+  unsubscribe: (endpoint: string) =>
+    api.delete('/notifications/push/unsubscribe', { data: { endpoint } }),
 }
 
 export const usersApi = {
