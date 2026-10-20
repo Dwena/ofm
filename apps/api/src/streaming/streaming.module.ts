@@ -6,6 +6,8 @@ import { StreamingGateway } from './streaming.gateway';
 import { IceServersService } from './ice-servers.service';
 import { LiveTipsService } from './live-tips.service';
 import { LiveTipsController } from './live-tips.controller';
+import { LiveKitService } from './livekit.service';
+import { LiveKitWebhookController } from './livekit-webhook.controller';
 import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
@@ -16,8 +18,8 @@ import { PaymentsModule } from '../payments/payments.module';
       signOptions: { expiresIn: '15m' },
     }),
   ],
-  controllers: [StreamingController, LiveTipsController],
-  providers: [StreamingService, StreamingGateway, IceServersService, LiveTipsService],
-  exports: [StreamingService, StreamingGateway, LiveTipsService],
+  controllers: [StreamingController, LiveTipsController, LiveKitWebhookController],
+  providers: [StreamingService, StreamingGateway, IceServersService, LiveTipsService, LiveKitService],
+  exports: [StreamingService, StreamingGateway, LiveTipsService, LiveKitService],
 })
 export class StreamingModule {}
