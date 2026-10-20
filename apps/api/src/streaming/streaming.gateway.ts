@@ -18,6 +18,7 @@ import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-p
 import { formatGoalAmount, LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
 import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 import { LiveKitService, LiveTransport } from './livekit.service';
+import { LiveIngressService } from './live-ingress.service';
 
 interface SocketUser {
   id: string;
@@ -121,6 +122,7 @@ export class StreamingGateway
   private mutedUsers = new Map<string, Set<string>>();
   private tipSubscription?: Subscription;
   private videoViewersSubscription?: Subscription;
+  private obsStatusSubscription?: Subscription;
 
   constructor(
     private prisma: PrismaService,
@@ -129,6 +131,7 @@ export class StreamingGateway
     @Optional() private oneTimePayments?: OneTimePaymentService,
     @Optional() private liveTips?: LiveTipsService,
     @Optional() private liveKit?: LiveKitService,
+    @Optional() private liveIngress?: LiveIngressService,
   ) {}
 
   /** Video transport announced in the join / broadcast acknowledgements */
@@ -145,11 +148,19 @@ export class StreamingGateway
     this.videoViewersSubscription = this.liveKit?.videoViewers$.subscribe(({ streamId, count }) => {
       this.server?.to(streamRoom(streamId)).emit('video-viewer-count', { streamId, count });
     });
+    // OBS mode: whether OBS is sending, for the creator's broadcasting page only
+    this.obsStatusSubscription = this.liveIngress?.obsStatus$.subscribe(({ creatorId, streamId, status }) => {
+      if (!streamId) return;
+      const room = this.rooms.get(streamId);
+      if (!room?.broadcasterSocketId || room.creatorId !== creatorId) return;
+      this.server?.to(room.broadcasterSocketId).emit('obs-status', { streamId, status });
+    });
   }
 
   onModuleDestroy() {
     this.tipSubscription?.unsubscribe();
     this.videoViewersSubscription?.unsubscribe();
+    this.obsStatusSubscription?.unsubscribe();
     this.viewerStats.forEach((stats) => clearTimeout(stats.timer));
     this.viewerStats.clear();
   }
@@ -333,6 +344,9 @@ export class StreamingGateway
         transport: this.transport,
         viewerCount,
         mutedUserIds: [...(this.mutedUsers.get(streamId) ?? [])],
+        ...(this.liveIngress?.available
+          ? { obsStatus: this.liveIngress.getStreamObsStatus(stream.creatorId, streamId) }
+          : {}),
         messages: await this.toChatHistory(messages, stream.creatorId),
         ...(await this.getTipState(streamId)),
       };

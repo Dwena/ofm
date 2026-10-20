@@ -208,6 +208,7 @@ model User {
   storyViews              StoryView[]     @relation("StoryViews")
   storyLikes              StoryLike[]     @relation("StoryLikes")
   liveStreams             LiveStream[]    @relation("CreatorStreams")
+  liveIngress             LiveIngress?    @relation("CreatorLiveIngress")
   streamViews             StreamViewer[]  @relation("StreamViews")
   streamMessages          StreamMessage[] @relation("StreamMessages")
   liveTipMenuItems        LiveTipMenuItem[] @relation("LiveTipMenuItems")
@@ -845,6 +846,42 @@ enum StreamStatus {
   CANCELLED
 }
 
+// Where the video of a live comes from: the creator's browser (camera) or
+// external software (OBS...) pushing to the LiveKit Ingress
+enum LiveSource {
+  BROWSER
+  OBS
+}
+
+// Protocol OBS uses to push to the LiveKit Ingress
+enum LiveIngressInput {
+  RTMP
+  WHIP
+}
+
+// Persistent LiveKit Ingress of a creator ("Diffuser avec OBS"): the server
+// URL and stream key stay the same from one live to the next. The ingress is
+// bound to the room of the live in progress (live-<streamId>) when a live
+// starts in OBS mode, and moved back to an idle room nobody can join when it
+// ends.
+model LiveIngress {
+  id          String           @id @default(uuid())
+
+  creatorId   String           @unique
+  creator     User             @relation("CreatorLiveIngress", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  inputType   LiveIngressInput @default(WHIP)
+  // LiveKit ingress id (IN_xxx)
+  ingressId   String           @unique
+  // Secret: RTMP stream key / WHIP bearer token, only ever returned to the creator
+  streamKey   String
+  // Server URL to paste in OBS (rtmp://.../live or http(s)://.../w)
+  url         String
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
 model LiveStream {
   id          String       @id @default(uuid())
 
@@ -858,6 +895,8 @@ model LiveStream {
 
   // Streaming
   status      StreamStatus @default(SCHEDULED)
+  // Browser camera, or OBS through the creator's LiveIngress
+  source      LiveSource   @default(BROWSER)
   streamKey   String       @unique  // For RTMP/WebRTC
   streamUrl   String?      // Playback URL
   recordingUrl String?     // Recording URL after stream ends
