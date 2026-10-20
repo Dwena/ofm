@@ -32,6 +32,7 @@ import {
 } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
+import { formatGoalAmount } from '../src/streaming/live-tips.service';
 
 const prisma = new PrismaClient();
 
@@ -975,7 +976,7 @@ async function main() {
         type: 'TIP',
         tipAmount: tipSeed.amount,
         transactionId: id,
-        message: tipSeed.message ?? `a envoyé un pourboire de ${tipSeed.amount.toFixed(2)}€`,
+        message: tipSeed.message ?? `a envoyé un pourboire de ${formatGoalAmount(tipSeed.amount)}`,
         createdAt: at,
       },
     });

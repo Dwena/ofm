@@ -15,7 +15,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
 import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
-import { LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
+import { formatGoalAmount, LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
 import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 
 interface SocketUser {
@@ -652,7 +652,7 @@ export class StreamingGateway
           username: tip.fromUser.username,
           displayName: tip.fromUser.displayName,
           avatar: tip.fromUser.avatar,
-          message: tip.message || `a envoyé un pourboire de ${tip.amount.toFixed(2)}€`,
+          message: tip.message || `a envoyé un pourboire de ${formatGoalAmount(tip.amount)}`,
           timestamp: tip.completedAt.toISOString(),
           type: 'TIP',
           isCreator: false,

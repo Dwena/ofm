@@ -4,6 +4,7 @@ import {
   streamRoom,
   VIEWER_STATS_INTERVAL_MS,
 } from './streaming.gateway';
+import { formatGoalAmount } from './live-tips.service';
 
 type Emitted = { target: string; event: string; payload: any };
 
@@ -693,7 +694,7 @@ describe('StreamingGateway', () => {
     const storedTipLine = {
       id: 'msg-1',
       senderId: 'user-1',
-      message: 'a envoyé un pourboire de 20.00€',
+      message: `a envoyé un pourboire de ${formatGoalAmount(20)}`,
       type: 'TIP',
       tipAmount: 20,
       transactionId: 'tx-1',

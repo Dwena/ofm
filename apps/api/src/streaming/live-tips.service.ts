@@ -513,7 +513,7 @@ export class LiveTipsService {
             type: 'TIP',
             tipAmount: amount,
             transactionId: tip.transactionId,
-            message: tip.message || `a envoyé un pourboire de ${amount.toFixed(2)}€`,
+            message: tip.message || `a envoyé un pourboire de ${formatGoalAmount(amount)}`,
           },
           include: { sender: { select: SENDER_SELECT } },
         });
