@@ -2,17 +2,18 @@
 #
 # Les navigateurs de la machine hôte se connectent à :
 #   ws://localhost:7880      signalisation (LIVEKIT_URL de apps/api/.env)
-#   127.0.0.1:7882/udp       média WebRTC (un seul port UDP multiplexé)
-#   127.0.0.1:7881/tcp       média WebRTC en TCP (repli si l'UDP est bloqué)
+#   <IP du PC>:7882/udp      média WebRTC (un seul port UDP multiplexé)
+#   <IP du PC>:7881/tcp      média WebRTC en TCP (repli si l'UDP est bloqué)
 #
-# node_ip: 127.0.0.1 est indispensable avec Docker Desktop (Windows / macOS) :
-# sans lui, LiveKit annonce dans ses candidats ICE l'adresse interne du
-# conteneur (172.x.x.x), injoignable depuis le navigateur de l'hôte. Avec lui,
-# les candidats annoncés sont 127.0.0.1:7882 (UDP) et 127.0.0.1:7881 (TCP),
-# atteints via les ports publiés par Docker. Pour tester depuis un téléphone
-# du réseau local : LIVEKIT_NODE_IP=192.168.1.20 (IP LAN du PC) avant
-# `docker compose -f docker-compose.dev.yml up -d livekit` (variable NODE_IP du
-# conteneur, prioritaire sur node_ip) et LIVEKIT_URL=ws://192.168.1.20:7880
+# Adresse annoncée dans les candidats ICE : la variable NODE_IP du conteneur
+# (prioritaire sur node_ip ci-dessous). `npm run dev:up` y met l'IP du PC sur
+# le réseau local (ex. 192.168.1.16, détectée automatiquement, ou
+# LIVEKIT_NODE_IP pour la forcer). Ni l'IP interne du conteneur (172.x),
+# injoignable depuis l'hôte, ni 127.0.0.1 : sous Windows, Chrome / Edge
+# n'envoient pas le média WebRTC vers l'adresse de bouclage (la vidéo restait
+# noire, « requestsReceived: 0 » dans les logs). node_ip: 127.0.0.1 ne sert que
+# de valeur par défaut pour un `docker compose up` lancé à la main.
+# Pour un téléphone du réseau local, ajouter LIVEKIT_URL=ws://<IP du PC>:7880
 # dans apps/api/.env (un spectateur n'a pas besoin de HTTPS ; diffuser depuis
 # le téléphone, si : la caméra n'est accessible qu'en contexte sécurisé).
 #
