@@ -9,6 +9,7 @@ import {
   FileText,
   Flag,
   Home,
+  MonitorPlay,
   LayoutDashboard,
   MessageSquare,
   Radio,
@@ -70,6 +71,7 @@ const L = {
   creatorUpload: link('/creator/upload', 'creatorUpload', Upload),
   creatorStories: link('/creator/stories', 'creatorStories', Sparkles),
   creatorLive: link('/creator/live', 'creatorLive', Clapperboard),
+  creatorOverlays: link('/creator/overlays', 'creatorOverlays', MonitorPlay),
   creatorSubscribers: link('/creator/subscriptions', 'creatorSubscribers', Users),
   creatorEarnings: link('/creator/earnings', 'creatorEarnings', DollarSign),
   creatorAnalytics: link('/creator/analytics', 'creatorAnalytics', BarChart3),
@@ -111,6 +113,7 @@ export function getRoleNavigation(role: string | undefined): RoleNavigation {
               L.creatorUpload,
               L.creatorStories,
               L.creatorLive,
+              L.creatorOverlays,
               L.creatorSubscribers,
               L.creatorEarnings,
               L.creatorAnalytics,
@@ -170,8 +173,17 @@ function matches(pathname: string, prefix: string) {
 
 export type PathAccess = 'ok' | 'creator-only' | 'staff-only'
 
+/**
+ * OBS overlay widgets (/overlay/<token>/<widget>): public pages opened by OBS
+ * without a session, never redirected to /login nor gated by role
+ */
+export function isOverlayPath(pathname: string) {
+  return matches(pathname, '/overlay')
+}
+
 /** Client-side mirror of the API role guards, used by the (app) layout */
 export function getPathAccess(role: string | undefined, pathname: string): PathAccess {
+  if (isOverlayPath(pathname)) return 'ok'
   if (matches(pathname, '/creator')) {
     return role === 'CREATOR' ? 'ok' : 'creator-only'
   }

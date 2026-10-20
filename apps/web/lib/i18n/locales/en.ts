@@ -57,6 +57,7 @@ export const en: Translations = {
     creatorUpload: 'Upload',
     creatorStories: 'Stories',
     creatorLive: 'Live',
+    creatorOverlays: 'OBS widgets',
     creatorSubscribers: 'Subscribers',
     creatorEarnings: 'Earnings',
     creatorAnalytics: 'Analytics',

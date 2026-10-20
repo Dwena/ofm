@@ -57,3 +57,19 @@ Mot de passe commun : **`SecurePass123!`**
 | `suspended@demo.com` | Kevin Roux | Compte **suspendu** 7 jours (connexion refusée) |
 | `banned@demo.com` | Spam Bot | Compte **banni** (connexion refusée), auteur d'un commentaire spam signalé |
 | `fan01@demo.com` … `fan20@demo.com` | Fans | Historique d'abonnements, pourboires et achats sur 6 mois (courbes d'analytics) |
+
+## Widgets OBS (overlays d'Alice)
+
+Le seed crée pour Alice (`creator@demo.com`) un jeton d'overlay **fixe de développement** et les réglages par défaut des 5 widgets. Les URL s'ouvrent **sans connexion** (sources « Navigateur » d'OBS) ; ajoutez `?preview=1` pour voir le damier de transparence et les indications :
+
+| Widget | URL (web sur `http://localhost:3000`) | Taille OBS |
+|---|---|---|
+| Alertes | `/overlay/demo-alice-overlay-token-dev-only-0123456789/alerts` | 800 × 600 |
+| Objectifs de dons | `/overlay/demo-alice-overlay-token-dev-only-0123456789/goals` | 800 × 220 |
+| Menu des pourboires | `/overlay/demo-alice-overlay-token-dev-only-0123456789/menu` | 500 × 700 |
+| Chat | `/overlay/demo-alice-overlay-token-dev-only-0123456789/chat` | 450 × 700 |
+| Demandes | `/overlay/demo-alice-overlay-token-dev-only-0123456789/requests` | 500 × 500 |
+
+- Réglages, aperçus, boutons « Tester » et « Régénérer les liens » : `/creator/overlays` (lien « Widgets OBS » dans l'espace créateur et sur `/creator/live`).
+- Les URL complètes sont aussi affichées à la fin du seed (avec `WEB_URL`).
+- Après « Régénérer les liens », ce jeton de démo ne fonctionne plus (relancer `seed:fresh` pour le retrouver). Ne jamais réutiliser ce jeton hors développement.

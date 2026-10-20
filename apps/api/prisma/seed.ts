@@ -33,12 +33,16 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 import { formatGoalAmount } from '../src/streaming/live-tips.service';
+import { DEFAULT_OVERLAY_SETTINGS, OVERLAY_WIDGET_SLUGS, OVERLAY_WIDGETS } from '../src/overlays/overlay-settings';
 
 const prisma = new PrismaClient();
 
 export const SEED_PASSWORD = 'SecurePass123!';
 // Base32 TOTP secret of the 2FA test account (add it to any authenticator app)
 export const SEED_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+// Fixed (dev only) overlay token of Alice: OBS widget URLs /overlay/<token>/<widget>.
+// Regenerate it from /creator/overlays ("Régénérer les liens") to test the rotation.
+export const SEED_OVERLAY_TOKEN = 'demo-alice-overlay-token-dev-only-0123456789';
 
 const PLATFORM_FEE_PERCENTAGE = 15;
 
@@ -1295,6 +1299,17 @@ async function main() {
     ],
   });
 
+  // ---------- OBS overlay widgets ----------
+  console.log('🖥️ Widgets OBS');
+  await prisma.overlayToken.create({ data: { creatorId: alice.id, token: SEED_OVERLAY_TOKEN } });
+  await prisma.overlayWidgetSettings.createMany({
+    data: OVERLAY_WIDGETS.map((widget) => ({
+      creatorId: alice.id,
+      widget,
+      settings: DEFAULT_OVERLAY_SETTINGS[widget] as unknown as Prisma.InputJsonValue,
+    })),
+  });
+
   // ---------- Derived counters ----------
   console.log('🧮 Compteurs');
   for (const content of await prisma.content.findMany({ select: { id: true } })) {
@@ -1347,6 +1362,11 @@ async function main() {
   console.log('  subscriber@demo.com · subscriber2@demo.com · subscriber3@demo.com');
   console.log(`  2fa@demo.com (TOTP ${SEED_TOTP_SECRET}) · unverified@demo.com · suspended@demo.com · banned@demo.com`);
   console.log('  fan01@demo.com … fan20@demo.com');
+  const webUrl = (process.env.WEB_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  console.log('\n🖥️ Widgets OBS d’Alice (sources Navigateur, sans connexion) :');
+  OVERLAY_WIDGETS.forEach((widget) =>
+    console.log(`  ${webUrl}/overlay/${SEED_OVERLAY_TOKEN}/${OVERLAY_WIDGET_SLUGS[widget]}`),
+  );
   if (!process.env.SEED_STRIPE_ACCOUNT_ID) {
     console.log('\nℹ️  SEED_STRIPE_ACCOUNT_ID non défini : les créateurs n’ont pas de compte Stripe Connect (paiements payants à configurer).');
   }

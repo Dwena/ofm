@@ -30,6 +30,7 @@ import { ModerationModule } from './moderation/moderation.module';
 import { StoriesModule } from './stories/stories.module';
 import { StreamingModule } from './streaming/streaming.module';
 import { SettingsModule } from './settings/settings.module';
+import { OverlaysModule } from './overlays/overlays.module';
 
 @Module({
   imports: [
@@ -98,6 +99,7 @@ import { SettingsModule } from './settings/settings.module';
     ModerationModule,
     StoriesModule,
     StreamingModule,
+    OverlaysModule,
   ],
   controllers: [AppController],
   providers: [AppService],

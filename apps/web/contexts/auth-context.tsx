@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useState, ReactNode 
 import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { authApi, usersApi, SESSION_EXPIRED_EVENT } from '@/lib/api'
-import { getHomeRoute, getPathAccess, sanitizeRedirect } from '@/lib/navigation'
+import { getHomeRoute, getPathAccess, isOverlayPath, sanitizeRedirect } from '@/lib/navigation'
 import { User, UserRole } from '@/types'
 
 interface AuthContextType {
@@ -63,6 +63,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    // OBS overlay widgets (/overlay/*) have no session: never load the user there, so a
+    // preview iframe never refreshes (and rotates) the creator's single-use refresh token
+    if (isOverlayPath(window.location.pathname)) {
+      setIsLoading(false)
+      return
+    }
     // Check if user is logged in
     const token = localStorage.getItem('accessToken')
     if (token) {
