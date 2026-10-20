@@ -1,6 +1,6 @@
 'use client'
 
-import { Gift, MicOff, MoreVertical, Trash2, Volume2 } from 'lucide-react'
+import { Gift, MicOff, MoreVertical, PartyPopper, Trash2, Volume2 } from 'lucide-react'
 import type { LiveChatMessage } from '@/lib/live'
 import { cn, formatEuros } from '@/lib/utils'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -36,8 +36,18 @@ export function LiveChatMessageItem({
 }: LiveChatMessageItemProps) {
   const isTip = message.type === 'TIP'
   const name = message.displayName || message.username
-  // Tips are not stored as chat messages and creators cannot be moderated
-  const canModerate = !isTip && !message.isCreator && (onDelete || onToggleMute)
+  // Tip and system lines are not moderated, nor are the creator's messages
+  const canModerate = !isTip && message.type !== 'SYSTEM' && !message.isCreator && (onDelete || onToggleMute)
+
+  // Announcement of the live (e.g. tip goal reached)
+  if (message.type === 'SYSTEM') {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg bg-primary/10 px-3 py-2 text-center text-sm font-medium text-primary">
+        <PartyPopper className="h-4 w-4 shrink-0" />
+        <span className="break-words">{message.message}</span>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -73,7 +83,15 @@ export function LiveChatMessageItem({
             </Badge>
           )}
         </div>
-        <p className="text-sm break-words whitespace-pre-wrap">{message.message}</p>
+        {isTip && message.menuItemLabel && (
+          <p className="text-xs font-medium text-amber-700 dark:text-amber-300 break-words">
+            {name} a envoyé {formatEuros(message.tipAmount)} · Demande : {message.menuItemLabel}
+          </p>
+        )}
+        {/* The default "a envoyé un pourboire" text repeats the request line */}
+        {!(isTip && message.menuItemLabel && message.message.startsWith('a envoyé un pourboire')) && (
+          <p className="text-sm break-words whitespace-pre-wrap">{message.message}</p>
+        )}
       </div>
       {canModerate && (
         <DropdownMenu>
