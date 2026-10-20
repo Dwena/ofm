@@ -55,6 +55,7 @@ export const fr = {
     creatorUpload: 'Upload',
     creatorStories: 'Stories',
     creatorLive: 'Live',
+    creatorOverlays: 'Widgets OBS',
     creatorSubscribers: 'Abonnés',
     creatorEarnings: 'Revenus',
     creatorAnalytics: 'Analytics',

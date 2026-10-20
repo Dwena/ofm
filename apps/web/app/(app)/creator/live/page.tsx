@@ -968,6 +968,9 @@ export default function CreatorLivePage() {
             Live
           </h1>
           <p className="text-muted-foreground">Diffusez en direct pour vos abonnés</p>
+          <Link href="/creator/overlays" className="text-sm text-primary hover:underline" data-testid="live-overlays-link">
+            Widgets OBS (alertes, objectifs, chat…) →
+          </Link>
         </div>
         {activeStream && (
           <div className="flex items-center gap-3 flex-wrap">
