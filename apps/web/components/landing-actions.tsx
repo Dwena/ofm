@@ -85,8 +85,13 @@ export function LandingEarnings() {
   )
 }
 
-/** Top-right buttons of the landing page: auth links, or the user's space once logged in */
-export function LandingHeaderActions() {
+export type Audience = 'fans' | 'creators'
+
+const registerHref = (audience: Audience) =>
+  audience === 'creators' ? '/register?role=creator' : '/register?role=subscriber'
+
+/** Top-right buttons of the landing pages: auth links, or the user's space once logged in */
+export function LandingHeaderActions({ audience }: { audience: Audience }) {
   const { user, isLoading } = useAuth()
 
   if (!isLoading && user) {
@@ -103,23 +108,24 @@ export function LandingHeaderActions() {
         <Link href="/login">Connexion</Link>
       </Button>
       <Button asChild className={gradient}>
-        <Link href="/register">Commencer</Link>
+        <Link href={registerHref(audience)}>Inscription</Link>
       </Button>
     </div>
   )
 }
 
-/** Hero call-to-actions: sign up as a creator or as a subscriber */
-export function LandingHeroActions() {
+/** Hero call-to-actions of each landing page */
+export function LandingHeroActions({ audience }: { audience: Audience }) {
   const { user, isLoading } = useAuth()
+  const big = 'px-8 py-6 text-lg'
 
   if (!isLoading && user) {
     return (
       <div className="flex flex-col gap-4 sm:flex-row">
-        <Button asChild size="lg" className={`${gradient} text-lg px-8 py-6`}>
+        <Button asChild size="lg" className={`${gradient} ${big}`}>
           <Link href={getHomePath(user.role)}>Accéder à mon espace</Link>
         </Button>
-        <Button asChild size="lg" variant="outline" className="text-lg px-8 py-6 border-2">
+        <Button asChild size="lg" variant="outline" className={`${big} border-2`}>
           <Link href="/discover">Découvrir des créateurs</Link>
         </Button>
       </div>
@@ -128,29 +134,31 @@ export function LandingHeroActions() {
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row">
-      <Button asChild size="lg" className={`${gradient} text-lg px-8 py-6`}>
-        <Link href="/register?role=creator" data-testid="landing-cta-creator">
-          Devenir créateur
+      <Button asChild size="lg" className={`${gradient} ${big}`}>
+        <Link href={registerHref(audience)} data-testid={`landing-cta-${audience}`}>
+          {audience === 'creators' ? 'Créer ma page' : 'Créer mon compte'}
         </Link>
       </Button>
-      <Button asChild size="lg" variant="outline" className="text-lg px-8 py-6 border-2">
-        <Link href="/register?role=subscriber" data-testid="landing-cta-subscriber">
-          Suivre des créateurs
-        </Link>
+      <Button asChild size="lg" variant="outline" className={`${big} border-2`}>
+        <Link href="/login">J’ai déjà un compte</Link>
       </Button>
     </div>
   )
 }
 
-/** Bottom call-to-action */
-export function LandingFooterCta() {
+/** Bottom call-to-action, on the dark block */
+export function LandingFooterCta({ audience }: { audience: Audience }) {
   const { user, isLoading } = useAuth()
   const loggedIn = !isLoading && !!user
 
   return (
     <Button asChild size="lg" className="bg-white px-8 py-6 text-lg text-gray-900 hover:bg-gray-100">
-      <Link href={loggedIn ? getHomePath(user!.role) : '/register?role=creator'}>
-        {loggedIn ? 'Accéder à mon espace' : 'Créer mon compte gratuitement'}
+      <Link href={loggedIn ? getHomePath(user!.role) : registerHref(audience)}>
+        {loggedIn
+          ? 'Accéder à mon espace'
+          : audience === 'creators'
+            ? 'Créer ma page gratuitement'
+            : 'Créer mon compte gratuitement'}
       </Link>
     </Button>
   )
