@@ -126,7 +126,7 @@ describe('LiveIngressService', () => {
   const remoteIngress = (overrides: Record<string, unknown> = {}) => ({
     ingressId: 'IN_1',
     streamKey: KEY_1,
-    url: 'http://localhost:8080/w',
+    url: 'rtmp://localhost:1935/live',
     roomName: ingressIdleRoomName(CREATOR),
     state: { status: 0, tracks: [] },
     ...overrides,
@@ -144,7 +144,6 @@ describe('LiveIngressService', () => {
     ingressClient.updateIngress.mockImplementation(async (ingressId: string, opts: any) => remoteIngress({ ingressId, ...opts }));
     ingressClient.deleteIngress.mockResolvedValue({});
     ingressClient.listIngress.mockResolvedValue([remoteIngress()]);
-    delete process.env.LIVEKIT_INGRESS_WHIP_URL;
     delete process.env.LIVEKIT_INGRESS_RTMP_URL;
   });
 
@@ -158,7 +157,6 @@ describe('LiveIngressService', () => {
       expect(ingress.available).toBe(false);
       for (const call of [
         () => ingress.getIngress(CREATOR),
-        () => ingress.setInputType(CREATOR, 'RTMP'),
         () => ingress.resetKey(CREATOR),
       ]) {
         const error = await call().catch((e) => e);
@@ -187,27 +185,33 @@ describe('LiveIngressService', () => {
   });
 
   describe('ingress creation', () => {
-    it('creates a WHIP ingress (no transcoding) on first read, in the idle room, as the creator', async () => {
+    it('creates an RTMP ingress on first read, in the idle room, as the creator, transcoded into simulcast layers', async () => {
       const { ingress } = await createModule(LIVEKIT_ENV);
       liveStreams = {};
       const view = await ingress.getIngress(CREATOR);
 
       expect(ingressClientArgs[0]).toEqual(['http://localhost:7880', 'devkey', LIVEKIT_ENV.LIVEKIT_API_SECRET, expect.any(Object)]);
-      expect(ingressClient.createIngress).toHaveBeenCalledWith(IngressInput.WHIP_INPUT, {
+      const [input, options] = ingressClient.createIngress.mock.calls[0];
+      expect(input).toBe(IngressInput.RTMP_INPUT);
+      expect(options).toMatchObject({
         name: `obs-${CREATOR}`,
         roomName: ingressIdleRoomName(CREATOR),
         participantIdentity: CREATOR,
         participantName: 'Alice',
-        enableTranscoding: false,
-        bypassTranscoding: true,
+        enableTranscoding: true,
       });
-      expect(view).toMatchObject({
-        inputType: 'WHIP',
-        serverUrl: 'http://localhost:8080/w',
+      expect(options.bypassTranscoding).toBeUndefined();
+      expect(options.video.encodingOptions).toEqual({
+        case: 'preset',
+        value: IngressVideoEncodingPreset.H264_720P_30FPS_3_LAYERS,
+      });
+      expect(options.audio).toBeDefined();
+      expect(view).toEqual({
+        serverUrl: 'rtmp://localhost:1935/live',
         streamKey: KEY_1,
         status: 'offline',
         streamId: null,
-        bypassTranscoding: true,
+        updatedAt: expect.any(Date),
       });
       expect(prisma.liveIngress.upsert).toHaveBeenCalledTimes(1);
 
@@ -217,62 +221,30 @@ describe('LiveIngressService', () => {
       expect(ingressClient.listIngress).toHaveBeenCalledWith({ ingressId: 'IN_1' });
     });
 
-    it('creates an RTMP ingress with transcoding into simulcast layers', async () => {
+    it('uses 1080p or VP8 layers on request', async () => {
       const { ingress } = await createModule(LIVEKIT_ENV);
       liveStreams = {};
-      ingressClient.createIngress.mockResolvedValue(remoteIngress({ url: 'rtmp://localhost:1935/live' }));
-      const view = await ingress.setInputType(CREATOR, 'RTMP');
-
-      const [input, options] = ingressClient.createIngress.mock.calls[0];
-      expect(input).toBe(IngressInput.RTMP_INPUT);
-      expect(options).toMatchObject({ enableTranscoding: true, bypassTranscoding: false, participantIdentity: CREATOR });
-      expect(options.video.encodingOptions).toEqual({
-        case: 'preset',
-        value: IngressVideoEncodingPreset.H264_720P_30FPS_3_LAYERS,
-      });
-      expect(options.audio).toBeDefined();
-      expect(view).toMatchObject({ inputType: 'RTMP', serverUrl: 'rtmp://localhost:1935/live', bypassTranscoding: false });
-
-      // 1080p layers on request
       process.env.LIVEKIT_INGRESS_RTMP_PRESET = '1080p';
-      await ingress.setInputType(CREATOR, 'RTMP');
-      expect(ingressClient.createIngress.mock.calls[1][1].video.encodingOptions.value).toBe(
+      await ingress.resetKey(CREATOR);
+      expect(ingressClient.createIngress.mock.calls[0][1].video.encodingOptions.value).toBe(
         IngressVideoEncodingPreset.H264_1080P_30FPS_3_LAYERS,
       );
       delete process.env.LIVEKIT_INGRESS_RTMP_PRESET;
 
       // VP8 layers on request (browsers without H.264 WebRTC decoding)
       process.env.LIVEKIT_INGRESS_RTMP_CODEC = 'vp8';
-      await ingress.setInputType(CREATOR, 'RTMP');
-      const vp8 = ingressClient.createIngress.mock.calls[2][1].video.encodingOptions;
+      await ingress.resetKey(CREATOR);
+      const vp8 = ingressClient.createIngress.mock.calls[1][1].video.encodingOptions;
       expect(vp8.case).toBe('options');
       expect(vp8.value.videoCodec).toBe(VideoCodec.VP8);
       expect(vp8.value.layers.map((layer: { height: number }) => layer.height)).toEqual([720, 360, 180]);
       delete process.env.LIVEKIT_INGRESS_RTMP_CODEC;
     });
 
-    it('prefers the public URLs of the environment', async () => {
+    it('prefers the public RTMP URL of the environment', async () => {
       const { ingress } = await createModule(LIVEKIT_ENV);
-      process.env.LIVEKIT_INGRESS_WHIP_URL = 'https://whip.fanvip.example/w';
-      expect((await ingress.getIngress(CREATOR)).serverUrl).toBe('https://whip.fanvip.example/w');
-    });
-
-    it('switching protocol replaces the LiveKit ingress (the old one is deleted)', async () => {
-      const { ingress } = await createModule(LIVEKIT_ENV);
-      liveStreams = {};
-      await ingress.getIngress(CREATOR);
-      ingressClient.createIngress.mockResolvedValue(
-        remoteIngress({ ingressId: 'IN_2', streamKey: KEY_2, url: 'rtmp://localhost:1935/live' }),
-      );
-      const view = await ingress.setInputType(CREATOR, 'RTMP');
-      expect(view).toMatchObject({ inputType: 'RTMP', streamKey: KEY_2 });
-      expect(ingressClient.deleteIngress).toHaveBeenCalledWith('IN_1');
-      expect(ingressRow).toMatchObject({ ingressId: 'IN_2', inputType: 'RTMP', streamKey: KEY_2 });
-    });
-
-    it('rejects an unknown protocol', async () => {
-      const { ingress } = await createModule(LIVEKIT_ENV);
-      await expect(ingress.setInputType(CREATOR, 'SRT' as any)).rejects.toThrow('INVALID_INPUT_TYPE');
+      process.env.LIVEKIT_INGRESS_RTMP_URL = 'rtmp://live.fanvip.example/live';
+      expect((await ingress.getIngress(CREATOR)).serverUrl).toBe('rtmp://live.fanvip.example/live');
     });
 
     it('answers 503 INGRESS_SERVICE_UNREACHABLE when LiveKit refuses (e.g. no ingress service)', async () => {
@@ -286,18 +258,16 @@ describe('LiveIngressService', () => {
   });
 
   describe('stream key', () => {
-    it('reset-key deletes and recreates the ingress with the same protocol', async () => {
+    it('reset-key deletes and recreates the ingress', async () => {
       const { ingress } = await createModule(LIVEKIT_ENV);
       liveStreams = {};
-      ingressClient.createIngress.mockResolvedValueOnce(remoteIngress({ url: 'rtmp://localhost:1935/live' }));
-      await ingress.setInputType(CREATOR, 'RTMP');
+      await ingress.getIngress(CREATOR);
       ingressClient.createIngress.mockResolvedValueOnce(
         remoteIngress({ ingressId: 'IN_2', streamKey: KEY_2, url: 'rtmp://localhost:1935/live' }),
       );
 
       const view = await ingress.resetKey(CREATOR);
       expect(view.streamKey).toBe(KEY_2);
-      expect(view.inputType).toBe('RTMP');
       expect(ingressClient.createIngress.mock.calls[1][0]).toBe(IngressInput.RTMP_INPUT);
       expect(ingressClient.deleteIngress).toHaveBeenCalledWith('IN_1');
     });
@@ -361,7 +331,7 @@ describe('LiveIngressService', () => {
 
     it('unbinds the ingress (idle room) before deleting the room when the live ends', async () => {
       const { streaming, liveKit } = await createModule(LIVEKIT_ENV);
-      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', inputType: 'WHIP', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
+      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
       const order: string[] = [];
       ingressClient.updateIngress.mockImplementation(async (_id: string, opts: any) => {
         order.push(`update:${opts.roomName}`);
@@ -378,7 +348,7 @@ describe('LiveIngressService', () => {
 
     it('the live still ends when the ingress cannot be unbound', async () => {
       const { streaming } = await createModule(LIVEKIT_ENV);
-      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', inputType: 'WHIP', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
+      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
       ingressClient.updateIngress.mockRejectedValue(new Error('unreachable'));
       jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
       await expect(streaming.endStream(CREATOR, 'stream-1')).resolves.toMatchObject({ status: 'ENDED' });
@@ -386,7 +356,7 @@ describe('LiveIngressService', () => {
 
     it('recreates the ingress when LiveKit lost it while binding', async () => {
       const { ingress } = await createModule(LIVEKIT_ENV);
-      ingressRow = { creatorId: CREATOR, ingressId: 'IN_OLD', inputType: 'WHIP', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
+      ingressRow = { creatorId: CREATOR, ingressId: 'IN_OLD', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
       ingressClient.updateIngress.mockRejectedValueOnce(Object.assign(new Error('ingress does not exist'), { status: 404 }));
       jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
@@ -397,7 +367,7 @@ describe('LiveIngressService', () => {
 
     it('re-binds an OBS live in progress whose ingress is elsewhere when the creator reads it', async () => {
       const { ingress } = await createModule(LIVEKIT_ENV);
-      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', inputType: 'WHIP', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
+      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
       ingressClient.listIngress.mockResolvedValue([remoteIngress({ roomName: ingressIdleRoomName(CREATOR) })]);
       await ingress.getIngress(CREATOR);
       expect(ingressClient.updateIngress).toHaveBeenCalledWith('IN_1', expect.objectContaining({ roomName: 'live-stream-1' }));
@@ -407,7 +377,7 @@ describe('LiveIngressService', () => {
   describe('OBS status (webhooks)', () => {
     const bound = async () => {
       const ctx = await createModule(LIVEKIT_ENV);
-      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', inputType: 'RTMP', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
+      ingressRow = { creatorId: CREATOR, ingressId: 'IN_1', streamKey: KEY_1, url: 'u', updatedAt: new Date() };
       await ctx.ingress.bindToStream(CREATOR, 'stream-1');
       ctx.events.length = 0;
       return ctx;
@@ -546,7 +516,7 @@ describe('LiveIngressService', () => {
 
   describe('authorization', () => {
     it('the ingress endpoints are creator-only (RolesGuard + CREATOR role)', () => {
-      for (const method of ['getMyIngress', 'setMyIngressInput', 'resetMyIngressKey'] as const) {
+      for (const method of ['getMyIngress', 'resetMyIngressKey'] as const) {
         const handler = StreamingController.prototype[method];
         expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toContain(RolesGuard);
         expect(Reflect.getMetadata(ROLES_KEY, handler)).toEqual(['CREATOR']);

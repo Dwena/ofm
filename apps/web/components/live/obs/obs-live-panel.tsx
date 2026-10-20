@@ -32,7 +32,9 @@ export function ObsLivePanel({ streamId, status, controls, viewerCount, reconnec
   const videoRef = useRef<HTMLVideoElement>(null)
   // The preview never plays sound (OBS already monitors it)
   const mutedRef = useRef(true)
-  const preview = useLiveKitViewer({ streamId, enabled: true, videoRef, mutedRef, mode: 'auto' })
+  // Not adaptive: the preview keeps playing while the creator scrolls to the
+  // chat / tip queue (an off-screen adaptive player is paused by LiveKit)
+  const preview = useLiveKitViewer({ streamId, enabled: true, videoRef, mutedRef, mode: 'auto', adaptive: false })
   const sample = preview.quality?.sample
   const ingress = controls.ingress
   const playing = preview.state === 'playing'
@@ -78,7 +80,7 @@ export function ObsLivePanel({ streamId, status, controls, viewerCount, reconnec
         )}
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
           <dt className="text-muted-foreground">Diffusion</dt>
-          <dd>OBS ({ingress?.inputType ?? '…'}) → serveur vidéo</dd>
+          <dd>OBS (RTMP) → serveur vidéo</dd>
           {sample?.height ? (
             <>
               <dt className="text-muted-foreground">Vidéo reçue</dt>

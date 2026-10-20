@@ -5,20 +5,16 @@
  */
 
 export type LiveSource = 'BROWSER' | 'OBS'
-export type IngressInputType = 'WHIP' | 'RTMP'
 export type ObsStatus = 'offline' | 'connecting' | 'live'
 
 export interface LiveIngress {
-  inputType: IngressInputType
-  /** OBS "Serveur" */
+  /** OBS "Serveur" (RTMP) */
   serverUrl: string
-  /** RTMP stream key / WHIP bearer token (secret) */
+  /** RTMP stream key (secret) */
   streamKey: string
   status: ObsStatus
   /** Live receiving OBS's video, null when no live is bound */
   streamId: string | null
-  /** WHIP: OBS's encoding is forwarded as is */
-  bypassTranscoding: boolean
   updatedAt: string
 }
 
@@ -51,22 +47,6 @@ export function obsStatusLabel(status: ObsStatus, boundToLive: boolean): string 
 export function isObsStatus(value: unknown): value is ObsStatus {
   return value === 'offline' || value === 'connecting' || value === 'live'
 }
-
-export const INPUT_TYPE_OPTIONS: { value: IngressInputType; label: string; badge?: string; description: string }[] = [
-  {
-    value: 'WHIP',
-    label: 'WHIP',
-    badge: 'Recommandé',
-    description: 'OBS 30 ou plus récent. Latence inférieure à la seconde, votre vidéo est diffusée telle quelle.',
-  },
-  {
-    value: 'RTMP',
-    label: 'RTMP',
-    badge: 'Compatible',
-    description:
-      'Tous les logiciels (OBS, Streamlabs, vMix…). Quelques secondes de latence, plusieurs qualités proposées aux spectateurs.',
-  },
-]
 
 /** "R4nP••••••••" : the key stays hidden unless the creator asks to see it */
 export function maskSecret(secret: string, visible = 4): string {
@@ -102,29 +82,8 @@ export interface ObsSetupStep {
   copy?: 'serverUrl' | 'streamKey'
 }
 
-/** Step-by-step OBS configuration for the chosen protocol */
-export function obsSetupSteps(inputType: IngressInputType): ObsSetupStep[] {
-  if (inputType === 'WHIP') {
-    return [
-      { title: 'Ouvrez OBS Studio (version 30 ou plus récente)', detail: 'Menu Fichier → Paramètres → onglet « Stream ».' },
-      { title: 'Service : « WHIP »', detail: 'Choisissez WHIP dans la liste « Service ».' },
-      { title: 'Serveur', detail: 'Collez l’URL du serveur ci-dessus.', copy: 'serverUrl' },
-      { title: 'Bearer Token', detail: 'Collez votre clé de stream (elle reste secrète).', copy: 'streamKey' },
-      {
-        title: 'Sortie (onglet « Sortie », mode avancé)',
-        detail:
-          'Encodeur x264 ou NVENC H.264, 1080p ou 720p à 30 i/s, débit 4 000 à 6 000 kbit/s, intervalle d’images clés 2 s, profil « baseline » ou « main », B-frames : 0 (obligatoire en WHIP).',
-      },
-      {
-        title: 'Audio',
-        detail: 'OBS envoie l’audio en Opus automatiquement avec WHIP : rien à régler.',
-      },
-      {
-        title: 'Lancez le live sur FanVIP en mode OBS, puis « Démarrer le streaming » dans OBS',
-        detail: 'Le statut passe à « Connexion… » puis « En direct » : vos spectateurs vous voient.',
-      },
-    ]
-  }
+/** Step-by-step OBS configuration (RTMP) */
+export function obsSetupSteps(): ObsSetupStep[] {
   return [
     { title: 'Ouvrez OBS (ou votre logiciel de diffusion)', detail: 'Menu Fichier → Paramètres → onglet « Stream ».' },
     { title: 'Service : « Personnalisé… »', detail: 'Choisissez « Personnalisé… » dans la liste « Service ».' },

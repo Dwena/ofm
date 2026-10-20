@@ -94,8 +94,6 @@ services:
       # LiveKit Ingress ("Diffuser avec OBS", service livekit-ingress below, which
       # shares this container's network: its ports are published here)
       - "1935:1935"          # RTMP: rtmp://localhost:1935/live
-      - "8080:8080"          # WHIP: http://localhost:8080/w
-      - "7885:7885/udp"      # WHIP media (WebRTC from OBS)
     environment:
       # Advertised address of the media ports (LAN IP to test from a phone)
       NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
@@ -108,7 +106,7 @@ services:
     depends_on:
       - redis
 
-  # LiveKit Ingress: receives OBS (WHIP or RTMP) and publishes it in the live's
+  # LiveKit Ingress: receives OBS (RTMP) and publishes it in the live's
   # LiveKit room. Config: infrastructure/livekit/ingress.dev.yaml. Runs in the
   # network namespace of `livekit`: LiveKit advertises 127.0.0.1 in its ICE
   # candidates (Docker Desktop), which only reaches it from its own namespace.
@@ -128,7 +126,7 @@ services:
 
   # Windows (profile `livekit-native`): the ingress alone, talking to the native
   # LiveKit of the host through host.docker.internal. OBS on the host reaches it
-  # on localhost (1935 RTMP, 8080 WHIP, 7885/udp WHIP media).
+  # on localhost:1935 (RTMP).
   livekit-ingress-native:
     profiles: ["livekit-native"]
     image: livekit/ingress:v1.4.3
@@ -136,8 +134,6 @@ services:
     restart: unless-stopped
     ports:
       - "1935:1935"
-      - "8080:8080"
-      - "7885:7885/udp"
     environment:
       INGRESS_CONFIG_FILE: /etc/ingress.yaml
     volumes:

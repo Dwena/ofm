@@ -9,7 +9,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
-import { SetIngressInputDto, StartStreamDto } from './dto/live-ingress.dto';
+import { StartStreamDto } from './dto/live-ingress.dto';
 import { LiveIngressService } from './live-ingress.service';
 
 @Controller('streaming')
@@ -33,8 +33,8 @@ export class StreamingController {
   }
 
   /**
-   * "Diffuser avec OBS": the creator's ingress (server URL, stream key,
-   * protocol, OBS status), created as WHIP on first call. The stream key is
+   * "Diffuser avec OBS": the creator's RTMP ingress (server URL, stream key,
+   * OBS status), created on first call. The stream key is
    * a secret: only ever returned here, to its creator. 400 INGRESS_UNAVAILABLE
    * without LiveKit (P2P mode). Declared before `:id`.
    */
@@ -43,16 +43,6 @@ export class StreamingController {
   @Roles('CREATOR')
   getMyIngress(@CurrentUser('id') userId: string) {
     return this.liveIngress.getIngress(userId);
-  }
-
-  /**
-   * Switch the ingress protocol (WHIP / RTMP): a new LiveKit ingress and a new key
-   */
-  @Post('me/ingress')
-  @UseGuards(RolesGuard)
-  @Roles('CREATOR')
-  setMyIngressInput(@CurrentUser('id') userId: string, @Body() dto: SetIngressInputDto) {
-    return this.liveIngress.setInputType(userId, dto.inputType);
   }
 
   /**

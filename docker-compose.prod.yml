@@ -101,10 +101,9 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       LIVEKIT_API_URL: ${LIVEKIT_API_URL:-}
-      # "Diffuser avec OBS" (LiveKit Ingress): public URLs shown to the creators
-      # (default: ingress.rtmp_base_url / whip_base_url of livekit.prod.yaml)
+      # "Diffuser avec OBS" (LiveKit Ingress): public RTMP URL shown to the creators
+      # (default: ingress.rtmp_base_url of livekit.prod.yaml)
       LIVEKIT_INGRESS_RTMP_URL: ${LIVEKIT_INGRESS_RTMP_URL:-}
-      LIVEKIT_INGRESS_WHIP_URL: ${LIVEKIT_INGRESS_WHIP_URL:-}
       # Simulcast layers of the transcoded RTMP inputs: 720p (default) or 1080p
       LIVEKIT_INGRESS_RTMP_PRESET: ${LIVEKIT_INGRESS_RTMP_PRESET:-720p}
       # Codec of the transcoded RTMP layers: h264 (default) or vp8 (more CPU)
@@ -234,9 +233,8 @@ services:
       - ./infrastructure/livekit/livekit.prod.yaml:/etc/livekit.yaml:ro
       - ./nginx/ssl:/etc/ssl/livekit:ro
 
-  # LiveKit Ingress: OBS pushes to it (WHIP behind nginx TLS, or RTMP on 1935)
-  # and it publishes in the live's LiveKit room. Profile "livekit", host
-  # networking (WHIP media on UDP 7885). See docs/DEPLOYMENT.md
+  # LiveKit Ingress: OBS pushes to it (RTMP on 1935) and it publishes in the
+  # live's LiveKit room. Profile "livekit", host networking. See docs/DEPLOYMENT.md
   # "Diffuser avec OBS: LiveKit Ingress".
   livekit-ingress:
     image: livekit/ingress:v1.4.3
