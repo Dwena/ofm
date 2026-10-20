@@ -57,6 +57,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LiveChatMessageItem } from '@/components/live/live-chat-message'
 import { BroadcastQualitySettings } from '@/components/live/broadcast-quality-settings'
 import { BroadcastHealthPanel } from '@/components/live/broadcast-health-panel'
+import { LiveKitHealthPanel } from '@/components/live/livekit-health-panel'
+import { useLiveKitBroadcast } from '@/hooks/use-livekit-broadcast'
+import type { LiveTransport } from '@/lib/livekit/token'
 import { useBroadcastQuality } from '@/hooks/use-broadcast-quality'
 import { useMediaDevices } from '@/hooks/use-media-devices'
 import { useChatAutoscroll } from '@/hooks/use-chat-autoscroll'
@@ -176,6 +179,11 @@ export default function CreatorLivePage() {
   const [chatError, setChatError] = useState<string | null>(null)
   const [sendingChat, setSendingChat] = useState(false)
   const [mutedUserIds, setMutedUserIds] = useState<Set<string>>(new Set())
+  // Video transport announced by start-broadcast: LiveKit SFU or P2P mesh
+  const [transport, setTransport] = useState<LiveTransport | null>(null)
+  const transportRef = useRef<LiveTransport | null>(null)
+  // LiveKit: viewers connected to the video (server webhooks), null when unknown
+  const [videoViewerCount, setVideoViewerCount] = useState<number | null>(null)
   // Donation goals and tip menu requests of the live being broadcast
   const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState)
   // Upcoming live whose donation goals editor is open
@@ -188,8 +196,16 @@ export default function CreatorLivePage() {
   const peersRef = useRef(new Map<string, ViewerPeer>())
   const chatErrorTimer = useRef<ReturnType<typeof setTimeout>>()
 
-  // Video quality: preset, capture devices, adaptive bitrate per viewer
-  const quality = useBroadcastQuality(peersRef, !!activeStream)
+  // Video quality: preset, capture devices, adaptive bitrate per viewer (P2P only)
+  const isLiveKit = transport === 'livekit'
+  const quality = useBroadcastQuality(peersRef, !!activeStream && !isLiveKit)
+  // LiveKit: one upload to the SFU (simulcast), whatever the number of viewers
+  const liveKit = useLiveKitBroadcast({
+    streamId: activeStream?.id ?? null,
+    enabled: !!activeStream && isLiveKit,
+    getMedia: () => localStreamRef.current,
+    presetId: quality.presetId,
+  })
   const mediaDevices = useMediaDevices()
   const [cameraId, setCameraId] = useState<string>()
   const [microphoneId, setMicrophoneId] = useState<string>()
@@ -298,6 +314,8 @@ export default function CreatorLivePage() {
       track.enabled = next
     })
     setCameraOn(next)
+    // LiveKit: the viewers are told the camera is off
+    if (isLiveKit) void liveKit.setTrackEnabled('video', next)
   }
 
   const toggleMic = () => {
@@ -306,6 +324,7 @@ export default function CreatorLivePage() {
       track.enabled = next
     })
     setMicOn(next)
+    if (isLiveKit) void liveKit.setTrackEnabled('audio', next)
   }
 
   const setLocalMedia = (media: MediaStream) => {
@@ -324,7 +343,10 @@ export default function CreatorLivePage() {
     if (!media) return
     setSwitchingMedia(true)
     try {
-      setLocalMedia(await switchPreset(media, QUALITY_PRESETS[presetId], viewerConnections(), cameraId))
+      const next = await switchPreset(media, QUALITY_PRESETS[presetId], viewerConnections(), cameraId)
+      setLocalMedia(next)
+      // LiveKit: same publication, new track (if any) and layer encodings
+      if (isLiveKit) await liveKit.applyMedia(next, presetId)
     } catch (error) {
       console.error('Preset switch error:', error)
       toast({ title: 'Changement de qualité impossible', description: mediaErrorMessage(error), variant: 'destructive' })
@@ -341,9 +363,9 @@ export default function CreatorLivePage() {
     if (!media) return
     setSwitchingMedia(true)
     try {
-      setLocalMedia(
-        await switchDevice(media, kind, deviceId, QUALITY_PRESETS[quality.presetId], viewerConnections()),
-      )
+      const next = await switchDevice(media, kind, deviceId, QUALITY_PRESETS[quality.presetId], viewerConnections())
+      setLocalMedia(next)
+      if (isLiveKit) await liveKit.applyMedia(next, quality.presetId)
     } catch (error) {
       console.error('Device switch error:', error)
       toast({
@@ -375,7 +397,8 @@ export default function CreatorLivePage() {
 
   const sendOfferTo = async (streamId: string, viewerId: string) => {
     const socket = socketRef.current
-    if (!socket || !localStreamRef.current) return
+    // LiveKit transport: viewers get the video from the SFU, never from a peer connection
+    if (!socket || !localStreamRef.current || transportRef.current === 'livekit') return
     // Fetched once per live session (STUN + TURN credentials)
     const iceServers = await getLiveIceServers()
     const media = localStreamRef.current
@@ -480,6 +503,9 @@ export default function CreatorLivePage() {
     setMutedUserIds(new Set())
     setViewerCount(0)
     setSocketReconnecting(false)
+    setVideoViewerCount(null)
+    transportRef.current = null
+    setTransport(null)
     dispatchTips({ type: 'reset' })
   }
 
@@ -515,6 +541,9 @@ export default function CreatorLivePage() {
           disconnectSocket()
           return
         }
+        const ackTransport: LiveTransport = ack.transport === 'livekit' ? 'livekit' : 'p2p'
+        transportRef.current = ackTransport
+        setTransport(ackTransport)
         setBroadcasting(true)
         setSocketReconnecting(false)
         setViewerCount(ack.viewerCount ?? 0)
@@ -590,6 +619,11 @@ export default function CreatorLivePage() {
     })
 
     socket.on('viewer-count', (count: number) => setViewerCount(count))
+
+    // LiveKit webhooks: viewers actually connected to the video
+    socket.on('video-viewer-count', (data: { count?: number }) => {
+      if (typeof data?.count === 'number') setVideoViewerCount(data.count)
+    })
 
     socket.on('chat-message', (message: LiveChatMessage) => {
       setChatMessages((prev) => [...prev.slice(-199), message])
@@ -1078,7 +1112,17 @@ export default function CreatorLivePage() {
                   <p className="text-sm text-muted-foreground break-words">{activeStream.description}</p>
                 )}
                 <div className="pt-2">
-                  <BroadcastHealthPanel health={quality.health} reconnecting={socketReconnecting} />
+                  {isLiveKit ? (
+                    <LiveKitHealthPanel
+                      health={liveKit.health}
+                      state={liveKit.state}
+                      viewerCount={viewerCount}
+                      videoViewerCount={videoViewerCount}
+                      reconnecting={socketReconnecting}
+                    />
+                  ) : (
+                    <BroadcastHealthPanel health={quality.health} reconnecting={socketReconnecting} />
+                  )}
                 </div>
                 <p className="text-xs text-muted-foreground pt-2">
                   « Quitter » coupe votre caméra mais laisse le live ouvert : vous pourrez le reprendre depuis cette

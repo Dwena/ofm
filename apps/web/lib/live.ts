@@ -100,6 +100,8 @@ export type LiveAck = {
   muted?: boolean
   /** start-broadcast: users muted in the chat */
   mutedUserIds?: string[]
+  /** join-live-stream / start-broadcast: video transport (LiveKit SFU or P2P mesh) */
+  transport?: 'livekit' | 'p2p'
 }
 
 /** Chat errors returned in the acknowledgement of `send-chat-message` */

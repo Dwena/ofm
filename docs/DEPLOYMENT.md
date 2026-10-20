@@ -257,6 +257,73 @@ The web app fetches them once per live session and falls back to
 `NEXT_PUBLIC_ICE_SERVERS` (or Google STUN) when the call fails. Without
 `TURN_URLS`/`TURN_SECRET` only STUN is returned, which is fine for development.
 
+### Live streaming: LiveKit SFU
+
+Peer-to-peer lives make the creator's browser upload one copy of the video per
+viewer: with 720p at ~2.5 Mbit/s, 10 viewers already need ~25 Mbit/s of upload.
+Beyond ~10-20 viewers, run a [LiveKit](https://livekit.io) SFU: the creator
+uploads **once** (three simulcast layers: 180p, 360p and the preset's
+resolution) and LiveKit forwards to each viewer the layer that fits its player
+and bandwidth. The socket.io namespace `/streaming` keeps carrying chat,
+reactions, viewer counts, tips, tip menu, donation goals and moderation.
+
+The transport is chosen by the API: with `LIVEKIT_URL`, `LIVEKIT_API_KEY` and
+`LIVEKIT_API_SECRET` set, `GET /streaming/:id` and the `join-live-stream` /
+`start-broadcast` acknowledgements announce `transport: 'livekit'` and the
+browsers get their access token from `POST /streaming/:id/livekit-token`
+(publisher token for the creator, hidden subscribe-only token for viewers that
+pass the same access rules as the chat: subscription, PPV purchase...). Without
+them, `transport: 'p2p'` and the peer-to-peer mesh is used, unchanged.
+
+1. **Server.** A VM with a public IP (2 vCPU / 4 GB handles a few hundred
+   viewers per live; LiveKit is mostly bandwidth-bound: plan ~1-2.5 Mbit/s of
+   egress per viewer). `docker-compose.prod.yml` has a `livekit` service
+   (profile `livekit`, host networking) using
+   `infrastructure/livekit/livekit.prod.yaml`:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml --profile livekit up -d livekit
+   ```
+
+2. **Keys.** Generate a key pair (`docker run --rm livekit/livekit-server:v1.8.4 generate-keys`)
+   and set the same values on both sides: `LIVEKIT_KEYS="<key>: <secret>"` for
+   LiveKit, `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` for the API. The secret
+   must be 32+ characters and never reaches the browsers.
+
+3. **Domain and TLS (wss).** Browsers on an HTTPS site can only open `wss://`:
+   give LiveKit its own name (`livekit.yourdomain.com`) and let nginx terminate
+   TLS and proxy to `127.0.0.1:7880` with the WebSocket upgrade headers
+   (`proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade;
+   proxy_set_header Connection "upgrade"; proxy_read_timeout 1h;`). Then
+   `LIVEKIT_URL=wss://livekit.yourdomain.com` on the API. When the API runs on
+   the same private network, `LIVEKIT_API_URL=http://<private ip>:7880` avoids
+   the round trip through nginx for the room service calls.
+
+4. **Firewall.** Open TCP 443 (nginx), **UDP 7882** (media, single multiplexed
+   port; or a range with `rtc.port_range_start/end`) and **TCP 7881** (media
+   over TCP). `rtc.use_external_ip: true` makes LiveKit advertise its public IP
+   in the ICE candidates (or set `rtc.node_ip`).
+
+5. **TURN for restrictive networks.** Some corporate / hotel networks only let
+   TLS on 443 out. LiveKit has a built-in TURN server (`turn:` section): with
+   TURN/TLS on 443 (`turn.tls_port: 443`, a dedicated domain such as
+   `turn.yourdomain.com` and its certificate, on an IP where 443 is free, or
+   behind a TCP load balancer with `external_tls: true`) nearly every viewer
+   can connect. The example uses 5349 + UDP 3478; open them as well.
+
+6. **Webhooks (optional).** `webhook.urls: [https://api.yourdomain.com/api/v1/webhooks/livekit]`
+   with `webhook.api_key` = `LIVEKIT_API_KEY`. The API verifies the signature
+   (JWT signed with the secret, sha256 of the raw body) and keeps the number
+   of viewers connected to the video, shown in the creator's "Santé du live"
+   (the viewer count of the live itself still comes from the sockets).
+
+When a live ends (`POST /streaming/:id/end`) the API deletes the room
+`live-<streamId>`, which disconnects every participant. Rooms of lives left
+without being ended close after `room.empty_timeout` (5 min).
+
+Scaling beyond one LiveKit node needs Redis (`redis:` section) for multi-node
+routing; a single node is enough for a few hundred viewers per live.
+
 ## Monitoring
 
 ### CloudWatch Dashboards

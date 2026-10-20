@@ -70,6 +70,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # LiveKit SFU: video of the lives (the creator uploads once, LiveKit forwards
+  # to every viewer with simulcast). Config: infrastructure/livekit/livekit.dev.yaml
+  # (dev keys, node_ip 127.0.0.1 so that the browsers of the host can reach the
+  # media ports). Single UDP port: big UDP ranges are slow on Docker Desktop.
+  livekit:
+    image: livekit/livekit-server:v1.8.4
+    container_name: ofm-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    ports:
+      - "7880:7880"          # signaling (ws://localhost:7880) + room service API
+      - "7881:7881/tcp"      # WebRTC over TCP (fallback when UDP is blocked)
+      - "7882:7882/udp"      # WebRTC over UDP (single multiplexed port)
+    environment:
+      # Advertised address of the media ports (LAN IP to test from a phone)
+      NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
+    volumes:
+      - ./infrastructure/livekit/livekit.dev.yaml:/etc/livekit.yaml:ro
+    extra_hosts:
+      # Webhooks to the API running on the host (built in on Docker Desktop, needed on Linux)
+      - "host.docker.internal:host-gateway"
+
 volumes:
   postgres_data:
     driver: local

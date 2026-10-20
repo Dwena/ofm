@@ -95,6 +95,12 @@ services:
       TURN_URLS: ${TURN_URLS:-}
       TURN_SECRET: ${TURN_SECRET:-}
       STUN_URLS: ${STUN_URLS:-}
+      # LiveKit SFU for the live video (empty = peer-to-peer mesh), see
+      # docs/DEPLOYMENT.md "Live streaming: LiveKit SFU"
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_API_URL: ${LIVEKIT_API_URL:-}
     ports:
       - "3001:3001"
     volumes:
@@ -196,6 +202,25 @@ services:
   #     - --no-cli
   #   volumes:
   #     - ./nginx/ssl:/etc/ssl/turn:ro
+
+  # LiveKit SFU for the live video (see docs/DEPLOYMENT.md "Live streaming:
+  # LiveKit SFU"). Started only with the profile: `docker compose --profile livekit up -d`.
+  # Host networking: the media ports (UDP 7882, TCP 7881, TURN/TLS 443 or 5349)
+  # must be reachable on the public IP. TLS for wss://livekit.yourdomain.com is
+  # terminated by nginx (proxy to 127.0.0.1:7880, WebSocket upgrade).
+  livekit:
+    image: livekit/livekit-server:v1.8.4
+    container_name: ofm-livekit-prod
+    restart: always
+    profiles: ["livekit"]
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    environment:
+      # "<key>: <secret>" (secret of 32+ random characters), same values as the api's LIVEKIT_API_KEY / LIVEKIT_API_SECRET
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./infrastructure/livekit/livekit.prod.yaml:/etc/livekit.yaml:ro
+      - ./nginx/ssl:/etc/ssl/livekit:ro
 
 volumes:
   postgres_data:

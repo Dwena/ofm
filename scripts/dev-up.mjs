@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 //
 // Lance toute la plateforme en local, prête à tester (Windows, macOS, Linux) :
-//   PostgreSQL, Redis, MinIO, MailDev (docker-compose.dev.yml)
+//   PostgreSQL, Redis, MinIO, MailDev, LiveKit (docker-compose.dev.yml)
 //   + fichiers .env, migrations, données de démo, API (:3001) et front (:3000)
 //
 //   npm run dev:up                 tout lancer (la base est vidée puis reseedée)
 //   npm run dev:up -- --keep-db    garder les données existantes (pas de reseed)
 //
 // Variables utiles :
-//   SKIP_DOCKER=1   utiliser des services déjà lancés (fournir DATABASE_URL, REDIS_*)
+//   SKIP_DOCKER=1   utiliser des services déjà lancés (fournir DATABASE_URL, REDIS_*) ;
+//                   lives en pair-à-pair sauf si LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET sont fournis
 //   STRIPE_SECRET_KEY / NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY   clés Stripe de test
 //   SEED_STRIPE_ACCOUNT_ID   compte Connect de test attribué à la créatrice Alice
 //
 // Comptes de démo : docs/SEED_ACCOUNTS.md (mot de passe SecurePass123!)
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -134,6 +135,20 @@ const SKIP_DOCKER = process.env.SKIP_DOCKER === '1';
 const S3_ACCESS_KEY = (SKIP_DOCKER && process.env.AWS_ACCESS_KEY_ID) || 'minioadmin';
 const S3_SECRET_KEY = (SKIP_DOCKER && process.env.AWS_SECRET_ACCESS_KEY) || 'minioadmin_dev_only';
 const S3_BUCKET = process.env.AWS_S3_BUCKET || 'ofm-content-dev';
+// LiveKit (lives) : keys of infrastructure/livekit/livekit.dev.yaml. Without
+// Docker, only what the shell provides (nothing: peer-to-peer lives).
+const LIVEKIT_DEV = {
+  LIVEKIT_URL: 'ws://localhost:7880',
+  LIVEKIT_API_KEY: 'devkey',
+  LIVEKIT_API_SECRET: 'fanvip_dev_livekit_secret_change_me_0123456789abcdef',
+};
+const LIVEKIT_ENV = SKIP_DOCKER
+  ? Object.fromEntries(
+      Object.keys(LIVEKIT_DEV)
+        .filter((key) => process.env[key])
+        .map((key) => [key, process.env[key]]),
+    )
+  : LIVEKIT_DEV;
 const API_URL = 'http://localhost:3001';
 const WEB_URL = 'http://localhost:3000';
 
@@ -144,9 +159,15 @@ if (nodeMajor < 20) fail(`Node.js 20+ requis (version actuelle : ${process.versi
 console.log(`Node ${process.version}`);
 
 // ---------- Dependencies ----------
-if (!existsSync(join(ROOT, 'node_modules', '.bin'))) {
+// Reinstall when package-lock.json changed since the last install (after a git pull
+// that adds dependencies), not only when node_modules is missing
+const LOCK_HASH_PATH = join(ROOT, 'node_modules', '.ofm-lock-hash');
+const lockHash = createHash('sha1').update(readFileSync(join(ROOT, 'package-lock.json'))).digest('hex');
+const installedHash = existsSync(LOCK_HASH_PATH) ? readFileSync(LOCK_HASH_PATH, 'utf8').trim() : null;
+if (!existsSync(join(ROOT, 'node_modules', '.bin')) || installedHash !== lockHash) {
   step('Installation des dépendances (npm install)');
   runOrFail('npm install', {}, 'npm install a échoué');
+  writeFileSync(LOCK_HASH_PATH, lockHash);
 }
 
 if (!SKIP_DOCKER) {
@@ -157,7 +178,7 @@ if (!SKIP_DOCKER) {
   const compose = run('docker compose version', { quiet: true }) ? 'docker compose' : 'docker-compose';
 
   // ---------- Services ----------
-  step('Démarrage de PostgreSQL, Redis, MinIO et MailDev');
+  step('Démarrage de PostgreSQL, Redis, MinIO, MailDev et LiveKit');
   // Reuse the port chosen on a previous run (5433 when 5432 is taken by another Postgres)
   let pgPort = process.env.POSTGRES_PORT || dockerPortFromEnvFile() || '5432';
   const composeUp = () =>
@@ -261,10 +282,17 @@ VAPID_PRIVATE_KEY=${vapid.privateKey}
 VAPID_SUBJECT=mailto:admin@ofm.local
 
 STREAM_BASE_URL=${API_URL}
+
+# Lives : serveur vidéo LiveKit (conteneur ofm-livekit). Vides = pair-à-pair.
+LIVEKIT_URL=${LIVEKIT_ENV.LIVEKIT_URL ?? ''}
+LIVEKIT_API_KEY=${LIVEKIT_ENV.LIVEKIT_API_KEY ?? ''}
+LIVEKIT_API_SECRET=${LIVEKIT_ENV.LIVEKIT_API_SECRET ?? ''}
 `,
   );
 } else if (SKIP_DOCKER) {
   console.log('apps/api/.env existe déjà : conservé');
+  // LiveKit only when the shell provides it (otherwise the lives stay peer-to-peer)
+  if (Object.keys(LIVEKIT_ENV).length > 0) updateEnvFile(apiEnvPath, LIVEKIT_ENV);
 } else {
   console.log('apps/api/.env existe déjà : conservé (connexions alignées sur les services Docker)');
   updateEnvFile(apiEnvPath, {
@@ -277,6 +305,7 @@ STREAM_BASE_URL=${API_URL}
     AWS_S3_BUCKET: S3_BUCKET,
     AWS_ACCESS_KEY_ID: S3_ACCESS_KEY,
     AWS_SECRET_ACCESS_KEY: S3_SECRET_KEY,
+    ...LIVEKIT_ENV,
   });
 }
 
@@ -346,6 +375,7 @@ console.log(`
   Front      ${WEB_URL}
   API        ${API_URL}/api/v1   (docs Swagger : ${API_URL}/api/docs)
   E-mails    http://localhost:1080   (MailDev)
+  Lives      ${LIVEKIT_ENV.LIVEKIT_URL ? `${LIVEKIT_ENV.LIVEKIT_URL}   (LiveKit)` : 'pair-à-pair (LiveKit non configuré)'}
   Stockage   http://localhost:9001   (MinIO : minioadmin / minioadmin_dev_only)
 
   Comptes : docs/SEED_ACCOUNTS.md — mot de passe SecurePass123!

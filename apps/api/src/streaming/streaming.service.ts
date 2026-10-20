@@ -13,6 +13,7 @@ import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { nanoid } from 'nanoid';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
 import { LiveTipsService, toTipGoalView } from './live-tips.service';
+import { LiveKitRole, LiveKitService, LiveKitTokenResponse, LiveTransport } from './livekit.service';
 
 export type StreamAccessDeniedReason =
   | 'PRIVATE'
@@ -88,7 +89,16 @@ export class StreamingService {
     private configService: ConfigService,
     private oneTimePayments: OneTimePaymentService,
     @Optional() private liveTips?: LiveTipsService,
+    @Optional() private liveKit?: LiveKitService,
   ) {}
+
+  /**
+   * Video transport of the lives: the LiveKit SFU when it is configured
+   * (LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET), else the P2P mesh
+   */
+  get liveTransport(): LiveTransport {
+    return this.liveKit?.transport ?? 'p2p';
+  }
 
   /**
    * Create a new live stream
@@ -308,6 +318,8 @@ export class StreamingService {
     });
 
     await this.closeViewerSessions(streamId);
+    // Every video connection of the live ends with its LiveKit room
+    await this.closeLiveKitRoom(streamId);
 
     return withoutStreamKey(ended);
   }
@@ -550,12 +562,70 @@ export class StreamingService {
       streamKey: access.isCreator ? streamKey : undefined,
       hasAccess: access.allowed,
       accessDeniedReason: access.reason ?? null,
+      transport: this.liveTransport,
       // Euros
       tips: {
         allowed: creatorProfile?.allowTips ?? true,
         minimum: Number(creatorProfile?.minimumTip ?? 1),
       },
     };
+  }
+
+  /**
+   * LiveKit access token for a live (LiveKit transport only). The creator
+   * gets a publisher token (camera + microphone), unless it asks to watch its
+   * own live (`role: 'viewer'`); anyone else must pass the same access rules
+   * as `join-live-stream` (subscription, PPV purchase...). Errors carry the
+   * reason codes the web already maps: NOT_FOUND, NOT_LIVE, PRIVATE,
+   * SUBSCRIPTION_REQUIRED, PREMIUM_SUBSCRIPTION_REQUIRED, PPV_PURCHASE_REQUIRED,
+   * plus LIVEKIT_DISABLED (P2P mode) and ACCOUNT_SUSPENDED.
+   */
+  async getLiveKitToken(
+    userId: string,
+    streamId: string,
+    requestedRole?: LiveKitRole,
+  ): Promise<LiveKitTokenResponse> {
+    if (!this.liveKit?.enabled) {
+      throw new BadRequestException('LIVEKIT_DISABLED');
+    }
+
+    const stream = await this.getStreamForRealtime(streamId);
+    if (!stream) {
+      throw new NotFoundException('NOT_FOUND');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { username: true, displayName: true, status: true },
+    });
+    if (!user || user.status === 'BANNED' || user.status === 'SUSPENDED') {
+      throw new ForbiddenException('ACCOUNT_SUSPENDED');
+    }
+
+    if (stream.status !== 'LIVE') {
+      throw new BadRequestException('NOT_LIVE');
+    }
+
+    const access = await this.checkViewAccess(userId, stream);
+    if (!access.allowed) {
+      throw new ForbiddenException(access.reason ?? 'PRIVATE');
+    }
+
+    const role: LiveKitRole = access.isCreator && requestedRole !== 'viewer' ? 'publisher' : 'viewer';
+    return this.liveKit.createToken({
+      streamId,
+      userId,
+      name: user.displayName || user.username,
+      role,
+    });
+  }
+
+  /**
+   * Close the live's LiveKit room (every video connection ends). No-op in P2P mode.
+   */
+  async closeLiveKitRoom(streamId: string) {
+    if (!this.liveKit?.enabled) return;
+    await this.liveKit.deleteRoom(streamId);
   }
 
   /**

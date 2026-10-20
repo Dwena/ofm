@@ -1,0 +1,52 @@
+# LiveKit SFU - développement local (service `livekit` de docker-compose.dev.yml)
+#
+# Les navigateurs de la machine hôte se connectent à :
+#   ws://localhost:7880      signalisation (LIVEKIT_URL de apps/api/.env)
+#   127.0.0.1:7882/udp       média WebRTC (un seul port UDP multiplexé)
+#   127.0.0.1:7881/tcp       média WebRTC en TCP (repli si l'UDP est bloqué)
+#
+# node_ip: 127.0.0.1 est indispensable avec Docker Desktop (Windows / macOS) :
+# sans lui, LiveKit annonce dans ses candidats ICE l'adresse interne du
+# conteneur (172.x.x.x), injoignable depuis le navigateur de l'hôte. Avec lui,
+# les candidats annoncés sont 127.0.0.1:7882 (UDP) et 127.0.0.1:7881 (TCP),
+# atteints via les ports publiés par Docker. Pour tester depuis un téléphone
+# du réseau local : LIVEKIT_NODE_IP=192.168.1.20 (IP LAN du PC) avant
+# `docker compose -f docker-compose.dev.yml up -d livekit` (variable NODE_IP du
+# conteneur, prioritaire sur node_ip) et LIVEKIT_URL=ws://192.168.1.20:7880
+# dans apps/api/.env (un spectateur n'a pas besoin de HTTPS ; diffuser depuis
+# le téléphone, si : la caméra n'est accessible qu'en contexte sécurisé).
+#
+# Clés de DÉVELOPPEMENT uniquement (jamais en production) : les mêmes valeurs
+# sont écrites dans apps/api/.env par `npm run dev:up`.
+
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+
+rtc:
+  tcp_port: 7881
+  # Un seul port UDP pour tout le média (pas de plage : Docker Desktop publie
+  # très lentement les grandes plages UDP)
+  udp_port: 7882
+  use_external_ip: false
+  node_ip: 127.0.0.1
+  # 127.0.0.1 est une adresse de bouclage : à autoriser explicitement
+  enable_loopback_candidate: true
+
+keys:
+  devkey: fanvip_dev_livekit_secret_change_me_0123456789abcdef
+
+room:
+  auto_create: true
+  # Une salle vide (live quitté sans être terminé) est fermée après 5 min
+  empty_timeout: 300
+  departure_timeout: 20
+
+# Spectateurs connectés à la vidéo, vus par l'API (POST /api/v1/webhooks/livekit)
+webhook:
+  api_key: devkey
+  urls:
+    - http://host.docker.internal:3001/api/v1/webhooks/livekit
+
+logging:
+  level: info

@@ -155,6 +155,40 @@ Détails et exemple de configuration coturn : `docs/DEPLOYMENT.md`
 (« Live streaming: TURN server ») et le service `coturn` commenté de
 `docker-compose.prod.yml`.
 
+### Lives : serveur vidéo LiveKit (SFU)
+
+Avec `npm run dev:up`, le conteneur `ofm-livekit` (LiveKit v1.8.4) est lancé
+avec les autres services et `apps/api/.env` reçoit :
+
+```
+LIVEKIT_URL=ws://localhost:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=fanvip_dev_livekit_secret_change_me_0123456789abcdef
+```
+
+Les lives passent alors par LiveKit : la créatrice envoie sa vidéo une seule
+fois (3 couches simulcast : 180p, 360p et la qualité choisie) et chaque
+spectateur reçoit la couche adaptée à son lecteur et à sa connexion (menu
+« Qualité » : Auto / Haute / Moyenne / Basse / Économie de données). Le chat,
+les réactions, les pourboires et les objectifs de dons restent sur socket.io.
+
+- Ports publiés : 7880 (signalisation), 7881/tcp et **7882/udp** (média, un seul
+  port UDP : les grandes plages UDP sont très lentes sur Docker Desktop).
+- `infrastructure/livekit/livekit.dev.yaml` fixe `node_ip: 127.0.0.1` : LiveKit
+  annonce 127.0.0.1 dans ses candidats ICE, joignable depuis le navigateur de
+  Windows / macOS via les ports publiés (l'IP interne du conteneur ne l'est pas).
+- Tester depuis un téléphone du réseau local :
+  `LIVEKIT_NODE_IP=<IP du PC> docker compose -f docker-compose.dev.yml up -d livekit`
+  et `LIVEKIT_URL=ws://<IP du PC>:7880` dans `apps/api/.env`.
+- Vérifier : `docker logs ofm-livekit` (ligne `starting LiveKit server ... nodeIP 127.0.0.1`)
+  et, sur la page du live, le panneau « Santé du live » indique « Serveur vidéo ».
+- Sans Docker (`SKIP_DOCKER=1`) ou en vidant les 3 variables, les lives
+  reviennent en pair-à-pair (la créatrice envoie une copie par spectateur,
+  adapté à ~10-20 spectateurs).
+
+Production (TLS / wss, ports, TURN intégré, clés, webhook) : `docs/DEPLOYMENT.md`,
+« Live streaming: LiveKit SFU ».
+
 ---
 
 ## 🧪 Tests
