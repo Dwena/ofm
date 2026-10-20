@@ -1,4 +1,9 @@
-import { StreamingGateway, AuthenticatedStreamSocket, streamRoom } from './streaming.gateway';
+import {
+  StreamingGateway,
+  AuthenticatedStreamSocket,
+  streamRoom,
+  VIEWER_STATS_INTERVAL_MS,
+} from './streaming.gateway';
 
 type Emitted = { target: string; event: string; payload: any };
 
@@ -73,6 +78,69 @@ describe('StreamingGateway', () => {
     mockStreamingService.registerViewer.mockResolvedValue({ firstView: true });
     mockStreamingService.markViewerLeft.mockResolvedValue(true);
     mockStreamingService.updateViewerStats.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    gateway.onModuleDestroy();
+  });
+
+  describe('viewer stats throttling', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-10-20T10:00:00Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('emits every count right away but writes the stats at most every interval, keeping the peak', async () => {
+      await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v2', 'user-2'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v3', 'user-3'), { streamId: 'stream-1' });
+      await gateway.handleLeaveStream(createSocket('v3', 'user-3'), { streamId: 'stream-1' });
+
+      expect(eventsTo(streamRoom('stream-1'), 'viewer-count')).toEqual([1, 2, 3, 2]);
+      // Leading write only
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(1);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 1, 1);
+
+      jest.advanceTimersByTime(VIEWER_STATS_INTERVAL_MS);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+      // Current count 2, peak 3 reached between the writes
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 2, 3);
+    });
+
+    it('flushes the pending stats when the broadcaster leaves', async () => {
+      const broadcaster = createSocket('b1', 'creator-1');
+      await gateway.handleStartBroadcast(broadcaster, { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v2', 'user-2'), { streamId: 'stream-1' });
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(1);
+
+      await gateway.handleDisconnect(broadcaster);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 2, 2);
+
+      // Nothing left to write afterwards
+      jest.advanceTimersByTime(VIEWER_STATS_INTERVAL_MS * 2);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+    });
+
+    it('flushes on demand before a stream ends', async () => {
+      await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v2', 'user-2'), { streamId: 'stream-1' });
+      await gateway.flushViewerStats('stream-1');
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 2, 2);
+      await gateway.flushViewerStats('stream-1');
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not fail the join when the stats write fails', async () => {
+      mockStreamingService.updateViewerStats.mockRejectedValue(new Error('db down'));
+      const result = await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      expect(result).toMatchObject({ success: true, viewerCount: 1 });
+    });
   });
 
   describe('handleConnection', () => {
@@ -183,7 +251,7 @@ describe('StreamingGateway', () => {
       expect(socket.join).toHaveBeenCalledWith(streamRoom('stream-1'));
       expect(mockStreamingService.registerViewer).toHaveBeenCalledWith('stream-1', 'user-1');
       expect(eventsTo(streamRoom('stream-1'), 'viewer-count')).toEqual([1]);
-      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledWith('stream-1', 1);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledWith('stream-1', 1, 1);
     });
 
     it('counts a user with several tabs once', async () => {
@@ -235,6 +303,56 @@ describe('StreamingGateway', () => {
     it('forwards offer requests to the broadcaster', () => {
       expect(gateway.handleRequestOffer(viewer, { streamId: 'stream-1' })).toEqual({ success: true });
       expect(eventsTo('b1', 'viewer-joined')).toEqual([{ streamId: 'stream-1', viewerId: 'v1', userId: 'user-1' }]);
+    });
+
+    it('relays ICE restart requests', () => {
+      gateway.handleRequestOffer(viewer, { streamId: 'stream-1', iceRestart: true });
+      gateway.handleRequestOffer(viewer, { streamId: 'stream-1', iceRestart: 'yes' as any });
+      expect(eventsTo('b1', 'viewer-joined')).toEqual([
+        { streamId: 'stream-1', viewerId: 'v1', userId: 'user-1', iceRestart: true },
+        { streamId: 'stream-1', viewerId: 'v1', userId: 'user-1' },
+      ]);
+    });
+
+    describe('set-viewer-quality', () => {
+      it('relays the data saver choice to the broadcaster', () => {
+        expect(gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'low' })).toEqual({
+          success: true,
+          mode: 'low',
+        });
+        gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'auto' });
+        expect(eventsTo('b1', 'viewer-quality')).toEqual([
+          { streamId: 'stream-1', viewerId: 'v1', mode: 'low' },
+          { streamId: 'stream-1', viewerId: 'v1', mode: 'auto' },
+        ]);
+      });
+
+      it('rejects unknown modes', () => {
+        const result = gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'ultra' as any });
+        expect(result).toEqual({ error: 'Invalid quality mode' });
+        expect(emitted).toHaveLength(0);
+      });
+
+      it('rejects sockets that are not watching the stream', () => {
+        const outsider = createSocket('x1', 'user-2');
+        expect(gateway.handleSetViewerQuality(outsider, { streamId: 'stream-1', mode: 'low' })).toHaveProperty('error');
+        // The broadcaster is not a viewer of its own stream
+        expect(gateway.handleSetViewerQuality(broadcaster, { streamId: 'stream-1', mode: 'low' })).toHaveProperty(
+          'error',
+        );
+        expect(gateway.handleSetViewerQuality(viewer, { streamId: 'other', mode: 'low' })).toHaveProperty('error');
+        expect(gateway.handleSetViewerQuality(viewer, undefined as any)).toHaveProperty('error');
+        expect(emitted).toHaveLength(0);
+      });
+
+      it('reports when the broadcaster is offline', async () => {
+        await gateway.handleDisconnect(broadcaster);
+        emitted = [];
+        expect(gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'low' })).toMatchObject({
+          reason: 'BROADCASTER_OFFLINE',
+        });
+        expect(emitted).toHaveLength(0);
+      });
     });
 
     it('reports when the broadcaster is offline', async () => {
@@ -432,6 +550,44 @@ describe('StreamingGateway', () => {
       });
     });
 
+    it('rate limits chat messages per user, across tabs', async () => {
+      mockStreamingService.createChatMessage.mockResolvedValue({
+        id: 'msg-1',
+        senderId: 'user-1',
+        message: 'a',
+        createdAt: new Date(),
+      });
+      const secondTab = createSocket('v2', 'user-1');
+      await gateway.handleJoinStream(secondTab, { streamId: 'stream-1' });
+      await gateway.handleChatMessage(viewer, { streamId: 'stream-1', message: 'a' });
+      const fromOtherTab = await gateway.handleChatMessage(secondTab, { streamId: 'stream-1', message: 'b' });
+      expect(fromOtherTab).toMatchObject({ reason: 'RATE_LIMITED' });
+
+      // Reconnecting (new socket id) does not reset the limit either
+      await gateway.handleDisconnect(viewer);
+      const reconnected = createSocket('v3', 'user-1');
+      await gateway.handleJoinStream(reconnected, { streamId: 'stream-1' });
+      expect(await gateway.handleChatMessage(reconnected, { streamId: 'stream-1', message: 'c' })).toMatchObject({
+        reason: 'RATE_LIMITED',
+      });
+
+      // Other users are not affected
+      const other = createSocket('v4', 'user-2');
+      await gateway.handleJoinStream(other, { streamId: 'stream-1' });
+      expect(await gateway.handleChatMessage(other, { streamId: 'stream-1', message: 'd' })).toMatchObject({
+        success: true,
+      });
+    });
+
+    it('rate limits reactions per user, across tabs', async () => {
+      const secondTab = createSocket('v2', 'user-1');
+      await gateway.handleJoinStream(secondTab, { streamId: 'stream-1' });
+      expect(gateway.handleReaction(viewer, { streamId: 'stream-1', emoji: '🔥' })).toEqual({ success: true });
+      expect(gateway.handleReaction(secondTab, { streamId: 'stream-1', emoji: '🔥' })).toMatchObject({
+        reason: 'RATE_LIMITED',
+      });
+    });
+
     it('rejects chat from sockets that did not join', async () => {
       const result = await gateway.handleChatMessage(createSocket('x1', 'user-2'), {
         streamId: 'stream-1',
@@ -507,6 +663,205 @@ describe('StreamingGateway', () => {
       tipCompleted$.next(tip);
 
       expect(eventsTo(streamRoom('stream-1'), 'chat-message')).toHaveLength(1);
+    });
+  });
+
+  describe('live tips (menu, goal, requests)', () => {
+    const fan = { id: 'user-1', username: 'fan', displayName: 'Sophie', avatar: null };
+    const tip = {
+      transactionId: 'tx-1',
+      streamId: 'stream-1',
+      creatorId: 'creator-1',
+      fromUser: fan,
+      amount: 20,
+      message: null,
+      menuItemId: 'item-1',
+      menuItemLabel: 'Chanter une chanson',
+      completedAt: new Date('2026-10-20T12:00:00Z'),
+    };
+    const action = {
+      id: 'action-1',
+      streamId: 'stream-1',
+      menuItemId: 'item-1',
+      label: 'Chanter une chanson',
+      amount: 20,
+      status: 'PENDING',
+      createdAt: '2026-10-20T12:00:00.000Z',
+      completedAt: null,
+      fromUser: fan,
+    };
+    const storedTipLine = {
+      id: 'msg-1',
+      senderId: 'user-1',
+      message: 'a envoyé un pourboire de 20.00€',
+      type: 'TIP',
+      tipAmount: 20,
+      transactionId: 'tx-1',
+      createdAt: new Date('2026-10-20T12:00:00Z'),
+      sender: fan,
+    };
+
+    const mockLiveTips = {
+      recordTip: jest.fn(),
+      updateTipAction: jest.fn(),
+      getLiveTipState: jest.fn(),
+      getActionLabels: jest.fn(),
+    };
+
+    let tipsGateway: StreamingGateway;
+
+    beforeEach(() => {
+      tipsGateway = new StreamingGateway(
+        mockPrismaService as any,
+        mockJwtService as any,
+        mockStreamingService as any,
+        undefined,
+        mockLiveTips as any,
+      );
+      tipsGateway.server = gateway.server;
+      mockLiveTips.getLiveTipState.mockResolvedValue({
+        tipGoal: { amount: 300, label: 'Nouvelle caméra', total: 45 },
+        tipMenu: [{ id: 'item-1', label: 'Chanter une chanson', amount: 20 }],
+        pendingTipActions: [action],
+      });
+      mockLiveTips.getActionLabels.mockResolvedValue(new Map([['tx-1', 'Chanter une chanson']]));
+    });
+
+    it('records the tip, then announces it with its request and the goal progress', async () => {
+      mockLiveTips.recordTip.mockResolvedValue({
+        creatorId: 'creator-1',
+        message: storedTipLine,
+        action,
+        goal: { amount: 300, label: 'Nouvelle caméra', total: 65, reached: false },
+        goalReachedNow: false,
+        systemMessage: null,
+      });
+
+      await tipsGateway.notifyTip(tip);
+
+      const room = streamRoom('stream-1');
+      expect(eventsTo(room, 'chat-message')).toEqual([
+        expect.objectContaining({
+          id: 'msg-1',
+          type: 'TIP',
+          tipAmount: 20,
+          menuItemLabel: 'Chanter une chanson',
+          isCreator: false,
+        }),
+      ]);
+      expect(eventsTo(room, 'tip')).toEqual([expect.objectContaining({ transactionId: 'tx-1', menuItemLabel: 'Chanter une chanson' })]);
+      expect(eventsTo(room, 'tip-goal-progress')).toEqual([
+        { streamId: 'stream-1', amount: 300, label: 'Nouvelle caméra', total: 65, reached: false },
+      ]);
+      expect(eventsTo(room, 'tip-action-created')).toEqual([{ action }]);
+    });
+
+    it('announces the goal in the chat the time it is reached', async () => {
+      mockLiveTips.recordTip.mockResolvedValue({
+        creatorId: 'creator-1',
+        message: storedTipLine,
+        action: null,
+        goal: { amount: 300, label: 'Nouvelle caméra', total: 300, reached: true },
+        goalReachedNow: true,
+        systemMessage: {
+          id: 'msg-2',
+          senderId: 'creator-1',
+          message: 'Objectif atteint : Nouvelle caméra 🎉',
+          type: 'SYSTEM',
+          tipAmount: null,
+          createdAt: new Date(),
+          sender: { username: 'alice' },
+        },
+      });
+
+      await tipsGateway.notifyTip({ ...tip, menuItemId: null, menuItemLabel: null });
+
+      const room = streamRoom('stream-1');
+      expect(eventsTo(room, 'chat-message')).toEqual([
+        expect.objectContaining({ type: 'TIP', menuItemLabel: null }),
+        expect.objectContaining({ type: 'SYSTEM', message: 'Objectif atteint : Nouvelle caméra 🎉', isCreator: false }),
+      ]);
+      expect(eventsTo(room, 'tip-goal-progress')).toEqual([expect.objectContaining({ reached: true })]);
+      expect(eventsTo(room, 'tip-action-created')).toEqual([]);
+    });
+
+    it('does not announce a tip twice (already recorded)', async () => {
+      mockLiveTips.recordTip.mockResolvedValue(null);
+      await tipsGateway.notifyTip(tip);
+      expect(emitted).toEqual([]);
+    });
+
+    it('still announces the tip when it could not be recorded', async () => {
+      mockLiveTips.recordTip.mockRejectedValue(new Error('db down'));
+      await tipsGateway.notifyTip(tip);
+      expect(eventsTo(streamRoom('stream-1'), 'chat-message')).toEqual([
+        expect.objectContaining({ id: 'tip-tx-1', type: 'TIP', menuItemLabel: 'Chanter une chanson' }),
+      ]);
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-progress')).toEqual([]);
+    });
+
+    it('sends the tip state and the tip lines with their request when joining', async () => {
+      mockStreamingService.getRecentChatMessages.mockResolvedValue([storedTipLine]);
+      const socket = createSocket('viewer-socket', 'user-1');
+
+      const ack: any = await tipsGateway.handleJoinStream(socket, { streamId: 'stream-1' });
+
+      expect(ack.success).toBe(true);
+      expect(ack.tipGoal).toEqual({ amount: 300, label: 'Nouvelle caméra', total: 45 });
+      expect(ack.tipMenu).toHaveLength(1);
+      expect(ack.pendingTipActions).toEqual([action]);
+      expect(ack.messages).toEqual([
+        expect.objectContaining({ id: 'msg-1', type: 'TIP', tipAmount: 20, menuItemLabel: 'Chanter une chanson' }),
+      ]);
+    });
+
+    it('lets the creator mark a request done and broadcasts it', async () => {
+      const done = { ...action, status: 'DONE', completedAt: '2026-10-20T12:05:00.000Z' };
+      mockLiveTips.updateTipAction.mockResolvedValue(done);
+      const socket = createSocket('creator-socket', 'creator-1');
+
+      const ack = await tipsGateway.handleUpdateTipAction(socket, {
+        streamId: 'stream-1',
+        actionId: 'action-1',
+        status: 'DONE',
+      });
+
+      expect(ack).toEqual({ success: true, action: done });
+      expect(mockLiveTips.updateTipAction).toHaveBeenCalledWith('creator-1', 'stream-1', 'action-1', 'DONE');
+      expect(eventsTo(streamRoom('stream-1'), 'tip-action-updated')).toEqual([{ action: done }]);
+    });
+
+    it('refuses request updates from anyone but the creator', async () => {
+      const { ForbiddenException } = jest.requireActual('@nestjs/common');
+      mockLiveTips.updateTipAction.mockRejectedValue(new ForbiddenException('Only the creator can update tip actions'));
+      const socket = createSocket('viewer-socket', 'user-1');
+
+      const ack = await tipsGateway.handleUpdateTipAction(socket, {
+        streamId: 'stream-1',
+        actionId: 'action-1',
+        status: 'DONE',
+      });
+
+      expect(ack).toEqual(expect.objectContaining({ reason: 'NOT_CREATOR' }));
+      expect(eventsTo(streamRoom('stream-1'), 'tip-action-updated')).toEqual([]);
+    });
+
+    it('validates the request update payload', async () => {
+      const socket = createSocket('creator-socket', 'creator-1');
+      await expect(
+        tipsGateway.handleUpdateTipAction(socket, { streamId: 'stream-1', actionId: 'action-1', status: 'PENDING' as any }),
+      ).resolves.toEqual({ error: 'Invalid status' });
+      await expect(
+        tipsGateway.handleUpdateTipAction(createSocket('anon'), { streamId: 'stream-1', actionId: 'a', status: 'DONE' }),
+      ).resolves.toEqual({ error: 'Unauthorized' });
+      expect(mockLiveTips.updateTipAction).not.toHaveBeenCalled();
+    });
+
+    it('broadcasts tip goal changes to the room', () => {
+      tipsGateway.notifyTipGoalUpdated({ streamId: 'stream-1', amount: null, label: null, total: 45 });
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-updated')).toEqual([
+        { streamId: 'stream-1', amount: null, label: null, total: 45 },
+      ]);
     });
   });
 });

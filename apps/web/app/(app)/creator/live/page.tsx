@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Socket } from 'socket.io-client'
@@ -31,7 +31,6 @@ import { liveApi } from '@/lib/api'
 import {
   createLiveSocket,
   closeLiveSocket,
-  getIceServers,
   liveErrorMessage,
   mediaErrorMessage,
   formatStreamDuration,
@@ -54,6 +53,20 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LiveChatMessageItem } from '@/components/live/live-chat-message'
+import { BroadcastQualitySettings } from '@/components/live/broadcast-quality-settings'
+import { BroadcastHealthPanel } from '@/components/live/broadcast-health-panel'
+import { useBroadcastQuality } from '@/hooks/use-broadcast-quality'
+import { useMediaDevices } from '@/hooks/use-media-devices'
+import { useChatAutoscroll } from '@/hooks/use-chat-autoscroll'
+import { useStableCallback } from '@/hooks/use-stable-callback'
+import { QUALITY_PRESETS, type QualityPresetId } from '@/lib/webrtc/quality-presets'
+import { openBroadcastMedia, switchDevice, switchPreset } from '@/lib/webrtc/media'
+import { addBroadcastTracks } from '@/lib/webrtc/sender-params'
+import { getLiveIceServers, prefetchLiveIceServers } from '@/lib/webrtc/ice-servers'
+import { TipMenuEditor } from '@/components/live/tip-menu-editor'
+import { TipGoalEditor } from '@/components/live/tip-goal-editor'
+import { TipActionsQueue } from '@/components/live/tip-actions-queue'
+import { bindLiveTipEvents, initialLiveTipState, liveTipsReducer, type LiveTipSnapshot } from '@/lib/live-tips'
 
 interface StreamStats {
   tipsCount: number
@@ -86,7 +99,12 @@ interface ViewerPeer {
   pc: RTCPeerConnection
   sessionId: string
   pendingCandidates: RTCIceCandidateInit[]
+  /** Closes the connection if it stays failed (the viewer gets time to restart ICE) */
+  failTimer?: ReturnType<typeof setTimeout>
 }
+
+// A failed viewer connection is kept this long for an ICE restart
+const PEER_FAILED_GRACE_MS = 20_000
 
 interface FormErrors {
   title?: string
@@ -145,6 +163,8 @@ export default function CreatorLivePage() {
   const [chatError, setChatError] = useState<string | null>(null)
   const [sendingChat, setSendingChat] = useState(false)
   const [mutedUserIds, setMutedUserIds] = useState<Set<string>>(new Set())
+  // Tip goal and tip menu requests of the live being broadcast
+  const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -152,6 +172,14 @@ export default function CreatorLivePage() {
   const socketRef = useRef<Socket | null>(null)
   const peersRef = useRef(new Map<string, ViewerPeer>())
   const chatErrorTimer = useRef<ReturnType<typeof setTimeout>>()
+
+  // Video quality: preset, capture devices, adaptive bitrate per viewer
+  const quality = useBroadcastQuality(peersRef, !!activeStream)
+  const mediaDevices = useMediaDevices()
+  const [cameraId, setCameraId] = useState<string>()
+  const [microphoneId, setMicrophoneId] = useState<string>()
+  const [switchingMedia, setSwitchingMedia] = useState(false)
+  const [socketReconnecting, setSocketReconnecting] = useState(false)
 
   const isCreator = user?.role === 'CREATOR'
 
@@ -215,14 +243,18 @@ export default function CreatorLivePage() {
     }
     setStartingPreview(true)
     try {
-      const media = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: true,
+      const media = await openBroadcastMedia(QUALITY_PRESETS[quality.presetId], {
+        videoDeviceId: cameraId,
+        audioDeviceId: microphoneId,
       })
       localStreamRef.current = media
       if (videoRef.current) {
         videoRef.current.srcObject = media
       }
+      // Device labels are only available once the permission is granted
+      void mediaDevices.refresh()
+      setCameraId(media.getVideoTracks()[0]?.getSettings().deviceId)
+      setMicrophoneId(media.getAudioTracks()[0]?.getSettings().deviceId)
       setPreviewOn(true)
       setCameraOn(true)
       setMicOn(true)
@@ -261,11 +293,60 @@ export default function CreatorLivePage() {
     setMicOn(next)
   }
 
+  const setLocalMedia = (media: MediaStream) => {
+    localStreamRef.current = media
+    if (videoRef.current && videoRef.current.srcObject !== media) {
+      videoRef.current.srcObject = media
+    }
+  }
+
+  const viewerConnections = () => [...peersRef.current.values()].map((entry) => entry.pc)
+
+  // Preset change: new capture size and bitrate ceilings, applied live without renegotiation
+  const handlePresetChange = async (presetId: QualityPresetId) => {
+    quality.setPresetId(presetId)
+    const media = localStreamRef.current
+    if (!media) return
+    setSwitchingMedia(true)
+    try {
+      setLocalMedia(await switchPreset(media, QUALITY_PRESETS[presetId], viewerConnections(), cameraId))
+    } catch (error) {
+      console.error('Preset switch error:', error)
+      toast({ title: 'Changement de qualité impossible', description: mediaErrorMessage(error), variant: 'destructive' })
+    } finally {
+      setSwitchingMedia(false)
+    }
+  }
+
+  // Camera / microphone change: the new track replaces the old one on every viewer connection
+  const handleDeviceChange = async (kind: 'video' | 'audio', deviceId: string) => {
+    if (kind === 'video') setCameraId(deviceId)
+    else setMicrophoneId(deviceId)
+    const media = localStreamRef.current
+    if (!media) return
+    setSwitchingMedia(true)
+    try {
+      setLocalMedia(
+        await switchDevice(media, kind, deviceId, QUALITY_PRESETS[quality.presetId], viewerConnections()),
+      )
+    } catch (error) {
+      console.error('Device switch error:', error)
+      toast({
+        title: kind === 'video' ? 'Changement de caméra impossible' : 'Changement de micro impossible',
+        description: mediaErrorMessage(error),
+        variant: 'destructive',
+      })
+    } finally {
+      setSwitchingMedia(false)
+    }
+  }
+
   // ---- WebRTC (one peer connection per viewer, we are the offerer) ----------
 
   const closePeer = (viewerId: string) => {
     const entry = peersRef.current.get(viewerId)
     if (entry) {
+      clearTimeout(entry.failTimer)
       entry.pc.onicecandidate = null
       entry.pc.onconnectionstatechange = null
       entry.pc.close()
@@ -279,16 +360,20 @@ export default function CreatorLivePage() {
 
   const sendOfferTo = async (streamId: string, viewerId: string) => {
     const socket = socketRef.current
+    if (!socket || !localStreamRef.current) return
+    // Fetched once per live session (STUN + TURN credentials)
+    const iceServers = await getLiveIceServers()
     const media = localStreamRef.current
-    if (!socket || !media) return
+    if (socketRef.current !== socket || !media) return
 
     closePeer(viewerId)
     const sessionId = newSessionId()
-    const pc = new RTCPeerConnection({ iceServers: getIceServers() })
+    const pc = new RTCPeerConnection({ iceServers })
     const entry: ViewerPeer = { pc, sessionId, pendingCandidates: [] }
     peersRef.current.set(viewerId, entry)
 
-    media.getTracks().forEach((track) => pc.addTrack(track, media))
+    // Send-only transceivers, capped from the first frame
+    addBroadcastTracks(pc, media, quality.manager.initialEncodings(viewerId))
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -301,18 +386,61 @@ export default function CreatorLivePage() {
       }
     }
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' && peersRef.current.get(viewerId)?.pc === pc) {
+    pc.onconnectionstatechange = () => handlePeerState(viewerId, entry)
+
+    await negotiate(streamId, viewerId, entry, false)
+    // One more viewer: every viewer's share of the upload changes
+    quality.manager.applyAll()
+  }
+
+  const negotiate = async (streamId: string, viewerId: string, entry: ViewerPeer, iceRestart: boolean) => {
+    const socket = socketRef.current
+    if (!socket) return
+    try {
+      const offer = await entry.pc.createOffer(iceRestart ? { iceRestart: true } : undefined)
+      await entry.pc.setLocalDescription(offer)
+      if (peersRef.current.get(viewerId) !== entry) return
+      socket.emit('offer', { streamId, viewerId, offer: entry.pc.localDescription, sessionId: entry.sessionId })
+    } catch (error) {
+      console.error('WebRTC offer error:', error)
+      if (iceRestart) {
+        void sendOfferTo(streamId, viewerId)
+      } else {
         closePeer(viewerId)
       }
     }
+  }
 
-    try {
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      socket.emit('offer', { streamId, viewerId, offer: pc.localDescription, sessionId })
-    } catch (error) {
-      console.error('WebRTC offer error:', error)
+  // The viewer lost the connection but kept its peer: restart ICE on the same
+  // connection (same session id), or start over when that is not possible
+  const restartIce = (streamId: string, viewerId: string) => {
+    const entry = peersRef.current.get(viewerId)
+    if (!entry || entry.pc.signalingState !== 'stable' || entry.pc.connectionState === 'closed') {
+      void sendOfferTo(streamId, viewerId)
+      return
+    }
+    clearTimeout(entry.failTimer)
+    entry.failTimer = undefined
+    entry.pendingCandidates = []
+    void negotiate(streamId, viewerId, entry, true)
+  }
+
+  const handlePeerState = (viewerId: string, entry: ViewerPeer) => {
+    if (peersRef.current.get(viewerId) !== entry) return
+    const state = entry.pc.connectionState
+    if (state === 'connected') {
+      clearTimeout(entry.failTimer)
+      entry.failTimer = undefined
+      void quality.manager.applyPeer(viewerId)
+    } else if (state === 'failed') {
+      // The viewer retries (ICE restart, then a new offer): drop it only if it never comes back
+      clearTimeout(entry.failTimer)
+      entry.failTimer = setTimeout(() => {
+        if (peersRef.current.get(viewerId) === entry && entry.pc.connectionState === 'failed') {
+          closePeer(viewerId)
+        }
+      }, PEER_FAILED_GRACE_MS)
+    } else if (state === 'closed') {
       closePeer(viewerId)
     }
   }
@@ -336,10 +464,13 @@ export default function CreatorLivePage() {
     setChatError(null)
     setMutedUserIds(new Set())
     setViewerCount(0)
+    setSocketReconnecting(false)
+    dispatchTips({ type: 'reset' })
   }
 
   const connectBroadcast = (stream: CreatorStream) => {
     disconnectSocket()
+    prefetchLiveIceServers(true)
     const socket = createLiveSocket({
       onAuthError: () => {
         if (socketRef.current !== socket) return
@@ -352,6 +483,7 @@ export default function CreatorLivePage() {
       },
     })
     socketRef.current = socket
+    bindLiveTipEvents(socket, dispatchTips)
     const streamId = stream.id
 
     socket.on('connect', () => {
@@ -369,20 +501,32 @@ export default function CreatorLivePage() {
           return
         }
         setBroadcasting(true)
+        setSocketReconnecting(false)
         setViewerCount(ack.viewerCount ?? 0)
         setChatMessages(ack.messages ?? [])
         setMutedUserIds(new Set(ack.mutedUserIds ?? []))
+        dispatchTips({ type: 'snapshot', snapshot: ack as LiveTipSnapshot })
       })
     })
 
     socket.on('disconnect', () => {
-      // Viewers' connections are renegotiated after reconnecting
-      closeAllPeers()
+      // Keep the viewers' connections: the video flows peer-to-peer, only
+      // signaling is interrupted. start-broadcast is sent again on reconnect.
       setBroadcasting(false)
+      setSocketReconnecting(true)
     })
 
-    socket.on('viewer-joined', ({ viewerId }: { viewerId: string }) => {
-      void sendOfferTo(streamId, viewerId)
+    socket.on('viewer-joined', ({ viewerId, iceRestart }: { viewerId: string; iceRestart?: boolean }) => {
+      if (iceRestart) {
+        restartIce(streamId, viewerId)
+      } else {
+        void sendOfferTo(streamId, viewerId)
+      }
+    })
+
+    // A viewer chose "Économie de données" (low) or "Auto"
+    socket.on('viewer-quality', ({ viewerId, mode }: { viewerId: string; mode: string }) => {
+      if (mode === 'auto' || mode === 'low') quality.manager.setViewerMode(viewerId, mode)
     })
 
     socket.on(
@@ -395,10 +539,13 @@ export default function CreatorLivePage() {
           const queued = entry.pendingCandidates
           entry.pendingCandidates = []
           for (const candidate of queued) {
-            await entry.pc.addIceCandidate(candidate)
+            await entry.pc.addIceCandidate(candidate).catch(() => undefined)
           }
+          void quality.manager.applyPeer(data.viewerId)
         } catch (error) {
           console.error('WebRTC answer error:', error)
+          // The viewer asks for a new offer when its connection does not come up
+          if (peersRef.current.get(data.viewerId) === entry) closePeer(data.viewerId)
         }
       },
     )
@@ -409,7 +556,8 @@ export default function CreatorLivePage() {
         const entry = peersRef.current.get(data.viewerId)
         if (!entry || entry.sessionId !== data.sessionId || !data.candidate) return
         try {
-          if (entry.pc.remoteDescription) {
+          // Queued while an (ICE restart) offer is waiting for its answer
+          if (entry.pc.remoteDescription && entry.pc.signalingState === 'stable') {
             await entry.pc.addIceCandidate(data.candidate)
           } else {
             entry.pendingCandidates.push(data.candidate)
@@ -420,7 +568,11 @@ export default function CreatorLivePage() {
       },
     )
 
-    socket.on('viewer-left', ({ viewerId }: { viewerId: string }) => closePeer(viewerId))
+    socket.on('viewer-left', ({ viewerId }: { viewerId: string }) => {
+      closePeer(viewerId)
+      quality.manager.forgetViewer(viewerId)
+      quality.manager.applyAll()
+    })
 
     socket.on('viewer-count', (count: number) => setViewerCount(count))
 
@@ -469,6 +621,7 @@ export default function CreatorLivePage() {
     setViewerCount(stream.viewerCount ?? 0)
     setChatMessages([])
     setChatError(null)
+    dispatchTips({ type: 'reset' })
     connectBroadcast(stream)
   }
 
@@ -694,6 +847,11 @@ export default function CreatorLivePage() {
       )
   }
 
+  // Stable identities so memoized chat lines do not re-render on every message
+  const onDeleteMessage = useStableCallback(handleDeleteMessage)
+  const onToggleMute = useStableCallback(handleToggleMute)
+  const { onScroll: onChatScroll } = useChatAutoscroll(chatContainerRef, chatMessages)
+
   // ---- Effects --------------------------------------------------------------
 
   // Re-attach the preview when the video element is (re)mounted
@@ -703,18 +861,15 @@ export default function CreatorLivePage() {
     }
   })
 
-  useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
-    }
-  }, [chatMessages])
-
   // Leaving the page stops the camera and signaling (the stream stays LIVE and can be resumed)
   useEffect(() => {
     const peers = peersRef.current
     const errorTimer = chatErrorTimer
     return () => {
-      peers.forEach((entry) => entry.pc.close())
+      peers.forEach((entry) => {
+        clearTimeout(entry.failTimer)
+        entry.pc.close()
+      })
       peers.clear()
       closeLiveSocket(socketRef.current)
       localStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -861,6 +1016,20 @@ export default function CreatorLivePage() {
                 </div>
               )}
             </CardContent>
+            <div className="px-6 pb-4">
+              <BroadcastQualitySettings
+                presetId={quality.presetId}
+                onPresetChange={(id) => void handlePresetChange(id)}
+                cameras={mediaDevices.cameras}
+                microphones={mediaDevices.microphones}
+                cameraId={cameraId}
+                microphoneId={microphoneId}
+                onCameraChange={(id) => void handleDeviceChange('video', id)}
+                onMicrophoneChange={(id) => void handleDeviceChange('audio', id)}
+                busy={switchingMedia}
+                live={!!activeStream}
+              />
+            </div>
             {mediaError && (
               <div className="mx-6 mb-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                 <p>{mediaError}</p>
@@ -887,12 +1056,36 @@ export default function CreatorLivePage() {
                 {activeStream.description && (
                   <p className="text-sm text-muted-foreground break-words">{activeStream.description}</p>
                 )}
+                <div className="pt-2">
+                  <BroadcastHealthPanel health={quality.health} reconnecting={socketReconnecting} />
+                </div>
                 <p className="text-xs text-muted-foreground pt-2">
                   « Quitter » coupe votre caméra mais laisse le live ouvert : vous pourrez le reprendre depuis cette
                   page. « Terminer le live » le clôture définitivement.
                 </p>
               </CardContent>
             </Card>
+          )}
+
+          {/* Tip menu requests, tip goal and menu while broadcasting */}
+          {activeStream && (
+            <>
+              <TipActionsQueue
+                streamId={activeStream.id}
+                socketRef={socketRef}
+                actions={tipState.actions}
+                connected={broadcasting}
+                onActionUpdated={(action) => dispatchTips({ type: 'action', action })}
+              />
+              <TipGoalEditor
+                streamId={activeStream.id}
+                amount={tipState.goalAmount}
+                label={tipState.goalLabel}
+                total={tipState.total}
+                onSaved={(goal) => dispatchTips({ type: 'goal', ...goal })}
+              />
+              <TipMenuEditor defaultOpen={false} />
+            </>
           )}
 
           {!activeStream && (
@@ -1037,6 +1230,9 @@ export default function CreatorLivePage() {
               </CardContent>
             </Card>
           )}
+
+          {/* The tip menu is reused from one live to the next */}
+          {!activeStream && <TipMenuEditor defaultOpen={false} />}
 
           {!activeStream && streamsLoading && (
             <div className="flex justify-center py-6">
@@ -1240,7 +1436,7 @@ export default function CreatorLivePage() {
                 </CardDescription>
               )}
             </CardHeader>
-            <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div ref={chatContainerRef} onScroll={onChatScroll} className="flex-1 overflow-y-auto p-4 space-y-3">
               {chatMessages.length === 0 && (
                 <p className="text-sm text-muted-foreground text-center">Aucun message pour le moment.</p>
               )}
@@ -1250,8 +1446,8 @@ export default function CreatorLivePage() {
                   message={msg}
                   creatorLabel="Vous"
                   muted={mutedUserIds.has(msg.userId)}
-                  onDelete={broadcasting ? handleDeleteMessage : undefined}
-                  onToggleMute={broadcasting ? handleToggleMute : undefined}
+                  onDelete={broadcasting ? onDeleteMessage : undefined}
+                  onToggleMute={broadcasting ? onToggleMute : undefined}
                 />
               ))}
             </div>

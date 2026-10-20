@@ -15,6 +15,8 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
 import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
+import { LiveTipsService, LiveTipState, RecordedLiveTip } from './live-tips.service';
+import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 
 interface SocketUser {
   id: string;
@@ -47,6 +49,8 @@ export interface LiveChatMessage {
   isCreator: boolean;
   /** Euros, for TIP messages */
   tipAmount?: number;
+  /** Tip menu item requested with a TIP message */
+  menuItemLabel?: string | null;
 }
 
 type Ack = { success: true; [key: string]: unknown } | { error: string; reason?: string };
@@ -54,6 +58,19 @@ type Ack = { success: true; [key: string]: unknown } | { error: string; reason?:
 export const CHAT_RATE_LIMIT_MS = 500;
 export const REACTION_RATE_LIMIT_MS = 200;
 export const ALLOWED_REACTIONS = ['❤️', '🔥', '👏', '😍', '🎉', '💎'];
+/** Viewer count / peak are written to the database at most this often per stream */
+export const VIEWER_STATS_INTERVAL_MS = 5000;
+/** Video quality a viewer can ask the broadcaster for (`low` = data saver) */
+export const VIEWER_QUALITY_MODES = ['auto', 'low'] as const;
+export type ViewerQualityMode = (typeof VIEWER_QUALITY_MODES)[number];
+
+interface PendingViewerStats {
+  lastWriteAt: number;
+  /** Highest count seen since the last write */
+  peak: number;
+  count: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
@@ -94,8 +111,11 @@ export class StreamingGateway
   private logger = new Logger('StreamingGateway');
   private rooms = new Map<string, StreamRoomState>();
   private socketStreams = new Map<string, Set<string>>(); // socketId -> streamIds
+  // userId -> time of the last chat message / reaction (rate limits are per user, not per tab)
   private lastChatAt = new Map<string, number>();
   private lastReactionAt = new Map<string, number>();
+  // streamId -> throttled viewer stats writes
+  private viewerStats = new Map<string, PendingViewerStats>();
   // streamId -> ids of the users the creator muted in the chat (until the stream ends)
   private mutedUsers = new Map<string, Set<string>>();
   private tipSubscription?: Subscription;
@@ -105,15 +125,20 @@ export class StreamingGateway
     private jwtService: JwtService,
     private streamingService: StreamingService,
     @Optional() private oneTimePayments?: OneTimePaymentService,
+    @Optional() private liveTips?: LiveTipsService,
   ) {}
 
   onModuleInit() {
     // Paid tips sent from a live are announced in its chat
-    this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => this.notifyTip(tip));
+    this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => {
+      void this.notifyTip(tip);
+    });
   }
 
   onModuleDestroy() {
     this.tipSubscription?.unsubscribe();
+    this.viewerStats.forEach((stats) => clearTimeout(stats.timer));
+    this.viewerStats.clear();
   }
 
   /**
@@ -187,8 +212,6 @@ export class StreamingGateway
       await this.removeSocketFromStream(client, streamId);
     }
     this.socketStreams.delete(client.id);
-    this.lastChatAt.delete(client.id);
-    this.lastReactionAt.delete(client.id);
   }
 
   /**
@@ -231,7 +254,8 @@ export class StreamingGateway
         viewerCount,
         broadcasterOnline: !!room.broadcasterSocketId,
         muted: this.isMuted(streamId, client.userId),
-        messages: messages.map((message) => this.toChatMessage(message, stream.creatorId)),
+        messages: await this.toChatHistory(messages, stream.creatorId),
+        ...(await this.getTipState(streamId)),
       };
     } catch (error) {
       this.logger.error('Join stream error:', error);
@@ -294,7 +318,8 @@ export class StreamingGateway
         success: true,
         viewerCount,
         mutedUserIds: [...(this.mutedUsers.get(streamId) ?? [])],
-        messages: messages.map((message) => this.toChatMessage(message, stream.creatorId)),
+        messages: await this.toChatHistory(messages, stream.creatorId),
+        ...(await this.getTipState(streamId)),
       };
     } catch (error) {
       this.logger.error('Start broadcast error:', error);
@@ -303,12 +328,14 @@ export class StreamingGateway
   }
 
   /**
-   * Viewer asks the broadcaster for a WebRTC offer
+   * Viewer asks the broadcaster for a WebRTC offer. With `iceRestart: true`
+   * the viewer still has its peer connection and asks the broadcaster to
+   * restart ICE on the existing one instead of starting a new negotiation.
    */
   @SubscribeMessage('request-offer')
   handleRequestOffer(
     @ConnectedSocket() client: AuthenticatedStreamSocket,
-    @MessageBody() data: { streamId: string },
+    @MessageBody() data: { streamId: string; iceRestart?: boolean },
   ): Ack {
     const room = this.getViewerRoom(client, data?.streamId);
     if (!room) return { error: 'Not watching this stream' };
@@ -318,8 +345,31 @@ export class StreamingGateway
       streamId: data.streamId,
       viewerId: client.id,
       userId: client.userId,
+      ...(data.iceRestart === true ? { iceRestart: true } : {}),
     });
     return { success: true };
+  }
+
+  /**
+   * Viewer chooses its video quality: `low` (data saver) asks the broadcaster
+   * to cap the bitrate/resolution sent to this viewer, `auto` removes the cap
+   */
+  @SubscribeMessage('set-viewer-quality')
+  handleSetViewerQuality(
+    @ConnectedSocket() client: AuthenticatedStreamSocket,
+    @MessageBody() data: { streamId: string; mode: ViewerQualityMode },
+  ): Ack {
+    const room = this.getViewerRoom(client, data?.streamId);
+    if (!room) return { error: 'Not watching this stream' };
+    if (!VIEWER_QUALITY_MODES.includes(data.mode)) return { error: 'Invalid quality mode' };
+    if (!room.broadcasterSocketId) return { error: 'Broadcaster offline', reason: 'BROADCASTER_OFFLINE' };
+
+    this.server.to(room.broadcasterSocketId).emit('viewer-quality', {
+      streamId: data.streamId,
+      viewerId: client.id,
+      mode: data.mode,
+    });
+    return { success: true, mode: data.mode };
   }
 
   /**
@@ -421,11 +471,9 @@ export class StreamingGateway
       return { error: 'You have been muted by the creator', reason: 'MUTED' };
     }
 
-    const now = Date.now();
-    if (now - (this.lastChatAt.get(client.id) ?? 0) < CHAT_RATE_LIMIT_MS) {
+    if (this.isRateLimited(this.lastChatAt, client.userId!, CHAT_RATE_LIMIT_MS)) {
       return { error: 'Too many messages', reason: 'RATE_LIMITED' };
     }
-    this.lastChatAt.set(client.id, now);
 
     try {
       const saved = await this.streamingService.createChatMessage(data.streamId, client.userId!, data.message);
@@ -505,11 +553,9 @@ export class StreamingGateway
     if (!room) return { error: 'Not in this stream' };
     if (!ALLOWED_REACTIONS.includes(data.emoji)) return { error: 'Invalid reaction' };
 
-    const now = Date.now();
-    if (now - (this.lastReactionAt.get(client.id) ?? 0) < REACTION_RATE_LIMIT_MS) {
+    if (this.isRateLimited(this.lastReactionAt, client.userId!, REACTION_RATE_LIMIT_MS)) {
       return { error: 'Too many reactions', reason: 'RATE_LIMITED' };
     }
-    this.lastReactionAt.set(client.id, now);
 
     this.server.to(streamRoom(data.streamId)).emit('reaction', {
       emoji: data.emoji,
@@ -518,6 +564,41 @@ export class StreamingGateway
       userId: client.userId,
     });
     return { success: true };
+  }
+
+  /**
+   * Creator marks a tip menu request as done or skipped
+   */
+  @SubscribeMessage('update-tip-action')
+  async handleUpdateTipAction(
+    @ConnectedSocket() client: AuthenticatedStreamSocket,
+    @MessageBody() data: { streamId: string; actionId: string; status: TipActionUpdateStatus },
+  ): Promise<Ack> {
+    if (!client.userId) return { error: 'Unauthorized' };
+    if (!this.liveTips) return { error: 'Tip actions unavailable' };
+    if (!isNonEmptyString(data?.streamId) || !isNonEmptyString(data.actionId)) {
+      return { error: 'Invalid tip action' };
+    }
+    if (!TIP_ACTION_UPDATE_STATUSES.includes(data.status)) return { error: 'Invalid status' };
+
+    try {
+      const action = await this.liveTips.updateTipAction(
+        client.userId,
+        data.streamId,
+        data.actionId,
+        data.status,
+      );
+      this.server.to(streamRoom(data.streamId)).emit('tip-action-updated', { action });
+      return { success: true, action };
+    } catch (error) {
+      const status = error?.getStatus?.();
+      if (status === 403) {
+        return { error: 'Only the creator can update tip actions', reason: 'NOT_CREATOR' };
+      }
+      if (status === 404) return { error: error.message, reason: 'NOT_FOUND' };
+      this.logger.error('Update tip action error:', error);
+      return { error: 'Unable to update tip action' };
+    }
   }
 
   /**
@@ -537,37 +618,82 @@ export class StreamingGateway
     }
     this.rooms.delete(streamId);
     this.mutedUsers.delete(streamId);
+    clearTimeout(this.viewerStats.get(streamId)?.timer);
+    this.viewerStats.delete(streamId);
   }
 
   /**
    * Announce a paid tip in the live chat (`chat-message` of type TIP, plus a
-   * `tip` event for on-screen effects)
+   * `tip` event for on-screen effects). The tip is first recorded in the
+   * stream (running total, persisted chat line, menu request): a tip already
+   * recorded (completed twice) is not announced again.
    */
-  notifyTip(tip: TipCompletedEvent) {
+  async notifyTip(tip: TipCompletedEvent) {
     if (!this.server || !tip.streamId) return;
-
-    const message: LiveChatMessage = {
-      id: `tip-${tip.transactionId}`,
-      userId: tip.fromUser.id,
-      username: tip.fromUser.username,
-      displayName: tip.fromUser.displayName,
-      avatar: tip.fromUser.avatar,
-      message: tip.message || `a envoyé un pourboire de ${tip.amount.toFixed(2)}€`,
-      timestamp: tip.completedAt.toISOString(),
-      type: 'TIP',
-      isCreator: false,
-      tipAmount: tip.amount,
-    };
-
     const room = streamRoom(tip.streamId);
+
+    let recorded: RecordedLiveTip | null = null;
+    if (this.liveTips) {
+      try {
+        recorded = await this.liveTips.recordTip(tip);
+        if (!recorded) return;
+      } catch (error) {
+        // Still announce the paid tip, even if it could not be recorded
+        this.logger.error(`Unable to record tip ${tip.transactionId}:`, error);
+      }
+    }
+
+    const menuItemLabel = tip.menuItemLabel ?? null;
+    const message: LiveChatMessage = recorded
+      ? { ...this.toChatMessage(recorded.message, recorded.creatorId), menuItemLabel }
+      : {
+          id: `tip-${tip.transactionId}`,
+          userId: tip.fromUser.id,
+          username: tip.fromUser.username,
+          displayName: tip.fromUser.displayName,
+          avatar: tip.fromUser.avatar,
+          message: tip.message || `a envoyé un pourboire de ${tip.amount.toFixed(2)}€`,
+          timestamp: tip.completedAt.toISOString(),
+          type: 'TIP',
+          isCreator: false,
+          tipAmount: tip.amount,
+          menuItemLabel,
+        };
+
     this.server.to(room).emit('chat-message', message);
     this.server.to(room).emit('tip', {
       streamId: tip.streamId,
       transactionId: tip.transactionId,
       amount: tip.amount,
       message: tip.message,
+      menuItemLabel,
       fromUser: tip.fromUser,
     });
+
+    if (!recorded) return;
+
+    this.server.to(room).emit('tip-goal-progress', { streamId: tip.streamId, ...recorded.goal });
+    if (recorded.action) {
+      this.server.to(room).emit('tip-action-created', { action: recorded.action });
+    }
+    if (recorded.systemMessage) {
+      this.server
+        .to(room)
+        .emit('chat-message', this.toChatMessage(recorded.systemMessage, recorded.creatorId));
+    }
+  }
+
+  /**
+   * Tip goal changed by the creator (REST endpoint)
+   */
+  notifyTipGoalUpdated(goal: {
+    streamId: string;
+    amount: number | null;
+    label: string | null;
+    total: number;
+  }) {
+    if (!this.server) return;
+    this.server.to(streamRoom(goal.streamId)).emit('tip-goal-updated', goal);
   }
 
   getViewerCount(streamId: string) {
@@ -586,6 +712,7 @@ export class StreamingGateway
       room.broadcasterSocketId = undefined;
       this.server.to(streamRoom(streamId)).emit('broadcaster-disconnected', { streamId });
       this.logger.log(`Broadcaster left stream ${streamId}`);
+      await this.flushViewerStats(streamId);
     }
 
     const userId = room.viewers.get(client.id);
@@ -608,15 +735,85 @@ export class StreamingGateway
 
     if (!room.broadcasterSocketId && room.viewers.size === 0) {
       this.rooms.delete(streamId);
+      await this.flushViewerStats(streamId);
+      this.viewerStats.delete(streamId);
     }
   }
 
+  /**
+   * Write the pending (throttled) viewer stats of a stream now, e.g. before it ends
+   */
+  async flushViewerStats(streamId: string) {
+    const stats = this.viewerStats.get(streamId);
+    if (!stats?.timer) return;
+    clearTimeout(stats.timer);
+    stats.timer = undefined;
+    await this.writeViewerStats(streamId, stats);
+  }
+
+  /**
+   * The count is emitted to the room right away; the database write is
+   * throttled to one every VIEWER_STATS_INTERVAL_MS per stream (leading +
+   * trailing), keeping the highest count seen in between as peak candidate.
+   */
   private async broadcastViewerCount(streamId: string) {
     const room = this.rooms.get(streamId);
     const count = room ? this.countViewers(room) : 0;
     this.server.to(streamRoom(streamId)).emit('viewer-count', count);
-    await this.streamingService.updateViewerStats(streamId, count);
+    this.scheduleViewerStats(streamId, count);
     return count;
+  }
+
+  private scheduleViewerStats(streamId: string, count: number) {
+    const now = Date.now();
+    const stats = this.viewerStats.get(streamId);
+    if (!stats) {
+      const fresh: PendingViewerStats = { lastWriteAt: 0, peak: count, count };
+      this.viewerStats.set(streamId, fresh);
+      void this.writeViewerStats(streamId, fresh);
+      return;
+    }
+
+    stats.count = count;
+    stats.peak = Math.max(stats.peak, count);
+    if (stats.timer) return;
+
+    const wait = stats.lastWriteAt + VIEWER_STATS_INTERVAL_MS - now;
+    if (wait <= 0) {
+      void this.writeViewerStats(streamId, stats);
+      return;
+    }
+    stats.timer = setTimeout(() => {
+      stats.timer = undefined;
+      void this.writeViewerStats(streamId, stats);
+    }, wait);
+  }
+
+  private async writeViewerStats(streamId: string, stats: PendingViewerStats) {
+    const { count, peak } = stats;
+    stats.lastWriteAt = Date.now();
+    stats.peak = count;
+    try {
+      await this.streamingService.updateViewerStats(streamId, count, peak);
+    } catch (error) {
+      this.logger.error(`Viewer stats update failed for stream ${streamId}:`, error);
+    }
+  }
+
+  /**
+   * True when `key` acted less than `windowMs` ago; records the action otherwise
+   */
+  private isRateLimited(times: Map<string, number>, key: string, windowMs: number) {
+    const now = Date.now();
+    if (now - (times.get(key) ?? 0) < windowMs) return true;
+    times.set(key, now);
+    // Keep the map small: forget users that have been quiet for a while
+    if (times.size > 5000) {
+      times.forEach((at, user) => {
+        if (now - at > 60_000) times.delete(user);
+      });
+    }
+    return false;
   }
 
   private countViewers(room: StreamRoomState) {
@@ -691,10 +888,13 @@ export class StreamingGateway
       senderId: string;
       message: string;
       createdAt: Date;
+      type?: LiveChatMessage['type'] | null;
+      tipAmount?: { toString(): string } | number | null;
       sender?: { username: string; displayName?: string | null; avatar?: string | null } | null;
     },
     creatorId: string,
   ): LiveChatMessage {
+    const type = message.type ?? 'MESSAGE';
     return {
       id: message.id,
       userId: message.senderId,
@@ -703,8 +903,45 @@ export class StreamingGateway
       avatar: message.sender?.avatar ?? null,
       message: message.message,
       timestamp: message.createdAt.toISOString(),
-      type: 'MESSAGE',
-      isCreator: message.senderId === creatorId,
+      type,
+      // Tip lines are the fan's, system lines (goal reached) nobody's in particular
+      isCreator: type === 'MESSAGE' && message.senderId === creatorId,
+      ...(type === 'TIP' && message.tipAmount != null && { tipAmount: Number(message.tipAmount) }),
     };
+  }
+
+  /**
+   * Chat history of a join / broadcast acknowledgement, tip lines with their menu request
+   */
+  private async toChatHistory(
+    messages: Awaited<ReturnType<StreamingService['getRecentChatMessages']>>,
+    creatorId: string,
+  ): Promise<LiveChatMessage[]> {
+    const tipIds = messages
+      .map((message) => (message.type === 'TIP' ? message.transactionId : null))
+      .filter((id): id is string => !!id);
+    const labels =
+      tipIds.length > 0 && this.liveTips
+        ? await this.liveTips.getActionLabels(tipIds)
+        : new Map<string, string>();
+
+    return messages.map((message) => {
+      const chatMessage = this.toChatMessage(message, creatorId);
+      const label = message.transactionId ? labels.get(message.transactionId) : undefined;
+      return label ? { ...chatMessage, menuItemLabel: label } : chatMessage;
+    });
+  }
+
+  /**
+   * Tip goal, menu and requests sent with the join / broadcast acknowledgements
+   */
+  private async getTipState(streamId: string): Promise<Partial<LiveTipState>> {
+    if (!this.liveTips) return {};
+    try {
+      return await this.liveTips.getLiveTipState(streamId);
+    } catch (error) {
+      this.logger.error('Tip state error:', error);
+      return {};
+    }
   }
 }

@@ -85,6 +85,8 @@ export interface LiveChatMessage {
   type: 'MESSAGE' | 'TIP' | 'SYSTEM'
   isCreator?: boolean
   tipAmount?: number
+  /** Tip menu item requested with a TIP message */
+  menuItemLabel?: string | null
 }
 
 export type LiveAck = {

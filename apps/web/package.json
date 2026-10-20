@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
+    "test:unit": "TS_NODE_PROJECT=lib/webrtc/__tests__/tsconfig.json TS_NODE_TRANSPILE_ONLY=true node --test -r ts-node/register lib/webrtc/__tests__/*.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug"

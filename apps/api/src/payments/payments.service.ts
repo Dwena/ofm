@@ -1095,6 +1095,28 @@ export class PaymentsService {
       if (!stream || stream.creatorId !== creatorId) {
         throw new BadRequestException('Invalid stream');
       }
+      if (stream.status !== 'LIVE') {
+        throw new BadRequestException('This live stream is not in progress');
+      }
+    }
+
+    // Item of the creator's tip menu (the fan may pay more than its amount)
+    let menuItem: { id: string; label: string } | null = null;
+    if (dto.menuItemId) {
+      if (!dto.streamId) {
+        throw new BadRequestException('A tip menu item can only be chosen during a live');
+      }
+      const item = await this.prisma.liveTipMenuItem.findUnique({
+        where: { id: dto.menuItemId },
+        select: { id: true, creatorId: true, label: true, amount: true, isActive: true },
+      });
+      if (!item || item.creatorId !== creatorId || !item.isActive) {
+        throw new BadRequestException('Tip menu item not found');
+      }
+      if (amount < Number(item.amount)) {
+        throw new BadRequestException(`This tip menu item costs at least €${Number(item.amount).toFixed(2)}`);
+      }
+      menuItem = { id: item.id, label: item.label };
     }
 
     const result = await this.oneTimePayments.startPayment({
@@ -1107,6 +1129,8 @@ export class PaymentsService {
       metadata: {
         message: dto.message?.trim() || null,
         streamId: dto.streamId,
+        menuItemId: menuItem?.id,
+        menuItemLabel: menuItem?.label,
       },
     });
 

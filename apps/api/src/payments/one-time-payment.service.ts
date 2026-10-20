@@ -55,6 +55,9 @@ export interface TipCompletedEvent {
   /** Amount in euros */
   amount: number;
   message: string | null;
+  /** Tip menu item the fan chose (live tips) */
+  menuItemId?: string | null;
+  menuItemLabel?: string | null;
   completedAt: Date;
 }
 
@@ -438,6 +441,8 @@ export class OneTimePaymentService {
         fromUser,
         amount,
         message,
+        menuItemId: typeof metadata.menuItemId === 'string' ? metadata.menuItemId : null,
+        menuItemLabel: typeof metadata.menuItemLabel === 'string' ? metadata.menuItemLabel : null,
         completedAt: new Date(),
       });
     }
