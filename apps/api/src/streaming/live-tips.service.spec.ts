@@ -417,7 +417,7 @@ describe('LiveTipsService', () => {
   });
 
   describe('getLatestGoals', () => {
-    it("returns the milestones of the creator's most recent stream that has some", async () => {
+    it("returns the milestones of the creator's last live (most recently started) that has some", async () => {
       prisma.liveStream.findFirst.mockResolvedValue({
         tipGoals: [
           { amount: decimal(100), label: 'Questions' },
@@ -434,7 +434,7 @@ describe('LiveTipsService', () => {
       expect(prisma.liveStream.findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { creatorId: 'creator-1', tipGoals: { some: {} }, id: { not: 'stream-new' } },
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ startedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
         }),
       );
     });

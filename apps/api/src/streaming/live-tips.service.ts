@@ -421,7 +421,8 @@ export class LiveTipsService {
         tipGoals: { some: {} },
         ...(excludeStreamId && { id: { not: excludeStreamId } }),
       },
-      orderBy: { createdAt: 'desc' },
+      // The live that took place last, then the most recently created (not started yet)
+      orderBy: [{ startedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
       select: { tipGoals: { orderBy: GOAL_ORDER, select: { amount: true, label: true } } },
     });
     return {

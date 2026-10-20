@@ -100,6 +100,8 @@ export class ReplaceTipGoalsDto {
 }
 
 export class UpdateTipGoalStatusDto {
+  // Raw value: the implicit conversion would turn any string into true
+  @Transform(({ obj }) => obj?.completed)
   @IsBoolean()
   completed: boolean;
 }
