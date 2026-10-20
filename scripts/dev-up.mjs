@@ -122,12 +122,39 @@ async function livekitResponds() {
 
 // Starts livekit-server as a child of this script (stopped with it). Returns null
 // when a LiveKit already answers on 7880 (left running by a previous dev:up).
+// Windows asks once whether livekit-server.exe may accept network connections.
+// Creating the firewall rule ourselves avoids that window, but Windows only
+// lets an elevated (administrator) terminal do it: try silently, otherwise
+// explain how to skip the question next time.
+const FIREWALL_RULE = 'FanVIP LiveKit (dev)';
+function ensureWindowsFirewallRule(exe) {
+  if (!IS_WINDOWS) return;
+  const exists =
+    spawnSync('netsh', ['advfirewall', 'firewall', 'show', 'rule', `name=${FIREWALL_RULE}`], { stdio: 'ignore' }).status === 0;
+  if (exists) return;
+  const added =
+    spawnSync(
+      'netsh',
+      ['advfirewall', 'firewall', 'add', 'rule', `name=${FIREWALL_RULE}`, 'dir=in', 'action=allow', `program=${exe}`, 'enable=yes', 'profile=private,domain'],
+      { stdio: 'ignore' },
+    ).status === 0;
+  if (added) {
+    console.log('Pare-feu Windows : LiveKit autorisé (règle « FanVIP LiveKit (dev) » créée)');
+  } else {
+    console.log(
+      'Pare-feu Windows : au premier lancement, Windows peut demander d\'autoriser livekit-server.exe.\n' +
+        '  Pour ne jamais avoir cette question : lancez une fois `npm run dev:up` dans un terminal ouvert en administrateur.',
+    );
+  }
+}
+
 async function startNativeLivekit(nodeIp) {
   if (await livekitResponds()) {
     console.log('LiveKit répond déjà sur le port 7880 : réutilisé');
     return null;
   }
   const exe = await ensureLivekitBinary();
+  ensureWindowsFirewallRule(exe);
   const logPath = join(ROOT, '.cache', 'livekit', 'livekit.log');
   const log = openSync(logPath, 'a');
   const child = spawn(

@@ -6,8 +6,8 @@
 # dans les logs de LiveKit). En processus Windows, le navigateur joint LiveKit
 # directement sur <IP du PC>:7882/udp (ou 7881/tcp).
 #
-# Windows peut demander d'autoriser livekit-server.exe dans le pare-feu :
-# acceptez pour les réseaux privés.
+# Pare-feu : `npm run dev:up` lancé une fois en administrateur crée la règle
+# « FanVIP LiveKit (dev) » (sinon Windows le demande une seule fois).
 #
 # Clés de DÉVELOPPEMENT uniquement (les mêmes que livekit.dev.yaml).
 
