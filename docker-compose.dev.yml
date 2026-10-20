@@ -72,8 +72,9 @@ services:
 
   # LiveKit SFU: video of the lives (the creator uploads once, LiveKit forwards
   # to every viewer with simulcast). Config: infrastructure/livekit/livekit.dev.yaml
-  # (dev keys, node_ip 127.0.0.1 so that the browsers of the host can reach the
-  # media ports). Single UDP port: big UDP ranges are slow on Docker Desktop.
+  # (dev keys). NODE_IP = the PC's LAN IP, set by `npm run dev:up`: browsers on
+  # Windows do not send WebRTC media to 127.0.0.1. Single UDP port: big UDP
+  # ranges are slow on Docker Desktop.
   livekit:
     image: livekit/livekit-server:v1.8.4
     container_name: ofm-livekit

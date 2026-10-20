@@ -174,13 +174,15 @@ les réactions, les pourboires et les objectifs de dons restent sur socket.io.
 
 - Ports publiés : 7880 (signalisation), 7881/tcp et **7882/udp** (média, un seul
   port UDP : les grandes plages UDP sont très lentes sur Docker Desktop).
-- `infrastructure/livekit/livekit.dev.yaml` fixe `node_ip: 127.0.0.1` : LiveKit
-  annonce 127.0.0.1 dans ses candidats ICE, joignable depuis le navigateur de
-  Windows / macOS via les ports publiés (l'IP interne du conteneur ne l'est pas).
-- Tester depuis un téléphone du réseau local :
-  `LIVEKIT_NODE_IP=<IP du PC> docker compose -f docker-compose.dev.yml up -d livekit`
-  et `LIVEKIT_URL=ws://<IP du PC>:7880` dans `apps/api/.env`.
-- Vérifier : `docker logs ofm-livekit` (ligne `starting LiveKit server ... nodeIP 127.0.0.1`)
+- LiveKit annonce aux navigateurs l'**IP du PC sur le réseau local** pour la
+  vidéo : `npm run dev:up` la détecte et la passe au conteneur (`LIVEKIT_NODE_IP`
+  pour la forcer, par exemple si un VPN est actif). Pas 127.0.0.1 : sous Windows,
+  Chrome / Edge n'envoient pas la vidéo WebRTC vers l'adresse de bouclage (image
+  noire, « Signal OBS reçu, la vidéo arrive… » sans fin). Si Windows demande
+  d'autoriser Docker dans le pare-feu, acceptez pour les réseaux privés.
+- Tester depuis un téléphone du réseau local : ajouter
+  `LIVEKIT_URL=ws://<IP du PC>:7880` dans `apps/api/.env`.
+- Vérifier : `docker logs ofm-livekit` (ligne `starting LiveKit server ... nodeIP <IP du PC>`)
   et, sur la page du live, le panneau « Santé du live » indique « Serveur vidéo ».
 - Sans Docker (`SKIP_DOCKER=1`) ou en vidant les 3 variables, les lives
   reviennent en pair-à-pair (la créatrice envoie une copie par spectateur,

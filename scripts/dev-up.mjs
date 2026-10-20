@@ -16,6 +16,8 @@
 // Comptes de démo : docs/SEED_ACCOUNTS.md (mot de passe SecurePass123!)
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createSocket } from 'node:dgram';
+import { networkInterfaces } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -63,6 +65,45 @@ function runOrFail(command, options, errorMessage) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// IPv4 of the interface that routes to the internet (no packet is sent: a UDP
+// "connect" only picks the route). Falls back to the first private address of a
+// physical-looking interface, skipping Docker / WSL / Hyper-V / VPN adapters.
+async function detectLanIp() {
+  const routed = await new Promise((resolve) => {
+    const socket = createSocket('udp4');
+    const done = (ip) => {
+      try {
+        socket.close();
+      } catch {
+        // already closed
+      }
+      resolve(ip);
+    };
+    socket.on('error', () => done(null));
+    try {
+      socket.connect(53, '1.1.1.1', () => {
+        try {
+          done(socket.address().address);
+        } catch {
+          done(null);
+        }
+      });
+    } catch {
+      done(null);
+    }
+    setTimeout(() => done(null), 1000);
+  });
+  if (routed && routed !== '0.0.0.0' && !routed.startsWith('127.')) return routed;
+
+  const virtual = /docker|wsl|vethernet|hyper-v|virtualbox|vmware|vbox|loopback|tailscale|zerotier|utun|tun|tap/i;
+  for (const [name, addresses] of Object.entries(networkInterfaces())) {
+    if (virtual.test(name)) continue;
+    const ipv4 = (addresses ?? []).find((a) => a.family === 'IPv4' && !a.internal);
+    if (ipv4 && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ipv4.address)) return ipv4.address;
+  }
+  return null;
+}
 
 async function waitForPostgres() {
   process.stdout.write('Attente de PostgreSQL');
@@ -184,13 +225,24 @@ if (!SKIP_DOCKER) {
   step('Démarrage de PostgreSQL, Redis, MinIO, MailDev et LiveKit');
   // Reuse the port chosen on a previous run (5433 when 5432 is taken by another Postgres)
   let pgPort = process.env.POSTGRES_PORT || dockerPortFromEnvFile() || '5432';
+  // Address LiveKit advertises to browsers for the video (WebRTC). Not 127.0.0.1:
+  // on Windows, Chrome / Edge never send media to the loopback address, so the
+  // video stayed black. The PC's LAN IP reaches the ports Docker publishes.
+  const livekitNodeIp = process.env.LIVEKIT_NODE_IP || (await detectLanIp()) || '127.0.0.1';
+  console.log(`Adresse annoncée par LiveKit pour la vidéo : ${livekitNodeIp}`);
   const composeUp = () =>
     runOrFail(
       `${compose} -f docker-compose.dev.yml up -d`,
-      { env: { POSTGRES_PORT: pgPort } },
+      { env: { POSTGRES_PORT: pgPort, LIVEKIT_NODE_IP: livekitNodeIp } },
       'Impossible de démarrer les conteneurs Docker',
     );
   composeUp();
+  // The ingress shares the network of the livekit container: recreate it so it
+  // follows a livekit container recreated for a new NODE_IP
+  run(`${compose} -f docker-compose.dev.yml up -d --force-recreate --no-deps livekit-ingress`, {
+    env: { POSTGRES_PORT: pgPort, LIVEKIT_NODE_IP: livekitNodeIp },
+    quiet: true,
+  });
   await waitForPostgres();
 
   // A volume created by an older setup may hold another password: the
