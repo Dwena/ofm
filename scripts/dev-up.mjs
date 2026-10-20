@@ -16,7 +16,7 @@
 // Comptes de démo : docs/SEED_ACCOUNTS.md (mot de passe SecurePass123!)
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -159,9 +159,15 @@ if (nodeMajor < 20) fail(`Node.js 20+ requis (version actuelle : ${process.versi
 console.log(`Node ${process.version}`);
 
 // ---------- Dependencies ----------
-if (!existsSync(join(ROOT, 'node_modules', '.bin'))) {
+// Reinstall when package-lock.json changed since the last install (after a git pull
+// that adds dependencies), not only when node_modules is missing
+const LOCK_HASH_PATH = join(ROOT, 'node_modules', '.ofm-lock-hash');
+const lockHash = createHash('sha1').update(readFileSync(join(ROOT, 'package-lock.json'))).digest('hex');
+const installedHash = existsSync(LOCK_HASH_PATH) ? readFileSync(LOCK_HASH_PATH, 'utf8').trim() : null;
+if (!existsSync(join(ROOT, 'node_modules', '.bin')) || installedHash !== lockHash) {
   step('Installation des dépendances (npm install)');
   runOrFail('npm install', {}, 'npm install a échoué');
+  writeFileSync(LOCK_HASH_PATH, lockHash);
 }
 
 if (!SKIP_DOCKER) {
