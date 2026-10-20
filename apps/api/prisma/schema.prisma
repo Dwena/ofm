@@ -214,6 +214,8 @@ model User {
   liveTipActions          LiveTipAction[]   @relation("LiveTipActions")
   following               Follow[]        @relation("FollowsAsFollower")
   followers               Follow[]        @relation("FollowsAsCreator")
+  overlayToken            OverlayToken?   @relation("OverlayToken")
+  overlayWidgetSettings   OverlayWidgetSettings[] @relation("OverlayWidgetSettings")
 
   @@index([email])
   @@index([username])
@@ -1014,4 +1016,43 @@ model LiveTipAction {
   completedAt   DateTime?
 
   @@index([streamId, status])
+}
+
+// ==================== OBS overlay widgets ====================
+
+enum OverlayWidgetType {
+  ALERTS
+  GOALS
+  TIP_MENU
+  CHAT
+  REQUESTS
+}
+
+// Secret of a creator's OBS overlay URLs (browser sources open them without a
+// session): read-only access to the live's public tip / chat events
+model OverlayToken {
+  id        String    @id @default(uuid())
+
+  creatorId String    @unique
+  creator   User      @relation("OverlayToken", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  // Random, url-safe (base64url of 32 bytes)
+  token     String    @unique
+  createdAt DateTime  @default(now())
+  // Last time the creator regenerated the URLs (old ones stop working)
+  rotatedAt DateTime?
+}
+
+// Look of one overlay widget of a creator (validated per widget by the API)
+model OverlayWidgetSettings {
+  id        String            @id @default(uuid())
+
+  creatorId String
+  creator   User              @relation("OverlayWidgetSettings", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  widget    OverlayWidgetType
+  settings  Json
+  updatedAt DateTime          @updatedAt
+
+  @@unique([creatorId, widget])
 }

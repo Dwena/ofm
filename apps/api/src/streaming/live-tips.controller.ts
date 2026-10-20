@@ -40,7 +40,10 @@ export class LiveTipsController {
   @UseGuards(RolesGuard)
   @Roles('CREATOR')
   async replaceTipMenu(@CurrentUser('id') userId: string, @Body() dto: ReplaceTipMenuDto) {
-    return this.liveTips.replaceMenu(userId, dto);
+    const menu = await this.liveTips.replaceMenu(userId, dto);
+    // The OBS tip menu overlay shows the new menu right away
+    this.streamingGateway.notifyTipMenuUpdated(userId, menu.items);
+    return menu;
   }
 
   /**

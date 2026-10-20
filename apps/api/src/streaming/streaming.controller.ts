@@ -39,7 +39,10 @@ export class StreamingController {
     @CurrentUser('id') userId: string,
     @Body() dto: CreateStreamDto,
   ) {
-    return this.streamingService.createStream(userId, dto);
+    const stream = await this.streamingService.createStream(userId, dto);
+    // A live started right away: the creator's OBS overlays switch to it
+    this.streamingGateway.notifyStreamStarted(stream);
+    return stream;
   }
 
   /**
@@ -100,7 +103,9 @@ export class StreamingController {
     @CurrentUser('id') userId: string,
     @Param('id') streamId: string,
   ) {
-    return this.streamingService.startStream(userId, streamId);
+    const stream = await this.streamingService.startStream(userId, streamId);
+    this.streamingGateway.notifyStreamStarted(stream);
+    return stream;
   }
 
   /**
