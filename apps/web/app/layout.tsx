@@ -9,11 +9,11 @@ const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
   title: {
-    default: 'OFM - La plateforme des créateurs de contenu',
-    template: '%s | OFM',
+    default: 'FanVIP - La plateforme des créateurs de contenu',
+    template: '%s | FanVIP',
   },
   description: 'Monétisez votre contenu et rapprochez-vous de vos fans',
-  applicationName: 'OFM',
+  applicationName: 'FanVIP',
   // PWA: icons are generated from public/icon.svg (see public/PWA_ICONS_README.md)
   manifest: '/manifest.json',
   icons: {
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
   },
   appleWebApp: {
     capable: true,
-    title: 'OFM',
+    title: 'FanVIP',
     statusBarStyle: 'default',
   },
 }

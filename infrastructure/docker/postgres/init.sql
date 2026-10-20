@@ -1,4 +1,4 @@
--- PostgreSQL initialization script for OFM
+-- PostgreSQL initialization script for FanVIP
 -- This script runs only once when the database container is first created
 
 -- Enable necessary extensions
@@ -16,5 +16,5 @@ GRANT ALL PRIVILEGES ON DATABASE ofm_db TO ofm_user;
 -- Log successful initialization
 DO $$
 BEGIN
-  RAISE NOTICE 'OFM Database initialized successfully';
+  RAISE NOTICE 'FanVIP Database initialized successfully';
 END $$;

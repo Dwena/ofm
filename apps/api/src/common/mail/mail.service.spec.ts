@@ -49,7 +49,7 @@ describe('MailService', () => {
       SMTP_USER: 'user',
       SMTP_PASSWORD: 'pass',
       SMTP_FROM_EMAIL: 'noreply@ofm.test',
-      SMTP_FROM_NAME: 'OFM',
+      SMTP_FROM_NAME: 'FanVIP',
       WEB_URL: 'https://app.ofm.test/',
       NODE_ENV: 'production',
     };
@@ -73,7 +73,7 @@ describe('MailService', () => {
 
       const mail = sendMail.mock.calls[0][0];
       expect(mail.to).toBe('a@b.com');
-      expect(mail.from).toBe('"OFM" <noreply@ofm.test>');
+      expect(mail.from).toBe('"FanVIP" <noreply@ofm.test>');
       expect(mail.subject).toBe('Confirmez votre adresse e-mail');
       expect(mail.html).toContain('https://app.ofm.test/verify-email?token=tok123');
       expect(mail.text).toContain('https://app.ofm.test/verify-email?token=tok123');

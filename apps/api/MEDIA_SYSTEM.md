@@ -144,7 +144,7 @@ AWS_S3_FORCE_PATH_STYLE=true
 #### Content Security
 ```env
 # Watermarking
-WATERMARK_TEXT=OFM
+WATERMARK_TEXT=FanVIP
 WATERMARK_ENABLED=true
 
 # File Size Limits

@@ -4,7 +4,7 @@ import { Injectable } from '@nestjs/common';
 export class AppService {
   getHello(): object {
     return {
-      message: 'OFM API Server',
+      message: 'FanVIP API Server',
       version: '1.0.0',
       status: 'running',
       timestamp: new Date().toISOString(),

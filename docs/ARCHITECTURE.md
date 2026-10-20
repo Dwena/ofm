@@ -1,8 +1,8 @@
-# Architecture OFM - Plateforme de Créateurs de Contenu
+# Architecture FanVIP - Plateforme de Créateurs de Contenu
 
 ## Vue d'ensemble
 
-OFM est une plateforme de monétisation pour créateurs de contenu construite avec une architecture moderne et scalable.
+FanVIP est une plateforme de monétisation pour créateurs de contenu construite avec une architecture moderne et scalable.
 
 ## Stack Technique
 
@@ -397,4 +397,4 @@ GitHub Push
 
 **Version**: 1.0.0
 **Dernière mise à jour**: 2024-01-XX
-**Auteur**: OFM Team
+**Auteur**: FanVIP Team

@@ -86,7 +86,7 @@ function VerifyEmailContent() {
           <div className="flex flex-col items-center gap-3 py-6 text-center">
             <CheckCircle className="h-12 w-12 text-green-500" />
             <p className="font-medium">Votre adresse e-mail a bien été confirmée !</p>
-            <p className="text-sm text-muted-foreground">Vous pouvez maintenant profiter de toutes les fonctionnalités d'OFM.</p>
+            <p className="text-sm text-muted-foreground">Vous pouvez maintenant profiter de toutes les fonctionnalités de FanVIP.</p>
           </div>
         )}
 

@@ -44,7 +44,7 @@ export class VideoProcessor {
     private configService: ConfigService,
   ) {
     this.watermarkEnabled = this.configService.get('WATERMARK_ENABLED') === 'true';
-    this.watermarkText = this.configService.get('WATERMARK_TEXT', 'OFM');
+    this.watermarkText = this.configService.get('WATERMARK_TEXT', 'FanVIP');
   }
 
   @Process('process-video')

@@ -81,7 +81,7 @@ if crontab -l 2>/dev/null | grep -q "backup-database.sh"; then
 fi
 
 # Add new cron job
-(crontab -l 2>/dev/null; echo "# OFM Database Backup - $DESCRIPTION"; echo "$CRON_JOB") | crontab -
+(crontab -l 2>/dev/null; echo "# FanVIP Database Backup - $DESCRIPTION"; echo "$CRON_JOB") | crontab -
 
 echo "✅ Cron job added successfully!"
 echo ""

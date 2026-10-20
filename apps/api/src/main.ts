@@ -138,7 +138,7 @@ async function bootstrap() {
   // Swagger API Documentation
   if (nodeEnv !== 'production') {
     const config = new DocumentBuilder()
-      .setTitle('OFM Platform API')
+      .setTitle('FanVIP API')
       .setDescription('OnlyFans Management Platform - Complete API Documentation')
       .setVersion('1.0')
       .addTag('auth', 'Authentication endpoints')
@@ -176,7 +176,7 @@ async function bootstrap() {
         filter: true,
         showRequestDuration: true,
       },
-      customSiteTitle: 'OFM API Documentation',
+      customSiteTitle: 'FanVIP API Documentation',
       customCss: '.swagger-ui .topbar { display: none }',
     });
 
@@ -189,7 +189,7 @@ async function bootstrap() {
   console.log(`
     ╔═══════════════════════════════════════════════════════════════╗
     ║                                                               ║
-    ║   🚀 OFM API Server is running                                ║
+    ║   🚀 FanVIP API Server is running                                ║
     ║                                                               ║
     ║   Environment: ${configService.get('NODE_ENV')?.padEnd(40)}  ║
     ║   URL: http://localhost:${port}${' '.repeat(35)}  ║

@@ -1,4 +1,4 @@
-# Guide Complet de Développement OFM
+# Guide Complet de Développement FanVIP
 
 ## 📋 État Actuel du Projet
 
@@ -1372,7 +1372,7 @@ docker restart ofm-web
 
 ---
 
-**🎉 Félicitations ! Vous avez maintenant un guide complet pour terminer toutes les phases du projet OFM !**
+**🎉 Félicitations ! Vous avez maintenant un guide complet pour terminer toutes les phases du projet FanVIP !**
 
 Ce guide couvre:
 - ✅ Frontend complet (dashboards, upload, feed)

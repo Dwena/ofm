@@ -1,8 +1,8 @@
-# Infrastructure de Base de Données - OFM Platform
+# Infrastructure de Base de Données - FanVIP
 
 ## Vue d'ensemble
 
-Ce document décrit l'infrastructure complète de gestion de la base de données PostgreSQL pour la plateforme OFM, incluant les migrations, le seed data, les backups automatiques, et le monitoring des performances.
+Ce document décrit l'infrastructure complète de gestion de la base de données PostgreSQL pour la plateforme FanVIP, incluant les migrations, le seed data, les backups automatiques, et le monitoring des performances.
 
 ---
 
@@ -520,4 +520,4 @@ Pour toute question ou problème:
 ---
 
 **Dernière mise à jour**: 2025-11-05
-**Mainteneur**: OFM DevOps Team
+**Mainteneur**: FanVIP DevOps Team

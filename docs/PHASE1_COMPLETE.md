@@ -311,7 +311,7 @@ AWS_S3_FORCE_PATH_STYLE=true
 
 # Watermarking
 WATERMARK_ENABLED=true
-WATERMARK_TEXT=OFM
+WATERMARK_TEXT=FanVIP
 
 # File Sizes
 MAX_FILE_SIZE_MB=500
@@ -456,4 +456,4 @@ http://localhost:3001/admin/queues
 
 **Status**: ✅ Phase 1 COMPLÈTE à 99%
 **Dernière mise à jour**: 2024-01-XX
-**Développé par**: OFM Team with Claude Code
+**Développé par**: FanVIP Team with Claude Code

@@ -1,6 +1,6 @@
 {
-  "name": "OFM Platform - Creator Management",
-  "short_name": "OFM",
+  "name": "FanVIP",
+  "short_name": "FanVIP",
   "description": "Plateforme de gestion de contenu pour créateurs et fans",
   "start_url": "/",
   "display": "standalone",

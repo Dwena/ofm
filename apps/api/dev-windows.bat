@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo OFM API - Windows Development Setup
+echo FanVIP API - Windows Development Setup
 echo ========================================
 echo.
 

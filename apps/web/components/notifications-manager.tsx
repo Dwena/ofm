@@ -72,7 +72,7 @@ export function NotificationsManager() {
     try {
       await showLocalNotification({
         title: 'Notification de test',
-        body: 'Ceci est une notification de test de la plateforme OFM.',
+        body: 'Ceci est une notification de test de la plateforme FanVIP.',
         icon: '/icon-192x192.png',
         url: '/notifications',
       });

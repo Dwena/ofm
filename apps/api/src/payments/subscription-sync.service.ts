@@ -163,7 +163,7 @@ export class SubscriptionSyncService {
     const subscriberId = metadata.subscriberId;
     const tierId = effectiveTierId || metadata.tierId;
     if (!subscriberId || !tierId) {
-      this.logger.warn(`Stripe subscription ${stripeSubscription.id} has no OFM metadata`);
+      this.logger.warn(`Stripe subscription ${stripeSubscription.id} has no FanVIP metadata`);
       return null;
     }
 

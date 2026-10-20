@@ -10,6 +10,7 @@ import { getHomePath, useAuth } from '@/contexts/auth-context'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input, InputProps } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { BRAND_NAME, Logo } from '@/components/brand/logo'
 
 export interface PublicSettings {
   registrationOpen: boolean
@@ -86,13 +87,9 @@ export function AuthShell({
       <Card className="w-full max-w-md shadow-2xl border-2">
         <CardHeader className="space-y-1 pb-6">
           <div className="flex items-center justify-center mb-2">
-            <CardTitle className="text-4xl font-bold">
-              <Link
-                href="/"
-                className="bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent"
-                aria-label="Retour à l'accueil OFM"
-              >
-                OFM
+            <CardTitle>
+              <Link href="/" aria-label={`Retour à l'accueil ${BRAND_NAME}`}>
+                <Logo className="text-4xl" markClassName="h-12 w-12" />
               </Link>
             </CardTitle>
           </div>

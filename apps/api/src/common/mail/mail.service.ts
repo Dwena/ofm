@@ -33,7 +33,7 @@ export class MailService {
     const isTest = this.configService.get<string>('NODE_ENV') === 'test';
 
     const fromEmail = this.configService.get<string>('SMTP_FROM_EMAIL', 'noreply@ofm.com');
-    const fromName = this.configService.get<string>('SMTP_FROM_NAME', 'OFM Platform');
+    const fromName = this.configService.get<string>('SMTP_FROM_NAME', 'FanVIP');
     this.from = `"${fromName}" <${fromEmail}>`;
 
     if (!host || isTest) {

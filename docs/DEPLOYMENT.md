@@ -1,6 +1,6 @@
-# OFM Platform - Production Deployment Guide
+# FanVIP - Production Deployment Guide
 
-This guide covers deploying the OFM platform to AWS using Terraform and ECS Fargate.
+This guide covers deploying the FanVIP platform to AWS using Terraform and ECS Fargate.
 
 ## Prerequisites
 

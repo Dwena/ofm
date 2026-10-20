@@ -3,7 +3,7 @@
 Ce document explique comment générer les icônes nécessaires pour la Progressive Web App (PWA).
 
 > **État actuel** : les icônes sont générées et versionnées dans `public/` à partir du logo
-> vectoriel `public/icon.svg` (fond plein dégradé indigo → violet, « OFM » dans la zone de
+> vectoriel `public/icon.svg` (fond plein dégradé indigo → violet, couronne blanche dans la zone de
 > sécurité de 80 % : utilisable en `maskable`). Fichiers : `icon-{72,96,128,144,152,192,384,512}`,
 > `apple-touch-icon.png` (180), `favicon-16x16.png`, `favicon-32x32.png`. Ils sont référencés par
 > `manifest.json` et par les métadonnées de `app/layout.tsx` ; les notifications push utilisent

@@ -1,7 +1,7 @@
 {
   "name": "@ofm/api",
   "version": "1.0.0",
-  "description": "OFM Backend API - NestJS",
+  "description": "FanVIP Backend API - NestJS",
   "private": true,
   "scripts": {
     "postinstall": "prisma generate",

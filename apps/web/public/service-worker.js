@@ -73,7 +73,7 @@ self.addEventListener('push', (event) => {
   };
 
   event.waitUntil(
-    self.registration.showNotification(data.title || 'OFM Platform', options)
+    self.registration.showNotification(data.title || 'FanVIP', options)
   );
 });
 

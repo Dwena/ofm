@@ -393,8 +393,8 @@ export class AuthService {
 
     // Generate secret
     const secret = speakeasy.generateSecret({
-      name: `OFM (${user.email})`,
-      issuer: 'OFM',
+      name: `FanVIP (${user.email})`,
+      issuer: 'FanVIP',
     });
 
     // Save secret temporarily (not enabled yet)

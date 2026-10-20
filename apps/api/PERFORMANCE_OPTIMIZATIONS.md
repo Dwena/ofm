@@ -1,6 +1,6 @@
 # Performance Optimizations
 
-This document describes all performance optimizations implemented in the OFM platform.
+This document describes all performance optimizations implemented in the FanVIP platform.
 
 ## 1. Redis Caching System
 

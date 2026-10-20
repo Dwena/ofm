@@ -253,7 +253,7 @@ SMTP_SECURE=false
 SMTP_USER=
 SMTP_PASSWORD=
 SMTP_FROM_EMAIL=noreply@ofm.local
-SMTP_FROM_NAME=OFM
+SMTP_FROM_NAME=FanVIP
 
 # Notifications push (clés générées automatiquement)
 VAPID_PUBLIC_KEY=${vapid.publicKey}
@@ -289,7 +289,7 @@ if (!existsSync(webEnvPath)) {
 NEXT_PUBLIC_API_URL=${API_URL}
 NEXT_PUBLIC_WS_URL=${API_URL}
 NEXT_PUBLIC_APP_URL=${WEB_URL}
-NEXT_PUBLIC_APP_NAME=OFM
+NEXT_PUBLIC_APP_NAME=FanVIP
 NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || 'pk_test_remplacez_moi'}
 NEXT_PUBLIC_ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"}]
 `,
