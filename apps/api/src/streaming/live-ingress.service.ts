@@ -12,9 +12,11 @@ import {
   IngressAudioOptions,
   IngressClient,
   IngressInput,
+  IngressVideoEncodingOptions,
   IngressVideoEncodingPreset,
   IngressVideoOptions,
   TrackSource,
+  VideoCodec,
   type IngressInfo,
   type WebhookEvent,
 } from 'livekit-server-sdk';
@@ -70,6 +72,7 @@ export const ingressIdleRoomName = (creatorId: string) => `${INGRESS_IDLE_ROOM_P
 // LiveKit protocol values (ParticipantInfo.Kind / IngressState.Status are not re-exported by the SDK)
 const PARTICIPANT_KIND_INGRESS = 1;
 const INGRESS_STATE = { INACTIVE: 0, BUFFERING: 1, PUBLISHING: 2, ERROR: 3, COMPLETE: 4 } as const;
+const VIDEO_QUALITY = { LOW: 0, MEDIUM: 1, HIGH: 2 } as const;
 
 const RTMP_VIDEO_PRESETS: Record<string, IngressVideoEncodingPreset> = {
   '720p': IngressVideoEncodingPreset.H264_720P_30FPS_3_LAYERS,
@@ -317,7 +320,7 @@ export class LiveIngressService implements OnModuleDestroy {
           : {
               video: new IngressVideoOptions({
                 source: TrackSource.CAMERA,
-                encodingOptions: { case: 'preset', value: this.rtmpVideoPreset() },
+                encodingOptions: this.rtmpVideoEncoding(),
               }),
               audio: new IngressAudioOptions({
                 source: TrackSource.MICROPHONE,
@@ -446,9 +449,30 @@ export class LiveIngressService implements OnModuleDestroy {
     return (inputType === 'WHIP' ? urls.whip : urls.rtmp) || announced;
   }
 
-  private rtmpVideoPreset() {
-    const wanted = process.env.LIVEKIT_INGRESS_RTMP_PRESET?.trim().toLowerCase() || '720p';
-    return RTMP_VIDEO_PRESETS[wanted] ?? RTMP_VIDEO_PRESETS['720p'];
+  /**
+   * Transcoding of the RTMP inputs: H.264 simulcast preset (720p by default,
+   * LIVEKIT_INGRESS_RTMP_PRESET=1080p), or VP8 layers with
+   * LIVEKIT_INGRESS_RTMP_CODEC=vp8 (for browsers without H.264 WebRTC
+   * decoding, e.g. some Linux Chromium builds; costs more CPU)
+   */
+  private rtmpVideoEncoding(): IngressVideoOptions['encodingOptions'] {
+    const preset = process.env.LIVEKIT_INGRESS_RTMP_PRESET?.trim().toLowerCase() || '720p';
+    if (process.env.LIVEKIT_INGRESS_RTMP_CODEC?.trim().toLowerCase() !== 'vp8') {
+      return { case: 'preset', value: RTMP_VIDEO_PRESETS[preset] ?? RTMP_VIDEO_PRESETS['720p'] };
+    }
+    const full = preset === '1080p' ? { width: 1920, height: 1080, bitrate: 4_500_000 } : { width: 1280, height: 720, bitrate: 2_500_000 };
+    return {
+      case: 'options',
+      value: new IngressVideoEncodingOptions({
+        videoCodec: VideoCodec.VP8,
+        frameRate: 30,
+        layers: [
+          { quality: VIDEO_QUALITY.HIGH, ...full },
+          { quality: VIDEO_QUALITY.MEDIUM, width: 640, height: 360, bitrate: 600_000 },
+          { quality: VIDEO_QUALITY.LOW, width: 320, height: 180, bitrate: 150_000 },
+        ],
+      }),
+    };
   }
 
   /** LiveKit (or its Ingress service, which needs Redis) did not answer */

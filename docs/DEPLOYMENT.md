@@ -381,7 +381,13 @@ which reads the ingress state from LiveKit. The creator's socket receives
    { listen 1936 ssl; proxy_pass 127.0.0.1:1935; } }` with your certificate,
    then `rtmps://live.yourdomain.com:1936/live` as `rtmp_base_url`.
 5. **Firewall.** UDP 7885 (WHIP media), TCP 1935 (RTMP), 443 (nginx).
-6. **CPU.** Size the Ingress host for the number of simultaneous RTMP lives
+6. **Codec of the RTMP layers.** H.264 by default (cheap to encode, hardware
+   decoding everywhere). `LIVEKIT_INGRESS_RTMP_CODEC=vp8` on the API transcodes
+   into VP8 instead, for audiences on browsers without H.264 WebRTC decoding
+   (some Linux Chromium builds); it costs noticeably more CPU. The key must be
+   regenerated (or the protocol switched) for an existing ingress to pick it up.
+   WHIP inputs keep OBS's codec (H.264 with OBS).
+7. **CPU.** Size the Ingress host for the number of simultaneous RTMP lives
    (`cpu_cost` reserves cores per input and refuses new inputs when the CPU is
    busy). WHIP inputs cost almost nothing: recommend WHIP to the creators.
 

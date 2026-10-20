@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
-import { IngressInput, IngressVideoEncodingPreset } from 'livekit-server-sdk';
+import { IngressInput, IngressVideoEncodingPreset, VideoCodec } from 'livekit-server-sdk';
 import { StreamingService } from './streaming.service';
 import { StreamingController } from './streaming.controller';
 import { StreamingGateway, AuthenticatedStreamSocket } from './streaming.gateway';
@@ -240,6 +240,15 @@ describe('LiveIngressService', () => {
         IngressVideoEncodingPreset.H264_1080P_30FPS_3_LAYERS,
       );
       delete process.env.LIVEKIT_INGRESS_RTMP_PRESET;
+
+      // VP8 layers on request (browsers without H.264 WebRTC decoding)
+      process.env.LIVEKIT_INGRESS_RTMP_CODEC = 'vp8';
+      await ingress.setInputType(CREATOR, 'RTMP');
+      const vp8 = ingressClient.createIngress.mock.calls[2][1].video.encodingOptions;
+      expect(vp8.case).toBe('options');
+      expect(vp8.value.videoCodec).toBe(VideoCodec.VP8);
+      expect(vp8.value.layers.map((layer: { height: number }) => layer.height)).toEqual([720, 360, 180]);
+      delete process.env.LIVEKIT_INGRESS_RTMP_CODEC;
     });
 
     it('prefers the public URLs of the environment', async () => {

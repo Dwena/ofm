@@ -107,6 +107,8 @@ services:
       LIVEKIT_INGRESS_WHIP_URL: ${LIVEKIT_INGRESS_WHIP_URL:-}
       # Simulcast layers of the transcoded RTMP inputs: 720p (default) or 1080p
       LIVEKIT_INGRESS_RTMP_PRESET: ${LIVEKIT_INGRESS_RTMP_PRESET:-720p}
+      # Codec of the transcoded RTMP layers: h264 (default) or vp8 (more CPU)
+      LIVEKIT_INGRESS_RTMP_CODEC: ${LIVEKIT_INGRESS_RTMP_CODEC:-h264}
     ports:
       - "3001:3001"
     volumes:
