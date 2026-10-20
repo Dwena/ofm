@@ -1,14 +1,19 @@
-import { Body, Controller, Get, Param, Patch, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Put, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { LiveTipsService } from './live-tips.service';
 import { StreamingGateway } from './streaming.gateway';
-import { ReplaceTipMenuDto, UpdateTipGoalDto } from './dto/tip-menu.dto';
+import {
+  LatestTipGoalsQueryDto,
+  ReplaceTipGoalsDto,
+  ReplaceTipMenuDto,
+  UpdateTipGoalStatusDto,
+} from './dto/tip-menu.dto';
 
 /**
- * Tip menu ("paliers de dons") and tip goal of the live streams
+ * Tip menu ("paliers de dons") and donation goals (milestones) of the live streams
  */
 @Controller('streaming')
 @UseGuards(JwtAuthGuard)
@@ -39,6 +44,17 @@ export class LiveTipsController {
   }
 
   /**
+   * Milestones of the creator's most recent live that has some ("Reprendre
+   * les paliers de mon dernier live")
+   */
+  @Get('me/tip-goals/latest')
+  @UseGuards(RolesGuard)
+  @Roles('CREATOR')
+  async getLatestTipGoals(@CurrentUser('id') userId: string, @Query() query: LatestTipGoalsQueryDto) {
+    return this.liveTips.getLatestGoals(userId, query.excludeStreamId);
+  }
+
+  /**
    * Active items of a creator's tip menu
    */
   @Get('creators/:creatorId/tip-menu')
@@ -47,16 +63,31 @@ export class LiveTipsController {
   }
 
   /**
-   * Set or clear (amount: null) the tip goal of a stream (creator only)
+   * Replace the milestones of a scheduled or live stream (creator only)
    */
-  @Patch(':id/tip-goal')
+  @Put(':id/tip-goals')
+  async replaceTipGoals(
+    @CurrentUser('id') userId: string,
+    @Param('id') streamId: string,
+    @Body() dto: ReplaceTipGoalsDto,
+  ) {
+    const snapshot = await this.liveTips.replaceGoals(userId, streamId, dto);
+    this.streamingGateway.notifyTipGoalsUpdated(snapshot);
+    return snapshot;
+  }
+
+  /**
+   * Mark a reached milestone as done or not (creator only)
+   */
+  @Patch(':id/tip-goals/:goalId')
   async updateTipGoal(
     @CurrentUser('id') userId: string,
     @Param('id') streamId: string,
-    @Body() dto: UpdateTipGoalDto,
+    @Param('goalId') goalId: string,
+    @Body() dto: UpdateTipGoalStatusDto,
   ) {
-    const goal = await this.liveTips.setTipGoal(userId, streamId, dto);
-    this.streamingGateway.notifyTipGoalUpdated(goal);
-    return goal;
+    const result = await this.liveTips.setGoalCompleted(userId, streamId, goalId, dto.completed);
+    this.streamingGateway.notifyTipGoalUpdated(result);
+    return result;
   }
 }

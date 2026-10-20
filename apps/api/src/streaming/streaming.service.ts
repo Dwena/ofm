@@ -12,7 +12,7 @@ import { PrismaService } from '../common/database/prisma.service';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { nanoid } from 'nanoid';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
-import { LiveTipsService } from './live-tips.service';
+import { LiveTipsService, toTipGoalView } from './live-tips.service';
 
 export type StreamAccessDeniedReason =
   | 'PRIVATE'
@@ -42,6 +42,42 @@ export const MIN_PPV_PRICE = 1;
  */
 const withoutStreamKey = <T extends { streamKey?: string | null }>({ streamKey: _streamKey, ...stream }: T) =>
   stream;
+
+/**
+ * Next milestone of a live (first one not reached, by amount), fetched with
+ * the live lists (one batched relation query, no N+1)
+ */
+const NEXT_TIP_GOAL_INCLUDE = {
+  tipGoals: {
+    where: { reachedAt: null },
+    orderBy: [{ amount: 'asc' as const }, { position: 'asc' as const }],
+    take: 1,
+    select: { amount: true, label: true },
+  },
+};
+
+/**
+ * Live list entry: running tip total (euros), number of milestones and the
+ * next one to reach (null when there is none or all are reached)
+ */
+const withTipGoalSummary = <
+  T extends {
+    tipTotal?: Prisma.Decimal | number | null;
+    tipGoals?: { amount: Prisma.Decimal | number; label: string }[];
+    _count?: { tipGoals?: number };
+  },
+>({
+  tipGoals = [],
+  ...stream
+}: T) => {
+  const next = tipGoals[0];
+  return {
+    ...stream,
+    tipTotal: Number(stream.tipTotal ?? 0),
+    tipGoalsCount: stream._count?.tipGoals ?? 0,
+    nextTipGoal: next ? { amount: Number(next.amount), label: next.label } : null,
+  };
+};
 
 @Injectable()
 export class StreamingService {
@@ -297,14 +333,16 @@ export class StreamingService {
         _count: {
           select: {
             viewers: true,
+            tipGoals: true,
           },
         },
+        ...NEXT_TIP_GOAL_INCLUDE,
       },
       orderBy: {
         viewerCount: 'desc',
       },
     });
-    return streams.map(withoutStreamKey);
+    return streams.map((stream) => withTipGoalSummary(withoutStreamKey(stream)));
   }
 
   /**
@@ -328,12 +366,14 @@ export class StreamingService {
             avatar: true,
           },
         },
+        _count: { select: { tipGoals: true } },
+        ...NEXT_TIP_GOAL_INCLUDE,
       },
       orderBy: {
         scheduledFor: 'asc',
       },
     });
-    return streams.map(withoutStreamKey);
+    return streams.map((stream) => withTipGoalSummary(withoutStreamKey(stream)));
   }
 
   /**
@@ -362,13 +402,19 @@ export class StreamingService {
             messages: true,
           },
         },
+        // Milestones, for the goals editor of the upcoming lives
+        tipGoals: { orderBy: [{ amount: 'asc' }, { position: 'asc' }] },
       },
       orderBy: {
         createdAt: 'desc',
       },
     });
 
-    const publicStreams = streams.map(withoutStreamKey);
+    const publicStreams = streams.map(({ tipGoals = [], ...stream }) => ({
+      ...withoutStreamKey(stream),
+      tipTotal: Number(stream.tipTotal ?? 0),
+      tipGoals: tipGoals.map(toTipGoalView),
+    }));
     if (!isOwner || streams.length === 0) {
       return publicStreams;
     }
@@ -494,7 +540,7 @@ export class StreamingService {
     const { creatorProfile, ...creator } = stream.creator;
     const tipState = this.liveTips
       ? await this.liveTips.getLiveTipState(stream.id)
-      : { tipGoal: null, tipTotal: Number(stream.tipTotal ?? 0), tipMenu: [], pendingTipActions: [] };
+      : { tipTotal: Number(stream.tipTotal ?? 0), tipGoals: [], tipMenu: [], pendingTipActions: [] };
 
     return {
       ...publicStream,

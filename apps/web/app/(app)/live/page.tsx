@@ -9,6 +9,7 @@ import { Radio, Users, CalendarClock, Lock, Ticket, RefreshCw, Loader2 } from 'l
 import { liveApi } from '@/lib/api'
 import { VISIBILITY_LABELS } from '@/lib/live'
 import { formatEuros } from '@/lib/utils'
+import { formatGoalEuros } from '@/lib/live-tip-goals'
 import { useAuth } from '@/contexts/auth-context'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -27,6 +28,12 @@ interface StreamSummary {
   viewerCount: number
   startedAt?: string | null
   scheduledFor?: string | null
+  /** Euros of tips received during the live */
+  tipTotal?: number
+  /** Number of donation goal milestones */
+  tipGoalsCount?: number
+  /** First milestone not reached yet (null: none, or all reached) */
+  nextTipGoal?: { amount: number; label: string } | null
   creator: {
     id: string
     username: string
@@ -76,6 +83,27 @@ function AccessBadge({ stream }: { stream: StreamSummary }) {
       {restricted && <Lock className="h-3 w-3" />}
       {VISIBILITY_LABELS[stream.visibility] ?? stream.visibility}
     </Badge>
+  )
+}
+
+/** "🎯 45 € / 100 € · Je réponds à toutes vos questions" when the live has donation goals */
+function TipGoalLine({ stream }: { stream: StreamSummary }) {
+  if (!stream.tipGoalsCount) return null
+  const total = formatGoalEuros(Number(stream.tipTotal ?? 0))
+  const next = stream.nextTipGoal
+  const text = next
+    ? `${total} / ${formatGoalEuros(next.amount)} · ${next.label}`
+    : `${total} · tous les paliers sont atteints`
+  return (
+    <p
+      className="truncate text-xs text-muted-foreground"
+      title={next ? `Prochain palier : ${formatGoalEuros(next.amount)} — ${next.label}` : undefined}
+      data-testid="live-card-goal"
+    >
+      <span aria-hidden>🎯 </span>
+      <span className="sr-only">Objectifs de dons : </span>
+      {text}
+    </p>
   )
 }
 
@@ -223,6 +251,7 @@ export default function LiveStreamsPage() {
                         </span>
                       )}
                     </div>
+                    <TipGoalLine stream={stream} />
                   </CardContent>
                 </Card>
               </Link>
@@ -286,6 +315,7 @@ export default function LiveStreamsPage() {
                           </Badge>
                         )}
                       </div>
+                      <TipGoalLine stream={stream} />
                     </div>
                   </CardContent>
                 </Card>

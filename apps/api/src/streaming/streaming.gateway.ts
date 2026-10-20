@@ -15,7 +15,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
 import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
-import { LiveTipsService, LiveTipState, RecordedLiveTip } from './live-tips.service';
+import { LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
 import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 
 interface SocketUser {
@@ -672,28 +672,34 @@ export class StreamingGateway
 
     if (!recorded) return;
 
-    this.server.to(room).emit('tip-goal-progress', { streamId: tip.streamId, ...recorded.goal });
+    const { total, goals } = recorded;
+    this.server.to(room).emit('tip-goal-progress', { streamId: tip.streamId, total, goals });
     if (recorded.action) {
       this.server.to(room).emit('tip-action-created', { action: recorded.action });
     }
-    if (recorded.systemMessage) {
-      this.server
-        .to(room)
-        .emit('chat-message', this.toChatMessage(recorded.systemMessage, recorded.creatorId));
-    }
+    // Milestones this tip unlocked: their "Palier atteint" chat line, then the celebration
+    recorded.systemMessages.forEach((systemMessage) => {
+      this.server.to(room).emit('chat-message', this.toChatMessage(systemMessage, recorded.creatorId));
+    });
+    recorded.reachedGoals.forEach((goal) => {
+      this.server.to(room).emit('tip-goal-reached', { streamId: tip.streamId, goal, total });
+    });
   }
 
   /**
-   * Tip goal changed by the creator (REST endpoint)
+   * Milestones replaced by the creator (REST endpoint)
    */
-  notifyTipGoalUpdated(goal: {
-    streamId: string;
-    amount: number | null;
-    label: string | null;
-    total: number;
-  }) {
+  notifyTipGoalsUpdated(snapshot: TipGoalsSnapshot) {
     if (!this.server) return;
-    this.server.to(streamRoom(goal.streamId)).emit('tip-goal-updated', goal);
+    this.server.to(streamRoom(snapshot.streamId)).emit('tip-goals-updated', snapshot);
+  }
+
+  /**
+   * Milestone marked as done / not done by the creator (REST endpoint)
+   */
+  notifyTipGoalUpdated(update: { streamId: string; goal: TipGoalView }) {
+    if (!this.server) return;
+    this.server.to(streamRoom(update.streamId)).emit('tip-goal-updated', update);
   }
 
   getViewerCount(streamId: string) {
@@ -904,7 +910,7 @@ export class StreamingGateway
       message: message.message,
       timestamp: message.createdAt.toISOString(),
       type,
-      // Tip lines are the fan's, system lines (goal reached) nobody's in particular
+      // Tip lines are the fan's, system lines (milestone reached) nobody's in particular
       isCreator: type === 'MESSAGE' && message.senderId === creatorId,
       ...(type === 'TIP' && message.tipAmount != null && { tipAmount: Number(message.tipAmount) }),
     };
@@ -933,7 +939,7 @@ export class StreamingGateway
   }
 
   /**
-   * Tip goal, menu and requests sent with the join / broadcast acknowledgements
+   * Tip total, milestones, menu and requests sent with the join / broadcast acknowledgements
    */
   private async getTipState(streamId: string): Promise<Partial<LiveTipState>> {
     if (!this.liveTips) return {};

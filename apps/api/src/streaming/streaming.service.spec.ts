@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { StreamingService } from './streaming.service';
 import { PrismaService } from '../common/database/prisma.service';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
@@ -457,6 +458,37 @@ describe('StreamingService', () => {
           },
         }),
       );
+    });
+
+    it('adds the tip total and the next milestone to reach, fetched in the same query', async () => {
+      mockPrismaService.liveStream.findMany.mockResolvedValue([
+        {
+          ...listed[0],
+          tipTotal: new Prisma.Decimal(110),
+          tipGoals: [{ amount: new Prisma.Decimal(250), label: 'Surprise exclusive' }],
+          _count: { viewers: 3, tipGoals: 3 },
+        },
+        { ...listed[1], tipTotal: new Prisma.Decimal(0), tipGoals: [], _count: { viewers: 0, tipGoals: 0 } },
+      ]);
+
+      const result: any[] = await service.getLiveStreams('user-1');
+
+      expect(result[0]).toEqual(
+        expect.objectContaining({
+          tipTotal: 110,
+          tipGoalsCount: 3,
+          nextTipGoal: { amount: 250, label: 'Surprise exclusive' },
+        }),
+      );
+      expect(result[0]).not.toHaveProperty('tipGoals');
+      expect(result[1]).toEqual(expect.objectContaining({ tipTotal: 0, tipGoalsCount: 0, nextTipGoal: null }));
+      expect(mockPrismaService.liveStream.findMany).toHaveBeenCalledTimes(1);
+      expect(mockPrismaService.liveStream.findMany.mock.calls[0][0].include.tipGoals).toEqual({
+        where: { reachedAt: null },
+        orderBy: [{ amount: 'asc' }, { position: 'asc' }],
+        take: 1,
+        select: { amount: true, label: true },
+      });
     });
 
     it('lists upcoming scheduled streams without stream keys', async () => {

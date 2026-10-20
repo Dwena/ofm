@@ -708,6 +708,15 @@ describe('StreamingGateway', () => {
       getActionLabels: jest.fn(),
     };
 
+    const goal = (amount: number, label: string, reachedAt: string | null = null) => ({
+      id: `goal-${amount}`,
+      amount,
+      label,
+      position: 0,
+      reachedAt,
+      completedAt: null,
+    });
+
     let tipsGateway: StreamingGateway;
 
     beforeEach(() => {
@@ -720,21 +729,24 @@ describe('StreamingGateway', () => {
       );
       tipsGateway.server = gateway.server;
       mockLiveTips.getLiveTipState.mockResolvedValue({
-        tipGoal: { amount: 300, label: 'Nouvelle caméra', total: 45 },
+        tipTotal: 45,
+        tipGoals: [goal(100, 'Questions'), goal(300, 'Nouvelle caméra')],
         tipMenu: [{ id: 'item-1', label: 'Chanter une chanson', amount: 20 }],
         pendingTipActions: [action],
       });
       mockLiveTips.getActionLabels.mockResolvedValue(new Map([['tx-1', 'Chanter une chanson']]));
     });
 
-    it('records the tip, then announces it with its request and the goal progress', async () => {
+    it('records the tip, then announces it with its request and the goals progress', async () => {
+      const goals = [goal(100, 'Questions'), goal(300, 'Nouvelle caméra')];
       mockLiveTips.recordTip.mockResolvedValue({
         creatorId: 'creator-1',
         message: storedTipLine,
         action,
-        goal: { amount: 300, label: 'Nouvelle caméra', total: 65, reached: false },
-        goalReachedNow: false,
-        systemMessage: null,
+        total: 65,
+        goals,
+        reachedGoals: [],
+        systemMessages: [],
       });
 
       await tipsGateway.notifyTip(tip);
@@ -750,28 +762,37 @@ describe('StreamingGateway', () => {
         }),
       ]);
       expect(eventsTo(room, 'tip')).toEqual([expect.objectContaining({ transactionId: 'tx-1', menuItemLabel: 'Chanter une chanson' })]);
-      expect(eventsTo(room, 'tip-goal-progress')).toEqual([
-        { streamId: 'stream-1', amount: 300, label: 'Nouvelle caméra', total: 65, reached: false },
-      ]);
+      expect(eventsTo(room, 'tip-goal-progress')).toEqual([{ streamId: 'stream-1', total: 65, goals }]);
       expect(eventsTo(room, 'tip-action-created')).toEqual([{ action }]);
+      expect(eventsTo(room, 'tip-goal-reached')).toEqual([]);
     });
 
-    it('announces the goal in the chat the time it is reached', async () => {
+    it('announces every milestone a big tip unlocks: chat lines, then one tip-goal-reached each', async () => {
+      const reached = [
+        goal(100, 'Questions', '2026-10-20T12:00:00.000Z'),
+        goal(200, '30 minutes de plus', '2026-10-20T12:00:00.000Z'),
+      ];
+      const goals = [...reached, goal(500, 'Surprise')];
+      const systemLine = (id: string, message: string) => ({
+        id,
+        senderId: 'creator-1',
+        message,
+        type: 'SYSTEM',
+        tipAmount: null,
+        createdAt: new Date(),
+        sender: { username: 'alice' },
+      });
       mockLiveTips.recordTip.mockResolvedValue({
         creatorId: 'creator-1',
         message: storedTipLine,
         action: null,
-        goal: { amount: 300, label: 'Nouvelle caméra', total: 300, reached: true },
-        goalReachedNow: true,
-        systemMessage: {
-          id: 'msg-2',
-          senderId: 'creator-1',
-          message: 'Objectif atteint : Nouvelle caméra 🎉',
-          type: 'SYSTEM',
-          tipAmount: null,
-          createdAt: new Date(),
-          sender: { username: 'alice' },
-        },
+        total: 240,
+        goals,
+        reachedGoals: reached,
+        systemMessages: [
+          systemLine('msg-2', '🎯 Palier atteint : 100 € — Questions'),
+          systemLine('msg-3', '🎯 Palier atteint : 200 € — 30 minutes de plus'),
+        ],
       });
 
       await tipsGateway.notifyTip({ ...tip, menuItemId: null, menuItemLabel: null });
@@ -779,9 +800,14 @@ describe('StreamingGateway', () => {
       const room = streamRoom('stream-1');
       expect(eventsTo(room, 'chat-message')).toEqual([
         expect.objectContaining({ type: 'TIP', menuItemLabel: null }),
-        expect.objectContaining({ type: 'SYSTEM', message: 'Objectif atteint : Nouvelle caméra 🎉', isCreator: false }),
+        expect.objectContaining({ id: 'msg-2', type: 'SYSTEM', message: '🎯 Palier atteint : 100 € — Questions', isCreator: false }),
+        expect.objectContaining({ id: 'msg-3', type: 'SYSTEM', message: '🎯 Palier atteint : 200 € — 30 minutes de plus' }),
       ]);
-      expect(eventsTo(room, 'tip-goal-progress')).toEqual([expect.objectContaining({ reached: true })]);
+      expect(eventsTo(room, 'tip-goal-progress')).toEqual([{ streamId: 'stream-1', total: 240, goals }]);
+      expect(eventsTo(room, 'tip-goal-reached')).toEqual([
+        { streamId: 'stream-1', goal: reached[0], total: 240 },
+        { streamId: 'stream-1', goal: reached[1], total: 240 },
+      ]);
       expect(eventsTo(room, 'tip-action-created')).toEqual([]);
     });
 
@@ -798,6 +824,7 @@ describe('StreamingGateway', () => {
         expect.objectContaining({ id: 'tip-tx-1', type: 'TIP', menuItemLabel: 'Chanter une chanson' }),
       ]);
       expect(eventsTo(streamRoom('stream-1'), 'tip-goal-progress')).toEqual([]);
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-reached')).toEqual([]);
     });
 
     it('sends the tip state and the tip lines with their request when joining', async () => {
@@ -807,12 +834,27 @@ describe('StreamingGateway', () => {
       const ack: any = await tipsGateway.handleJoinStream(socket, { streamId: 'stream-1' });
 
       expect(ack.success).toBe(true);
-      expect(ack.tipGoal).toEqual({ amount: 300, label: 'Nouvelle caméra', total: 45 });
+      expect(ack.tipTotal).toBe(45);
+      expect(ack.tipGoals).toEqual([goal(100, 'Questions'), goal(300, 'Nouvelle caméra')]);
+      expect(ack).not.toHaveProperty('tipGoal');
       expect(ack.tipMenu).toHaveLength(1);
       expect(ack.pendingTipActions).toEqual([action]);
       expect(ack.messages).toEqual([
         expect.objectContaining({ id: 'msg-1', type: 'TIP', tipAmount: 20, menuItemLabel: 'Chanter une chanson' }),
       ]);
+    });
+
+    it('sends the tip total and the milestones to the creator when broadcasting', async () => {
+      mockStreamingService.getRecentChatMessages.mockResolvedValue([]);
+      const ack: any = await tipsGateway.handleStartBroadcast(createSocket('creator-socket', 'creator-1'), {
+        streamId: 'stream-1',
+      });
+
+      expect(ack.success).toBe(true);
+      expect(ack.tipTotal).toBe(45);
+      expect(ack.tipGoals).toEqual([goal(100, 'Questions'), goal(300, 'Nouvelle caméra')]);
+      expect(ack.tipMenu).toHaveLength(1);
+      expect(ack.pendingTipActions).toEqual([action]);
     });
 
     it('lets the creator mark a request done and broadcasts it', async () => {
@@ -857,11 +899,16 @@ describe('StreamingGateway', () => {
       expect(mockLiveTips.updateTipAction).not.toHaveBeenCalled();
     });
 
-    it('broadcasts tip goal changes to the room', () => {
-      tipsGateway.notifyTipGoalUpdated({ streamId: 'stream-1', amount: null, label: null, total: 45 });
-      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-updated')).toEqual([
-        { streamId: 'stream-1', amount: null, label: null, total: 45 },
-      ]);
+    it('broadcasts the milestones replaced by the creator to the room', () => {
+      const snapshot = { streamId: 'stream-1', total: 45, goals: [goal(100, 'Questions')] };
+      tipsGateway.notifyTipGoalsUpdated(snapshot);
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goals-updated')).toEqual([snapshot]);
+    });
+
+    it('broadcasts a milestone marked as done to the room', () => {
+      const done = { ...goal(100, 'Questions', '2026-10-20T12:00:00.000Z'), completedAt: '2026-10-20T12:10:00.000Z' };
+      tipsGateway.notifyTipGoalUpdated({ streamId: 'stream-1', goal: done });
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-updated')).toEqual([{ streamId: 'stream-1', goal: done }]);
     });
   });
 });

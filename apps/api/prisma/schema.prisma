@@ -878,9 +878,8 @@ model LiveStream {
   startedAt    DateTime?
   endedAt      DateTime?
 
-  // Tip goal (euros) and running total of the completed tips sent from this live
-  tipGoalAmount Decimal?   @db.Decimal(10, 2)
-  tipGoalLabel  String?
+  // Running total (euros) of the completed tips sent from this live: the pot
+  // of its donation goals (LiveTipGoal)
   tipTotal      Decimal    @default(0) @db.Decimal(10, 2)
 
   createdAt   DateTime     @default(now())
@@ -890,6 +889,7 @@ model LiveStream {
   viewers     StreamViewer[]
   messages    StreamMessage[]
   tipActions  LiveTipAction[]
+  tipGoals    LiveTipGoal[]
 
   @@index([creatorId])
   @@index([status])
@@ -970,6 +970,29 @@ enum TipActionStatus {
 }
 
 // Request a fan paid for from the tip menu during a live, for the creator to perform
+// Milestone of a live's donation goal: unlocked when the live's tipTotal
+// reaches its amount, then marked as done by the creator
+model LiveTipGoal {
+  id          String     @id @default(uuid())
+
+  streamId    String
+  stream      LiveStream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  // Euros
+  amount      Decimal    @db.Decimal(10, 2)
+  // Free text written by the creator
+  label       String
+  // Rank by amount (ascending)
+  position    Int
+  reachedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([streamId])
+}
+
 model LiveTipAction {
   id            String          @id @default(uuid())
 

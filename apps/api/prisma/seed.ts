@@ -822,9 +822,14 @@ async function main() {
       streamKey: streamKey(),
       visibility: ContentVisibility.SUBSCRIBERS_ONLY,
       scheduledFor: daysFromNow(1, 2),
-      // Tip goal shown as soon as the live starts
-      tipGoalAmount: 300,
-      tipGoalLabel: 'Nouvelle caméra',
+      // Donation goal milestones, shown as soon as the live starts
+      tipGoals: {
+        create: [
+          { amount: 100, label: 'Je réponds à toutes vos questions', position: 0 },
+          { amount: 200, label: '30 minutes de live en plus', position: 1 },
+          { amount: 500, label: 'Surprise exclusive pour mes abonnés', position: 2 },
+        ],
+      },
     },
   });
   const alicePpvLive = await prisma.liveStream.create({
@@ -908,8 +913,9 @@ async function main() {
     await prisma.streamViewer.create({ data: { streamId: claireEndedLive.id, viewerId: viewer.id, joinedAt: daysAgo(14), leftAt: daysAgo(14) } });
   }
   // ---------- Live tip menu ("paliers de dons") ----------
-  // Alice's menu, reused from one live to the next; the ended live got a goal,
-  // tips (free and from the menu) counted in tipTotal, their chat lines and requests
+  // Alice's menu, reused from one live to the next; the ended live got
+  // donation goal milestones, tips (free and from the menu) counted in
+  // tipTotal, their chat lines and requests
   const aliceMenu = [
     { emoji: '👋', label: 'Je dis ton prénom', amount: 5, description: 'Un petit coucou personnalisé en direct' },
     { emoji: '🎵', label: 'Je chante une chanson', amount: 20, description: 'Tu choisis le titre dans ton message' },
@@ -989,20 +995,40 @@ async function main() {
       });
     }
   }
-  // Goal of the ended live, reached during the live (announced once in the chat)
-  await prisma.liveStream.update({
-    where: { id: aliceEndedLive.id },
-    data: { tipGoalAmount: 100, tipGoalLabel: 'Tirage photo pour les abonnés', tipTotal: endedLiveTipTotal },
-  });
-  await prisma.streamMessage.create({
-    data: {
-      streamId: aliceEndedLive.id,
-      senderId: alice.id,
-      type: 'SYSTEM',
-      message: 'Objectif atteint : Tirage photo pour les abonnés 🎉',
-      createdAt: new Date(endedLiveStart + 70 * 60 * 1000 + 1000),
-    },
-  });
+  // Milestones of the ended live (total 110 €): 50 € reached at minute 41
+  // and done, 100 € reached at minute 70, 250 € not reached; each reached
+  // milestone was announced once in the chat
+  await prisma.liveStream.update({ where: { id: aliceEndedLive.id }, data: { tipTotal: endedLiveTipTotal } });
+  const endedLiveGoals = [
+    { amount: 50, label: 'Je raconte ma pire galère de voyage', minute: 41, doneMinute: 46 },
+    { amount: 100, label: 'Tirage photo dédicacé pour un abonné', minute: 70 },
+    { amount: 250, label: 'Live bonus depuis Reykjavik' },
+  ];
+  for (const [position, goalSeed] of endedLiveGoals.entries()) {
+    const reachedAt = goalSeed.minute !== undefined ? new Date(endedLiveStart + goalSeed.minute * 60 * 1000 + 1000) : null;
+    await prisma.liveTipGoal.create({
+      data: {
+        streamId: aliceEndedLive.id,
+        amount: goalSeed.amount,
+        label: goalSeed.label,
+        position,
+        reachedAt,
+        completedAt: goalSeed.doneMinute !== undefined ? new Date(endedLiveStart + goalSeed.doneMinute * 60 * 1000) : null,
+      },
+    });
+    if (reachedAt) {
+      await prisma.streamMessage.create({
+        data: {
+          streamId: aliceEndedLive.id,
+          senderId: alice.id,
+          type: 'SYSTEM',
+          // Same line as LiveTipsService.recordTip (goalReachedMessage)
+          message: `🎯 Palier atteint : ${goalSeed.amount}\u00a0€ — ${goalSeed.label}`,
+          createdAt: reachedAt,
+        },
+      });
+    }
+  }
   // Sophie already bought the upcoming PPV live (she can join it), David has not
   transactions.push({
     fromUserId: sophie.id,

@@ -4,11 +4,14 @@ import { PrismaService } from '../common/database/prisma.service';
 import { roundMoney } from '../common/utils/money';
 import type { TipCompletedEvent } from '../payments/one-time-payment.service';
 import {
+  MAX_TIP_GOAL_AMOUNT,
+  MAX_TIP_GOAL_LABEL_LENGTH,
+  MAX_TIP_GOALS,
   MAX_TIP_MENU_AMOUNT,
   MAX_TIP_MENU_ITEMS,
+  ReplaceTipGoalsDto,
   ReplaceTipMenuDto,
   TipActionUpdateStatus,
-  UpdateTipGoalDto,
 } from './dto/tip-menu.dto';
 
 /** Item of a creator's tip menu (amount in euros) */
@@ -22,12 +25,33 @@ export interface TipMenuItemView {
   isActive: boolean;
 }
 
+/** Milestone of a live's donation goal (the pot is the live's tip total) */
 export interface TipGoalView {
+  id: string;
   /** Euros */
   amount: number;
-  label: string | null;
-  /** Euros of completed tips sent from the live */
+  label: string;
+  /** Rank by amount (ascending) */
+  position: number;
+  /** When the live's total reached the amount */
+  reachedAt: string | null;
+  /** When the creator marked it as done */
+  completedAt: string | null;
+}
+
+/** Milestones of a live with its running total, as broadcast to the room */
+export interface TipGoalsSnapshot {
+  streamId: string;
+  /** Euros */
   total: number;
+  goals: TipGoalView[];
+}
+
+/** Amount and label of a milestone (live lists, goals of a previous live) */
+export interface TipGoalSummary {
+  /** Euros */
+  amount: number;
+  label: string;
 }
 
 export interface TipActionView {
@@ -53,9 +77,10 @@ export interface OwnTipMenu {
 
 /** Live tip state sent with the stream detail and the join acknowledgement */
 export interface LiveTipState {
-  tipGoal: TipGoalView | null;
-  /** Euros of completed tips sent from the live (with or without a goal) */
+  /** Euros of completed tips sent from the live (the pot of the milestones) */
   tipTotal: number;
+  /** Milestones, by amount */
+  tipGoals: TipGoalView[];
   tipMenu: TipMenuItemView[];
   pendingTipActions: TipActionView[];
 }
@@ -64,24 +89,70 @@ const SENDER_SELECT = { id: true, username: true, displayName: true, avatar: tru
 
 type StoredChatMessage = Prisma.StreamMessageGetPayload<{ include: { sender: { select: typeof SENDER_SELECT } } }>;
 
-/** Result of recording a completed tip in its live (null fields when not applicable) */
+type StoredTipGoal = {
+  id: string;
+  amount: Prisma.Decimal;
+  label: string;
+  position: number;
+  reachedAt: Date | null;
+  completedAt: Date | null;
+};
+
+/** Result of recording a completed tip in its live */
 export interface RecordedLiveTip {
   creatorId: string;
   message: StoredChatMessage;
   action: TipActionView | null;
-  goal: { amount: number | null; label: string | null; total: number; reached: boolean };
-  /** True only for the tip that made the total cross the goal */
-  goalReachedNow: boolean;
-  systemMessage: StoredChatMessage | null;
+  /** Euros, after this tip */
+  total: number;
+  /** Every milestone of the live, after this tip */
+  goals: TipGoalView[];
+  /** Milestones this tip unlocked (several for a big tip), by amount */
+  reachedGoals: TipGoalView[];
+  /** One "Palier atteint" chat line per unlocked milestone, same order */
+  systemMessages: StoredChatMessage[];
 }
 
 const MAX_RECENT_ACTIONS = 50;
 const MAX_FINISHED_ACTIONS = 20;
 
-const toNumber = (value: Prisma.Decimal | number | null | undefined) => (value == null ? null : Number(value));
+const GOAL_ORDER: Prisma.LiveTipGoalOrderByWithRelationInput[] = [{ amount: 'asc' }, { position: 'asc' }];
+
+/** "100 €", "12,50 €" (non-breaking spaces) */
+export function formatGoalAmount(amount: number): string {
+  const decimals = Number.isInteger(amount) ? 0 : 2;
+  return new Intl.NumberFormat('fr-FR', {
+    style: 'currency',
+    currency: 'EUR',
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
+    .format(amount)
+    .replace(/\s/g, ' ');
+}
+
+/** Chat line of a milestone unlocked during the live */
+export function goalReachedMessage(goal: { amount: number; label: string }): string {
+  return `🎯 Palier atteint : ${formatGoalAmount(goal.amount)} — ${goal.label}`;
+}
+
+/** Milestone as returned by the API (euros, ISO dates) */
+export function toTipGoalView(goal: StoredTipGoal): TipGoalView {
+  return {
+    id: goal.id,
+    amount: Number(goal.amount),
+    label: goal.label,
+    position: goal.position,
+    reachedAt: goal.reachedAt ? goal.reachedAt.toISOString() : null,
+    completedAt: goal.completedAt ? goal.completedAt.toISOString() : null,
+  };
+}
+
+const hasTwoDecimalsAtMost =(amount: number) => Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-6;
 
 /**
- * Tip menu ("paliers de dons"), tip goal and tip actions of the live streams
+ * Tip menu ("paliers de dons"), donation goals (milestones on the live's
+ * tip total) and tip actions of the live streams
  */
 @Injectable()
 export class LiveTipsService {
@@ -192,9 +263,17 @@ export class LiveTipsService {
   }
 
   /**
-   * Set (or clear with amount null) the tip goal of a scheduled or live stream
+   * Milestones of a stream, by amount
    */
-  async setTipGoal(userId: string, streamId: string, dto: UpdateTipGoalDto) {
+  async getGoals(streamId: string, client: Prisma.TransactionClient = this.prisma): Promise<TipGoalView[]> {
+    const goals = await client.liveTipGoal.findMany({ where: { streamId }, orderBy: GOAL_ORDER });
+    return goals.map((goal) => this.toGoal(goal));
+  }
+
+  /**
+   * The stream, when the user is its creator
+   */
+  private async getOwnStream(userId: string, streamId: string) {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
       select: { id: true, creatorId: true, status: true },
@@ -205,48 +284,171 @@ export class LiveTipsService {
     if (stream.creatorId !== userId) {
       throw new ForbiddenException('You can only update your own streams');
     }
-    if (stream.status !== 'SCHEDULED' && stream.status !== 'LIVE') {
-      throw new BadRequestException('The tip goal can only be changed before or during the live');
+    return stream;
+  }
+
+  /**
+   * Replace the milestones of a scheduled or live stream, stored by amount.
+   * Milestones sent with one of their ids are updated in place and keep their
+   * reached / done state (reset when the amount changes), the others are
+   * created and the missing ones deleted. A new milestone the total already
+   * covers is stored as reached, without a chat announcement.
+   */
+  async replaceGoals(userId: string, streamId: string, dto: ReplaceTipGoalsDto): Promise<TipGoalsSnapshot> {
+    const input: unknown = dto?.goals ?? [];
+    if (!Array.isArray(input)) {
+      throw new BadRequestException('Invalid tip goals');
+    }
+    if (input.length > MAX_TIP_GOALS) {
+      throw new BadRequestException(`A live cannot have more than ${MAX_TIP_GOALS} tip goals`);
     }
 
-    const amount = dto.amount == null ? null : roundMoney(Number(dto.amount));
-    if (amount !== null && !(amount >= 1)) {
-      throw new BadRequestException('Invalid tip goal amount');
-    }
-    const label = amount === null ? null : dto.label?.trim() || null;
-
-    const updated = await this.prisma.liveStream.update({
-      where: { id: streamId },
-      data: { tipGoalAmount: amount, tipGoalLabel: label },
-      select: { tipGoalAmount: true, tipGoalLabel: true, tipTotal: true },
+    const goals = input.map((goal: { id?: unknown; amount?: unknown; label?: unknown }) => {
+      const amount = typeof goal?.amount === 'number' ? goal.amount : Number.NaN;
+      if (!Number.isFinite(amount) || amount < 1 || amount > MAX_TIP_GOAL_AMOUNT) {
+        throw new BadRequestException(`Tip goal amount must be between €1 and €${MAX_TIP_GOAL_AMOUNT}`);
+      }
+      if (!hasTwoDecimalsAtMost(amount)) {
+        throw new BadRequestException('Tip goal amount must have at most 2 decimals');
+      }
+      const label = typeof goal.label === 'string' ? goal.label.trim() : '';
+      if (!label) {
+        throw new BadRequestException('Tip goal label is required');
+      }
+      if (label.length > MAX_TIP_GOAL_LABEL_LENGTH) {
+        throw new BadRequestException(`Tip goal label must be at most ${MAX_TIP_GOAL_LABEL_LENGTH} characters`);
+      }
+      const id = typeof goal.id === 'string' && goal.id ? goal.id : undefined;
+      return { id, amount: roundMoney(amount), label };
     });
 
+    if (new Set(goals.map((goal) => goal.amount)).size !== goals.length) {
+      throw new BadRequestException('Tip goal amounts must be distinct');
+    }
+    const ids = goals.map((goal) => goal.id).filter((id): id is string => !!id);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Duplicate tip goal');
+    }
+
+    const stream = await this.getOwnStream(userId, streamId);
+    if (stream.status !== 'SCHEDULED' && stream.status !== 'LIVE') {
+      throw new BadRequestException('Tip goals can only be changed before or during the live');
+    }
+
+    goals.sort((a, b) => a.amount - b.amount);
+
+    return this.prisma.$transaction(async (tx) => {
+      // Locks the stream row: a tip recorded meanwhile waits for the new milestones
+      const locked = await tx.liveStream.update({
+        where: { id: streamId },
+        data: { updatedAt: new Date() },
+        select: { tipTotal: true },
+      });
+      const total = Number(locked.tipTotal);
+      const now = new Date();
+
+      const existing = await tx.liveTipGoal.findMany({ where: { streamId } });
+      const byId = new Map(existing.map((goal) => [goal.id, goal]));
+      const keptIds = ids.filter((id) => byId.has(id));
+
+      await tx.liveTipGoal.deleteMany({ where: { streamId, id: { notIn: keptIds } } });
+
+      for (const [position, goal] of goals.entries()) {
+        const current = goal.id ? byId.get(goal.id) : undefined;
+        const coveredAt = goal.amount <= total ? now : null;
+        if (current) {
+          const amountChanged = Number(current.amount) !== goal.amount;
+          await tx.liveTipGoal.update({
+            where: { id: current.id },
+            data: {
+              amount: goal.amount,
+              label: goal.label,
+              position,
+              ...(amountChanged
+                ? { reachedAt: coveredAt, completedAt: null }
+                : { reachedAt: current.reachedAt ?? coveredAt }),
+            },
+          });
+        } else {
+          // An unknown id (another stream's milestone, or deleted meanwhile) makes a new one
+          await tx.liveTipGoal.create({
+            data: { streamId, amount: goal.amount, label: goal.label, position, reachedAt: coveredAt },
+          });
+        }
+      }
+
+      return { streamId, total, goals: await this.getGoals(streamId, tx) };
+    });
+  }
+
+  /**
+   * Creator marks a reached milestone as done, or not done any more
+   */
+  async setGoalCompleted(
+    userId: string,
+    streamId: string,
+    goalId: string,
+    completed: boolean,
+  ): Promise<{ streamId: string; goal: TipGoalView }> {
+    if (typeof completed !== 'boolean') {
+      throw new BadRequestException('Invalid tip goal status');
+    }
+    await this.getOwnStream(userId, streamId);
+
+    const goal = await this.prisma.liveTipGoal.findUnique({ where: { id: goalId } });
+    if (!goal || goal.streamId !== streamId) {
+      throw new NotFoundException('Tip goal not found');
+    }
+    if (!goal.reachedAt) {
+      throw new BadRequestException('Only a reached tip goal can be marked as done');
+    }
+
+    const updated = await this.prisma.liveTipGoal.update({
+      where: { id: goalId },
+      data: { completedAt: completed ? (goal.completedAt ?? new Date()) : null },
+    });
+    return { streamId, goal: this.toGoal(updated) };
+  }
+
+  /**
+   * Milestones of the creator's most recent stream that has some (except
+   * `excludeStreamId`), to set up the next live from them
+   */
+  async getLatestGoals(creatorId: string, excludeStreamId?: string): Promise<{ goals: TipGoalSummary[] }> {
+    const stream = await this.prisma.liveStream.findFirst({
+      where: {
+        creatorId,
+        tipGoals: { some: {} },
+        ...(excludeStreamId && { id: { not: excludeStreamId } }),
+      },
+      // The live that took place last, then the most recently created (not started yet)
+      orderBy: [{ startedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
+      select: { tipGoals: { orderBy: GOAL_ORDER, select: { amount: true, label: true } } },
+    });
     return {
-      streamId,
-      amount: toNumber(updated.tipGoalAmount),
-      label: updated.tipGoalLabel,
-      total: Number(updated.tipTotal),
+      goals: (stream?.tipGoals ?? []).map((goal) => ({ amount: Number(goal.amount), label: goal.label })),
     };
   }
 
   /**
-   * Tip goal, active menu and recent actions of a stream
+   * Running total, milestones, active menu and recent actions of a stream
    */
   async getLiveTipState(streamId: string): Promise<LiveTipState> {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
-      select: { creatorId: true, tipGoalAmount: true, tipGoalLabel: true, tipTotal: true },
+      select: { creatorId: true, tipTotal: true },
     });
     if (!stream) {
-      return { tipGoal: null, tipTotal: 0, tipMenu: [], pendingTipActions: [] };
+      return { tipTotal: 0, tipGoals: [], tipMenu: [], pendingTipActions: [] };
     }
 
-    const [tipMenu, pendingTipActions] = await Promise.all([
+    const [tipGoals, tipMenu, pendingTipActions] = await Promise.all([
+      this.getGoals(streamId),
       this.getActiveMenu(stream.creatorId),
       this.getRecentActions(streamId),
     ]);
 
-    return { tipGoal: this.toGoal(stream), tipTotal: Number(stream.tipTotal), tipMenu, pendingTipActions };
+    return { tipTotal: Number(stream.tipTotal), tipGoals, tipMenu, pendingTipActions };
   }
 
   /**
@@ -271,8 +473,9 @@ export class LiveTipsService {
   }
 
   /**
-   * Record a completed tip sent from a live: running total, chat line and
-   * action for a menu item, in one database transaction. Idempotent on the
+   * Record a completed tip sent from a live: running total, chat line,
+   * action for a menu item and the milestones it unlocks (one "Palier
+   * atteint" chat line each), in one database transaction. Idempotent on the
    * transaction id (the chat line and the action are unique per tip), so a
    * tip completed twice (webhook + confirm) is only counted once: returns
    * null for the duplicate.
@@ -315,11 +518,14 @@ export class LiveTipsService {
           include: { sender: { select: SENDER_SELECT } },
         });
 
+        // Also locks the stream row until the end of the transaction, so that
+        // concurrent tips unlock each milestone only once
         const updated = await tx.liveStream.update({
           where: { id: streamId },
           data: { tipTotal: { increment: amount } },
-          select: { tipGoalAmount: true, tipGoalLabel: true, tipTotal: true },
+          select: { tipTotal: true },
         });
+        const total = Number(updated.tipTotal);
 
         const action = label
           ? await tx.liveTipAction.create({
@@ -335,35 +541,38 @@ export class LiveTipsService {
             })
           : null;
 
-        const total = Number(updated.tipTotal);
-        const goalAmount = toNumber(updated.tipGoalAmount);
-        const previous = roundMoney(total - amount);
-        const goalReachedNow = goalAmount !== null && previous < goalAmount && total >= goalAmount;
+        const unlocked = await tx.liveTipGoal.findMany({
+          where: { streamId, reachedAt: null, amount: { lte: total } },
+          select: { id: true },
+        });
+        const unlockedIds = new Set(unlocked.map((goal) => goal.id));
+        if (unlockedIds.size > 0) {
+          await tx.liveTipGoal.updateMany({
+            where: { id: { in: [...unlockedIds] }, reachedAt: null },
+            data: { reachedAt: new Date() },
+          });
+        }
 
-        const systemMessage = goalReachedNow
-          ? await tx.streamMessage.create({
-              data: {
-                streamId,
-                senderId: stream.creatorId,
-                type: 'SYSTEM',
-                message: `Objectif atteint : ${updated.tipGoalLabel || 'objectif de la live'} 🎉`,
-              },
+        const goals = await this.getGoals(streamId, tx);
+        const reachedGoals = goals.filter((goal) => unlockedIds.has(goal.id));
+        const systemMessages: StoredChatMessage[] = [];
+        for (const goal of reachedGoals) {
+          systemMessages.push(
+            await tx.streamMessage.create({
+              data: { streamId, senderId: stream.creatorId, type: 'SYSTEM', message: goalReachedMessage(goal) },
               include: { sender: { select: SENDER_SELECT } },
-            })
-          : null;
+            }),
+          );
+        }
 
         return {
           creatorId: stream.creatorId,
           message,
           action: action ? this.toAction(action) : null,
-          goal: {
-            amount: goalAmount,
-            label: updated.tipGoalLabel,
-            total,
-            reached: goalAmount !== null && total >= goalAmount,
-          },
-          goalReachedNow,
-          systemMessage,
+          total,
+          goals,
+          reachedGoals,
+          systemMessages,
         };
       });
     } catch (error) {
@@ -424,17 +633,8 @@ export class LiveTipsService {
     return new Map(actions.map((action) => [action.transactionId, action.label]));
   }
 
-  toGoal(stream: {
-    tipGoalAmount: Prisma.Decimal | null;
-    tipGoalLabel: string | null;
-    tipTotal: Prisma.Decimal;
-  }): TipGoalView | null {
-    if (stream.tipGoalAmount == null) return null;
-    return {
-      amount: Number(stream.tipGoalAmount),
-      label: stream.tipGoalLabel,
-      total: Number(stream.tipTotal),
-    };
+  toGoal(goal: StoredTipGoal): TipGoalView {
+    return toTipGoalView(goal);
   }
 
   private toMenuItem(item: {

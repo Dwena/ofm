@@ -26,6 +26,8 @@ import {
   Clock,
   Gift,
   Lock,
+  Target,
+  ChevronDown,
 } from 'lucide-react'
 import { liveApi } from '@/lib/api'
 import {
@@ -64,9 +66,16 @@ import { openBroadcastMedia, switchDevice, switchPreset } from '@/lib/webrtc/med
 import { addBroadcastTracks } from '@/lib/webrtc/sender-params'
 import { getLiveIceServers, prefetchLiveIceServers } from '@/lib/webrtc/ice-servers'
 import { TipMenuEditor } from '@/components/live/tip-menu-editor'
-import { TipGoalEditor } from '@/components/live/tip-goal-editor'
+import { TipGoalsEditor } from '@/components/live/tip-goals-editor'
 import { TipActionsQueue } from '@/components/live/tip-actions-queue'
-import { bindLiveTipEvents, initialLiveTipState, liveTipsReducer, type LiveTipSnapshot } from '@/lib/live-tips'
+import {
+  bindLiveTipEvents,
+  initialLiveTipState,
+  liveTipsReducer,
+  type LiveTipSnapshot,
+  type TipGoal,
+} from '@/lib/live-tips'
+import { formatGoalEuros, goalReachedText } from '@/lib/live-tip-goals'
 
 interface StreamStats {
   tipsCount: number
@@ -93,6 +102,10 @@ interface CreatorStream {
   createdAt: string
   _count?: { viewers?: number; messages?: number }
   stats?: StreamStats
+  /** Euros of tips received during the live */
+  tipTotal?: number
+  /** Donation goal milestones, by amount */
+  tipGoals?: TipGoal[]
 }
 
 interface ViewerPeer {
@@ -163,8 +176,10 @@ export default function CreatorLivePage() {
   const [chatError, setChatError] = useState<string | null>(null)
   const [sendingChat, setSendingChat] = useState(false)
   const [mutedUserIds, setMutedUserIds] = useState<Set<string>>(new Set())
-  // Tip goal and tip menu requests of the live being broadcast
+  // Donation goals and tip menu requests of the live being broadcast
   const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState)
+  // Upcoming live whose donation goals editor is open
+  const [goalsStreamId, setGoalsStreamId] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -591,6 +606,12 @@ export default function CreatorLivePage() {
         else next.delete(userId)
         return next
       })
+    })
+
+    // A milestone of the donation goals was reached (also announced in the chat)
+    socket.on('tip-goal-reached', (data: { goal?: TipGoal }) => {
+      if (!data?.goal) return
+      toast({ title: goalReachedText(data.goal), description: 'Marquez-le comme fait une fois réalisé.' })
     })
 
     // Paid tips are also announced in the chat (chat-message of type TIP)
@@ -1067,7 +1088,7 @@ export default function CreatorLivePage() {
             </Card>
           )}
 
-          {/* Tip menu requests, tip goal and menu while broadcasting */}
+          {/* Tip menu requests, donation goals and menu while broadcasting */}
           {activeStream && (
             <>
               <TipActionsQueue
@@ -1077,12 +1098,16 @@ export default function CreatorLivePage() {
                 connected={broadcasting}
                 onActionUpdated={(action) => dispatchTips({ type: 'action', action })}
               />
-              <TipGoalEditor
+              <TipGoalsEditor
                 streamId={activeStream.id}
-                amount={tipState.goalAmount}
-                label={tipState.goalLabel}
                 total={tipState.total}
-                onSaved={(goal) => dispatchTips({ type: 'goal', ...goal })}
+                goals={tipState.goals}
+                live
+                onSaved={(snapshot) => {
+                  dispatchTips({ type: 'goals', total: snapshot.total, goals: snapshot.goals })
+                  queryClient.invalidateQueries({ queryKey: ['creator-streams'] })
+                }}
+                onGoalUpdated={(goal) => dispatchTips({ type: 'goal', goal })}
               />
               <TipMenuEditor defaultOpen={false} />
             </>
@@ -1265,77 +1290,105 @@ export default function CreatorLivePage() {
                     stream.status === 'SCHEDULED' &&
                     !!stream.scheduledFor &&
                     new Date(stream.scheduledFor).getTime() < Date.now()
+                  const goals = stream.tipGoals ?? []
+                  const goalsOpen = goalsStreamId === stream.id
                   return (
-                    <div
-                      key={stream.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border rounded-lg p-3"
-                    >
-                      <div className="min-w-0 space-y-1">
-                        <p className="font-medium break-words">{stream.title}</p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant={stream.status === 'LIVE' ? 'destructive' : 'secondary'}>
-                            {stream.status === 'LIVE' ? 'En direct' : 'Programmé'}
-                          </Badge>
-                          <Badge variant="outline">{VISIBILITY_LABELS[stream.visibility] ?? stream.visibility}</Badge>
-                          {stream.isPpv && <Badge variant="secondary">PPV {formatEuros(stream.ppvPrice)}</Badge>}
+                    <div key={stream.id} className="border rounded-lg" data-testid="pending-stream">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3">
+                        <div className="min-w-0 space-y-1">
+                          <p className="font-medium break-words">{stream.title}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={stream.status === 'LIVE' ? 'destructive' : 'secondary'}>
+                              {stream.status === 'LIVE' ? 'En direct' : 'Programmé'}
+                            </Badge>
+                            <Badge variant="outline">{VISIBILITY_LABELS[stream.visibility] ?? stream.visibility}</Badge>
+                            {stream.isPpv && <Badge variant="secondary">PPV {formatEuros(stream.ppvPrice)}</Badge>}
+                          </div>
+                          {stream.scheduledFor && stream.status === 'SCHEDULED' && (
+                            <p className={`text-sm ${late ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                              {format(new Date(stream.scheduledFor), "d MMMM yyyy 'à' HH:mm", { locale: fr })}
+                              {late && ' (horaire dépassé)'}
+                            </p>
+                          )}
+                          {stream.status === 'LIVE' && (
+                            <p className="text-sm text-muted-foreground">
+                              Aucune diffusion depuis cette page : reprenez le live pour réactiver votre caméra.
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            className="flex max-w-full items-center gap-1 text-sm font-medium text-primary hover:underline"
+                            onClick={() => setGoalsStreamId(goalsOpen ? null : stream.id)}
+                            aria-expanded={goalsOpen}
+                            data-testid="toggle-goals-editor"
+                          >
+                            <Target className="h-4 w-4 shrink-0" />
+                            <span className="truncate">
+                              {goals.length > 0
+                                ? `Objectifs de dons : ${goals.length} palier${goals.length > 1 ? 's' : ''} (jusqu’à ${formatGoalEuros(goals[goals.length - 1].amount)})`
+                                : 'Ajouter des objectifs de dons'}
+                            </span>
+                            <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${goalsOpen ? 'rotate-180' : ''}`} />
+                          </button>
                         </div>
-                        {stream.scheduledFor && stream.status === 'SCHEDULED' && (
-                          <p className={`text-sm ${late ? 'text-amber-600' : 'text-muted-foreground'}`}>
-                            {format(new Date(stream.scheduledFor), "d MMMM yyyy 'à' HH:mm", { locale: fr })}
-                            {late && ' (horaire dépassé)'}
-                          </p>
-                        )}
-                        {stream.status === 'LIVE' && (
-                          <p className="text-sm text-muted-foreground">
-                            Aucune diffusion depuis cette page : reprenez le live pour réactiver votre caméra.
-                          </p>
-                        )}
+                        <div className="flex gap-2 shrink-0">
+                          {stream.status === 'LIVE' ? (
+                            <>
+                              <Button size="sm" onClick={() => void handleResume(stream)} disabled={startingPreview}>
+                                <Play className="h-4 w-4 mr-1" /> Reprendre
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void handleEnd(stream)}
+                                disabled={ending}
+                              >
+                                {ending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                                Terminer
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button
+                                size="sm"
+                                onClick={() => void handleStart(stream)}
+                                disabled={starting || startingPreview || !!otherLiveStream}
+                                title={otherLiveStream ? "Terminez d'abord le live en cours" : undefined}
+                              >
+                                {starting ? (
+                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                ) : (
+                                  <Play className="h-4 w-4 mr-1" />
+                                )}
+                                Démarrer
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-9 w-9"
+                                onClick={() => void handleDelete(stream)}
+                                disabled={deleting}
+                                title="Supprimer"
+                                aria-label={`Supprimer ${stream.title}`}
+                              >
+                                {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex gap-2 shrink-0">
-                        {stream.status === 'LIVE' ? (
-                          <>
-                            <Button size="sm" onClick={() => void handleResume(stream)} disabled={startingPreview}>
-                              <Play className="h-4 w-4 mr-1" /> Reprendre
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => void handleEnd(stream)}
-                              disabled={ending}
-                            >
-                              {ending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-                              Terminer
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <Button
-                              size="sm"
-                              onClick={() => void handleStart(stream)}
-                              disabled={starting || startingPreview || !!otherLiveStream}
-                              title={otherLiveStream ? "Terminez d'abord le live en cours" : undefined}
-                            >
-                              {starting ? (
-                                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                              ) : (
-                                <Play className="h-4 w-4 mr-1" />
-                              )}
-                              Démarrer
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-9 w-9"
-                              onClick={() => void handleDelete(stream)}
-                              disabled={deleting}
-                              title="Supprimer"
-                              aria-label={`Supprimer ${stream.title}`}
-                            >
-                              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                            </Button>
-                          </>
-                        )}
-                      </div>
+                      {goalsOpen && (
+                        <div className="border-t p-2 sm:p-3">
+                          <TipGoalsEditor
+                            streamId={stream.id}
+                            total={stream.tipTotal ?? 0}
+                            goals={goals}
+                            className="border-0 shadow-none"
+                            onSaved={() => queryClient.invalidateQueries({ queryKey: ['creator-streams'] })}
+                            onGoalUpdated={() => queryClient.invalidateQueries({ queryKey: ['creator-streams'] })}
+                          />
+                        </div>
+                      )}
                     </div>
                   )
                 })}
