@@ -17,6 +17,7 @@ import { StreamingService } from './streaming.service';
 import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
 import { formatGoalAmount, LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
 import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
+import { LiveKitService, LiveTransport } from './livekit.service';
 
 interface SocketUser {
   id: string;
@@ -119,6 +120,7 @@ export class StreamingGateway
   // streamId -> ids of the users the creator muted in the chat (until the stream ends)
   private mutedUsers = new Map<string, Set<string>>();
   private tipSubscription?: Subscription;
+  private videoViewersSubscription?: Subscription;
 
   constructor(
     private prisma: PrismaService,
@@ -126,17 +128,28 @@ export class StreamingGateway
     private streamingService: StreamingService,
     @Optional() private oneTimePayments?: OneTimePaymentService,
     @Optional() private liveTips?: LiveTipsService,
+    @Optional() private liveKit?: LiveKitService,
   ) {}
+
+  /** Video transport announced in the join / broadcast acknowledgements */
+  private get transport(): LiveTransport {
+    return this.liveKit?.transport ?? 'p2p';
+  }
 
   onModuleInit() {
     // Paid tips sent from a live are announced in its chat
     this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => {
       void this.notifyTip(tip);
     });
+    // LiveKit mode: viewers connected to the video (LiveKit webhooks), for the creator's health panel
+    this.videoViewersSubscription = this.liveKit?.videoViewers$.subscribe(({ streamId, count }) => {
+      this.server?.to(streamRoom(streamId)).emit('video-viewer-count', { streamId, count });
+    });
   }
 
   onModuleDestroy() {
     this.tipSubscription?.unsubscribe();
+    this.videoViewersSubscription?.unsubscribe();
     this.viewerStats.forEach((stats) => clearTimeout(stats.timer));
     this.viewerStats.clear();
   }
@@ -251,6 +264,7 @@ export class StreamingGateway
 
       return {
         success: true,
+        transport: this.transport,
         viewerCount,
         broadcasterOnline: !!room.broadcasterSocketId,
         muted: this.isMuted(streamId, client.userId),
@@ -316,6 +330,7 @@ export class StreamingGateway
 
       return {
         success: true,
+        transport: this.transport,
         viewerCount,
         mutedUserIds: [...(this.mutedUsers.get(streamId) ?? [])],
         messages: await this.toChatHistory(messages, stream.creatorId),

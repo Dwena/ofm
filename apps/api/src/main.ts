@@ -133,6 +133,8 @@ async function bootstrap() {
   // Body parser limits
   app.useBodyParser('json', { limit: '10mb' });
   app.useBodyParser('urlencoded', { extended: true, limit: '10mb' });
+  // LiveKit webhooks are sent as application/webhook+json (req.rawBody kept for the signature)
+  app.useBodyParser('json', { type: 'application/webhook+json', limit: '1mb' });
 
   // Get port configuration
   const port = configService.get('PORT', 3001);

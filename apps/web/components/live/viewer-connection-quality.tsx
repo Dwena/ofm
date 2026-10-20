@@ -41,23 +41,33 @@ export function ViewerQualityIndicator({ quality }: { quality: ViewerQuality | n
   )
 }
 
-const MODES: { value: ViewerQualityMode; label: string; description: string }[] = [
+export interface QualityMenuOption<Mode extends string> {
+  value: Mode
+  label: string
+  description: string
+}
+
+/** Peer-to-peer lives: the creator caps the bitrate it sends to this viewer */
+const P2P_MODES: QualityMenuOption<ViewerQualityMode>[] = [
   { value: 'auto', label: 'Auto', description: 'Meilleure qualité possible pour votre connexion' },
   { value: 'low', label: 'Économie de données', description: 'Image réduite, environ 0,5 Mbit/s' },
 ]
 
 /**
- * "Qualité" menu of the player
+ * "Qualité" menu of the player (P2P modes by default, LiveKit layers with `options`)
  */
-export function ViewerQualityMenu({
+export function ViewerQualityMenu<Mode extends string = ViewerQualityMode>({
   mode,
   onChange,
+  options,
   disabled = false,
 }: {
-  mode: ViewerQualityMode
-  onChange: (mode: ViewerQualityMode) => void
+  mode: Mode
+  onChange: (mode: Mode) => void
+  options?: QualityMenuOption<Mode>[]
   disabled?: boolean
 }) {
+  const MODES = options ?? (P2P_MODES as unknown as QualityMenuOption<Mode>[])
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

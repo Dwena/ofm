@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nes
 import { StreamingService } from './streaming.service';
 import { StreamingGateway } from './streaming.gateway';
 import { IceServersService } from './ice-servers.service';
+import { LiveKitTokenDto } from './dto/livekit-token.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -115,6 +116,20 @@ export class StreamingController {
     const stream = await this.streamingService.endStream(userId, streamId);
     this.streamingGateway.notifyStreamEnded(streamId);
     return stream;
+  }
+
+  /**
+   * LiveKit access token for the live's video (LiveKit transport only):
+   * publisher token for the creator, viewer token for anyone allowed to
+   * watch. Returns { url, token, room, identity, transport: 'livekit' }.
+   */
+  @Post(':id/livekit-token')
+  async getLiveKitToken(
+    @CurrentUser('id') userId: string,
+    @Param('id') streamId: string,
+    @Body() dto: LiveKitTokenDto,
+  ) {
+    return this.streamingService.getLiveKitToken(userId, streamId, dto?.role);
   }
 
   /**

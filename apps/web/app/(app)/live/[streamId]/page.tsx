@@ -47,6 +47,13 @@ import OneTimeCheckout from '@/components/checkout/one-time-checkout';
 import { LiveChatMessageItem } from '@/components/live/live-chat-message';
 import { ViewerQualityIndicator, ViewerQualityMenu } from '@/components/live/viewer-connection-quality';
 import { useViewerConnectionQuality } from '@/hooks/use-viewer-connection-quality';
+import { useLiveKitViewer } from '@/hooks/use-livekit-viewer';
+import {
+  isLiveKitViewerQualityMode,
+  LIVEKIT_VIEWER_QUALITY_OPTIONS,
+  type LiveKitViewerQualityMode,
+} from '@/lib/livekit/presets';
+import type { LiveTransport } from '@/lib/livekit/token';
 import { useChatAutoscroll } from '@/hooks/use-chat-autoscroll';
 import { getLiveIceServers, prefetchLiveIceServers } from '@/lib/webrtc/ice-servers';
 import type { ViewerQualityMode } from '@/lib/webrtc/bitrate-controller';
@@ -72,6 +79,8 @@ interface LiveStream extends LiveTipSnapshot {
   viewerCount: number;
   hasAccess?: boolean;
   accessDeniedReason?: string | null;
+  /** Video transport: LiveKit SFU, or the creator's peer-to-peer mesh */
+  transport?: LiveTransport;
   isPpv?: boolean;
   ppvPrice?: number | null; // euros
   // Creator's tip settings (euros)
@@ -93,6 +102,7 @@ const ICE_DISCONNECTED_GRACE_MS = 3000;
 // An offer that does not lead to a connection within this delay counts as a failure
 const CONNECT_TIMEOUT_MS = 15000;
 const QUALITY_STORAGE_KEY = 'live-viewer-quality';
+const LIVEKIT_QUALITY_STORAGE_KEY = 'live-viewer-quality-livekit';
 
 const REACTION_EMOJIS = ['❤️', '🔥', '👏', '😍', '🎉', '💎'];
 const TIP_PRESETS = [5, 10, 20, 50, 100, 200];
@@ -134,6 +144,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const [connectAttempt, setConnectAttempt] = useState(0);
   const [socketConnected, setSocketConnected] = useState(false);
   const [qualityMode, setQualityMode] = useState<ViewerQualityMode>('auto');
+  // LiveKit transport: simulcast layer chosen by the viewer (auto = adaptive)
+  const [liveKitQuality, setLiveKitQuality] = useState<LiveKitViewerQualityMode>('auto');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -143,6 +155,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const chatErrorTimer = useRef<ReturnType<typeof setTimeout>>();
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const qualityModeRef = useRef<ViewerQualityMode>('auto');
+  const mutedRef = useRef(isMuted);
+  mutedRef.current = isMuted;
   const reactionTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
   // Once watching, a poll result (e.g. hasAccess flipping) never tears the connection down
   const watchingRef = useRef(false);
@@ -218,13 +232,16 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   else if (!isLive) watchingRef.current = false;
   const canWatch = isLive && (stream?.hasAccess !== false || watchingRef.current);
   const userId = user?.id;
+  // With LiveKit the video comes from the SFU: the socket only carries chat, tips, counts...
+  const isLiveKit = stream?.transport === 'livekit';
 
-  // WebSocket + WebRTC (the creator is the offerer, this page answers)
+  // WebSocket + WebRTC (the creator is the offerer, this page answers).
+  // In LiveKit mode only the socket part runs (no peer connection, no offers).
   useEffect(() => {
     if (!canWatch || !userId) return;
 
     setConnectionState('connecting');
-    prefetchLiveIceServers(true);
+    if (!isLiveKit) prefetchLiveIceServers(true);
     const socket = createLiveSocket({
       onAuthError: () => {
         setJoined(false);
@@ -412,6 +429,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
             old ? { ...old, viewerCount: ack.viewerCount as number } : old,
           );
         }
+        if (isLiveKit) return;
         if (ack.broadcasterOnline) {
           requestOffer();
         } else {
@@ -424,6 +442,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       // The server drops this socket's viewer slot: a new offer is negotiated after reconnecting
       setSocketConnected(false);
       setJoined(false);
+      // LiveKit: the video does not depend on the socket
+      if (isLiveKit) return;
       clearRecoveryTimers();
       closePeer();
       setConnectionState('offline');
@@ -431,7 +451,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
 
     // A new session id starts a fresh peer connection; the same session id is
     // an ICE restart of the current one
-    socket.on(
+    if (!isLiveKit) socket.on(
       'offer',
       async (data: { streamId: string; offer: RTCSessionDescriptionInit; sessionId?: string }) => {
         const offerSessionId = data.sessionId;
@@ -465,7 +485,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       },
     );
 
-    socket.on(
+    if (!isLiveKit) socket.on(
       'ice-candidate',
       async (data: { streamId: string; candidate: RTCIceCandidateInit; sessionId?: string }) => {
         const candidate = data.candidate;
@@ -484,6 +504,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
 
     // The broadcaster (re)connected its socket: keep a working connection
     socket.on('broadcaster-ready', () => {
+      if (isLiveKit) return;
       if (peer && peer.connectionState === 'connected') return;
       clearRecoveryTimers();
       retryCount = 0;
@@ -492,7 +513,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
 
     socket.on('broadcaster-disconnected', () => {
       // Only signaling is gone (e.g. the creator's network blipped): the video
-      // keeps flowing peer-to-peer, so a connected peer is kept
+      // keeps flowing peer-to-peer (or through LiveKit), so a connected peer is kept
+      if (isLiveKit) return;
       if (peer && peer.connectionState === 'connected') return;
       clearRecoveryTimers();
       closePeer();
@@ -556,7 +578,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       setJoined(false);
       setSocketConnected(false);
     };
-  }, [canWatch, userId, streamId, queryClient, toast, connectAttempt]);
+  }, [canWatch, userId, streamId, queryClient, toast, connectAttempt, isLiveKit]);
 
   // Last quality choice of this browser
   useEffect(() => {
@@ -566,10 +588,37 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         qualityModeRef.current = saved;
         setQualityMode(saved);
       }
+      const savedLiveKit = localStorage.getItem(LIVEKIT_QUALITY_STORAGE_KEY);
+      if (isLiveKitViewerQualityMode(savedLiveKit)) setLiveKitQuality(savedLiveKit);
     } catch {
       // Storage unavailable
     }
   }, []);
+
+  const handleLiveKitQualityChange = (mode: LiveKitViewerQualityMode) => {
+    setLiveKitQuality(mode);
+    try {
+      localStorage.setItem(LIVEKIT_QUALITY_STORAGE_KEY, mode);
+    } catch {
+      // Storage unavailable
+    }
+  };
+
+  const liveKit = useLiveKitViewer({
+    streamId,
+    enabled: isLiveKit && canWatch && !!userId && !joinError,
+    videoRef,
+    mutedRef,
+    mode: liveKitQuality,
+    onEnded: () => queryClient.invalidateQueries({ queryKey: ['live-stream', streamId] }),
+  });
+  const liveKitAccessError = liveKit.accessError;
+  useEffect(() => {
+    // Access refused by the token endpoint (same reasons as join-live-stream)
+    if (liveKitAccessError) setJoinError(liveKitAccessError);
+  }, [liveKitAccessError]);
+  // Video state of the player, whatever the transport
+  const videoState: ConnectionState = isLiveKit ? liveKit.state : connectionState;
 
   const handleQualityChange = (mode: ViewerQualityMode) => {
     qualityModeRef.current = mode;
@@ -583,10 +632,11 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     if (joined) socketRef.current?.emit('set-viewer-quality', { streamId, mode });
   };
 
-  const videoQuality = useViewerConnectionQuality(
+  const p2pVideoQuality = useViewerConnectionQuality(
     peerRef,
-    connectionState === 'playing' || connectionState === 'reconnecting',
+    !isLiveKit && (connectionState === 'playing' || connectionState === 'reconnecting'),
   );
+  const videoQuality = isLiveKit ? liveKit.quality : p2pVideoQuality;
 
   // Auto-scroll chat (unless the user scrolled up to read older messages)
   const { onScroll: onChatScroll } = useChatAutoscroll(chatContainerRef, chatMessages);
@@ -609,7 +659,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       videoRef.current.volume = volume / 100;
       videoRef.current.muted = isMuted;
     }
-  }, [volume, isMuted, connectionState]);
+  }, [volume, isMuted, videoState]);
 
   const showChatError = (message: string) => {
     setChatError(message);
@@ -991,12 +1041,12 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
             muted={isMuted}
           />
 
-          {connectionState !== 'playing' && (
+          {videoState !== 'playing' && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-white/80 gap-3 p-4 text-center">
-              {connectionState === 'error' || connectionState === 'offline' ? (
+              {videoState === 'error' || videoState === 'offline' ? (
                 <>
                   <p>
-                    {connectionState === 'offline'
+                    {videoState === 'offline'
                       ? 'Connexion au live perdue. Reconnexion...'
                       : 'Connexion à la vidéo impossible.'}
                   </p>
@@ -1004,7 +1054,10 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                     variant="secondary"
                     size="sm"
                     onClick={() => {
-                      if (connectionState === 'error' && joined && requestOfferRef.current) {
+                      if (isLiveKit) {
+                        if (videoState === 'error') liveKit.retry();
+                        else setConnectAttempt((n) => n + 1);
+                      } else if (videoState === 'error' && joined && requestOfferRef.current) {
                         requestOfferRef.current();
                       } else {
                         setConnectAttempt((n) => n + 1);
@@ -1018,11 +1071,11 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 <>
                   <Loader2 className="h-8 w-8 animate-spin" />
                   <p>
-                    {connectionState === 'waiting'
+                    {videoState === 'waiting'
                       ? isOwnStream
                         ? "Vous ne diffusez pas encore : lancez la caméra depuis l'espace Live."
                         : 'En attente du créateur...'
-                      : connectionState === 'reconnecting'
+                      : videoState === 'reconnecting'
                         ? 'Connexion instable, reconnexion de la vidéo...'
                         : 'Connexion au live...'}
                   </p>
@@ -1031,13 +1084,13 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
             </div>
           )}
 
-          {(connectionState === 'playing' || connectionState === 'reconnecting') && (
+          {(videoState === 'playing' || videoState === 'reconnecting') && (
             <div className="absolute top-3 right-3">
               <ViewerQualityIndicator quality={videoQuality} />
             </div>
           )}
 
-          {connectionState === 'playing' && isMuted && (
+          {videoState === 'playing' && isMuted && (
             <button
               type="button"
               onClick={handleMute}
@@ -1098,7 +1151,15 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 onValueChange={([value]) => handleVolume(value)}
                 aria-label="Volume"
               />
-              <ViewerQualityMenu mode={qualityMode} onChange={handleQualityChange} />
+              {isLiveKit ? (
+                <ViewerQualityMenu
+                  mode={liveKitQuality}
+                  options={LIVEKIT_VIEWER_QUALITY_OPTIONS}
+                  onChange={handleLiveKitQualityChange}
+                />
+              ) : (
+                <ViewerQualityMenu mode={qualityMode} onChange={handleQualityChange} />
+              )}
               <Button
                 variant="ghost"
                 size="icon"
