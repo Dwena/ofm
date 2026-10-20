@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 //
 // Lance toute la plateforme en local, prête à tester (Windows, macOS, Linux) :
-//   PostgreSQL, Redis, MinIO, MailDev, LiveKit (docker-compose.dev.yml)
+//   PostgreSQL, Redis, MinIO, MailDev, LiveKit + LiveKit Ingress (OBS) (docker-compose.dev.yml)
 //   + fichiers .env, migrations, données de démo, API (:3001) et front (:3000)
 //
 //   npm run dev:up                 tout lancer (la base est vidée puis reseedée)
@@ -141,6 +141,9 @@ const LIVEKIT_DEV = {
   LIVEKIT_URL: 'ws://localhost:7880',
   LIVEKIT_API_KEY: 'devkey',
   LIVEKIT_API_SECRET: 'fanvip_dev_livekit_secret_change_me_0123456789abcdef',
+  // "Diffuser avec OBS" : URLs publiques du conteneur ofm-livekit-ingress
+  LIVEKIT_INGRESS_RTMP_URL: 'rtmp://localhost:1935/live',
+  LIVEKIT_INGRESS_WHIP_URL: 'http://localhost:8080/w',
 };
 const LIVEKIT_ENV = SKIP_DOCKER
   ? Object.fromEntries(
@@ -287,6 +290,9 @@ STREAM_BASE_URL=${API_URL}
 LIVEKIT_URL=${LIVEKIT_ENV.LIVEKIT_URL ?? ''}
 LIVEKIT_API_KEY=${LIVEKIT_ENV.LIVEKIT_API_KEY ?? ''}
 LIVEKIT_API_SECRET=${LIVEKIT_ENV.LIVEKIT_API_SECRET ?? ''}
+# Diffuser avec OBS (conteneur ofm-livekit-ingress) : URLs à coller dans OBS
+LIVEKIT_INGRESS_RTMP_URL=${LIVEKIT_ENV.LIVEKIT_INGRESS_RTMP_URL ?? ''}
+LIVEKIT_INGRESS_WHIP_URL=${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL ?? ''}
 `,
   );
 } else if (SKIP_DOCKER) {
@@ -376,7 +382,8 @@ console.log(`
   API        ${API_URL}/api/v1   (docs Swagger : ${API_URL}/api/docs)
   E-mails    http://localhost:1080   (MailDev)
   Lives      ${LIVEKIT_ENV.LIVEKIT_URL ? `${LIVEKIT_ENV.LIVEKIT_URL}   (LiveKit)` : 'pair-à-pair (LiveKit non configuré)'}
-  Stockage   http://localhost:9001   (MinIO : minioadmin / minioadmin_dev_only)
+${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL ? `  OBS        ${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL} (WHIP)  ${LIVEKIT_ENV.LIVEKIT_INGRESS_RTMP_URL} (RTMP)   clés : Live > Diffuser avec OBS
+` : ''}  Stockage   http://localhost:9001   (MinIO : minioadmin / minioadmin_dev_only)
 
   Comptes : docs/SEED_ACCOUNTS.md — mot de passe SecurePass123!
   Ctrl+C pour arrêter l'API et le front ; les services Docker restent lancés

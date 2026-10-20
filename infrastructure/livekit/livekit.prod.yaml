@@ -29,6 +29,18 @@ turn:
   cert_file: /etc/ssl/livekit/turn-fullchain.pem
   key_file: /etc/ssl/livekit/turn-privkey.pem
 
+# Redis: required by the Ingress ("Diffuser avec OBS"). Address and password
+# come from REDIS_HOST / REDIS_PASSWORD (docker-compose.prod.yml).
+redis:
+  address: 127.0.0.1:6379
+
+# Public URLs of the Ingress, shown to the creators in OBS settings (the API
+# can override them with LIVEKIT_INGRESS_RTMP_URL / LIVEKIT_INGRESS_WHIP_URL).
+# WHIP goes through nginx (TLS) to 127.0.0.1:8080; RTMP is direct on 1935.
+ingress:
+  rtmp_base_url: rtmp://live.yourdomain.com:1935/live
+  whip_base_url: https://whip.yourdomain.com/w
+
 room:
   auto_create: true
   empty_timeout: 300

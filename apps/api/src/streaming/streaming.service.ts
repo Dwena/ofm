@@ -14,6 +14,8 @@ import { nanoid } from 'nanoid';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
 import { LiveTipsService, toTipGoalView } from './live-tips.service';
 import { LiveKitRole, LiveKitService, LiveKitTokenResponse, LiveTransport } from './livekit.service';
+import { INGRESS_UNAVAILABLE, LiveIngressService } from './live-ingress.service';
+import type { LiveSource } from './dto/live-ingress.dto';
 
 export type StreamAccessDeniedReason =
   | 'PRIVATE'
@@ -90,6 +92,7 @@ export class StreamingService {
     private oneTimePayments: OneTimePaymentService,
     @Optional() private liveTips?: LiveTipsService,
     @Optional() private liveKit?: LiveKitService,
+    @Optional() private liveIngress?: LiveIngressService,
   ) {}
 
   /**
@@ -140,6 +143,12 @@ export class StreamingService {
       await this.assertNoOtherLiveStream(userId);
     }
 
+    // OBS mode: the creator's ingress must exist (LiveKit transport only)
+    const source: LiveSource = dto.source ?? 'BROWSER';
+    if (source === 'OBS') {
+      await this.requireIngress().ensureIngress(userId);
+    }
+
     // Generate unique stream key
     const streamKey = `stream_${nanoid(32)}`;
 
@@ -159,6 +168,7 @@ export class StreamingService {
         scheduledFor,
         streamKey,
         streamUrl,
+        source,
         status: scheduledFor ? 'SCHEDULED' : 'LIVE',
         startedAt: scheduledFor ? null : new Date(),
       },
@@ -175,6 +185,9 @@ export class StreamingService {
     });
 
     this.logger.log(`Stream created: ${stream.id} by user ${userId}`);
+    if (stream.status === 'LIVE' && source === 'OBS') {
+      await this.bindIngress(userId, stream.id);
+    }
 
     return {
       ...stream,
@@ -247,10 +260,10 @@ export class StreamingService {
   /**
    * Start a stream
    */
-  async startStream(userId: string, streamId: string) {
+  async startStream(userId: string, streamId: string, requestedSource?: LiveSource) {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
-      select: { creatorId: true, status: true },
+      select: { creatorId: true, status: true, source: true },
     });
 
     if (!stream) {
@@ -271,13 +284,23 @@ export class StreamingService {
 
     await this.assertNoOtherLiveStream(userId, streamId);
 
+    // The source can still be changed when the live starts
+    const source: LiveSource = requestedSource ?? stream.source;
+    if (source === 'OBS') {
+      await this.requireIngress().ensureIngress(userId);
+    }
+
     const started = await this.prisma.liveStream.update({
       where: { id: streamId },
       data: {
         status: 'LIVE',
         startedAt: new Date(),
+        source,
       },
     });
+    if (source === 'OBS') {
+      await this.bindIngress(userId, streamId);
+    }
     return withoutStreamKey(started);
   }
 
@@ -287,7 +310,7 @@ export class StreamingService {
   async endStream(userId: string, streamId: string) {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
-      select: { creatorId: true, status: true, startedAt: true },
+      select: { creatorId: true, status: true, startedAt: true, source: true },
     });
 
     if (!stream) {
@@ -318,6 +341,11 @@ export class StreamingService {
     });
 
     await this.closeViewerSessions(streamId);
+    // OBS mode: the ingress goes back to its idle room first, so that OBS
+    // (which reconnects by itself) never recreates the live's room
+    if (stream.source === 'OBS') {
+      await this.liveIngress?.unbind(userId);
+    }
     // Every video connection of the live ends with its LiveKit room
     await this.closeLiveKitRoom(streamId);
 
@@ -563,6 +591,10 @@ export class StreamingService {
       hasAccess: access.allowed,
       accessDeniedReason: access.reason ?? null,
       transport: this.liveTransport,
+      // OBS mode: whether OBS is sending (creator only)
+      ...(access.isCreator && stream.source === 'OBS' && this.liveIngress
+        ? { obsStatus: this.liveIngress.getStreamObsStatus(stream.creatorId, stream.id) }
+        : {}),
       // Euros
       tips: {
         allowed: creatorProfile?.allowTips ?? true,
@@ -618,6 +650,29 @@ export class StreamingService {
       name: user.displayName || user.username,
       role,
     });
+  }
+
+  /**
+   * OBS mode needs the LiveKit ingress: 400 INGRESS_UNAVAILABLE in P2P mode
+   */
+  private requireIngress(): LiveIngressService {
+    if (!this.liveIngress?.available) {
+      throw new BadRequestException(INGRESS_UNAVAILABLE);
+    }
+    return this.liveIngress;
+  }
+
+  /**
+   * Send the creator's OBS to the live. Best effort: the live is already
+   * LIVE, and reading the ingress (GET /streaming/me/ingress, polled by the
+   * creator's page) binds it again if this failed.
+   */
+  private async bindIngress(creatorId: string, streamId: string) {
+    try {
+      await this.liveIngress?.bindToStream(creatorId, streamId);
+    } catch (error) {
+      this.logger.warn(`Unable to bind the ingress of ${creatorId} to ${streamId}: ${error?.message ?? error}`);
+    }
   }
 
   /**

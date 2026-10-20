@@ -583,8 +583,15 @@ export const liveApi = {
     isPpv?: boolean
     ppvPrice?: number
     scheduledFor?: string
+    // Video source: browser camera (default) or OBS (LiveKit transport only)
+    source?: 'BROWSER' | 'OBS'
   }) => api.post('/streaming', data),
-  start: (streamId: string) => api.post(`/streaming/${streamId}/start`),
+  start: (streamId: string, source?: 'BROWSER' | 'OBS') =>
+    api.post(`/streaming/${streamId}/start`, source ? { source } : {}),
+  // "Diffuser avec OBS": the creator's ingress (server URL + secret stream key)
+  getIngress: () => api.get('/streaming/me/ingress'),
+  setIngressInput: (inputType: 'WHIP' | 'RTMP') => api.post('/streaming/me/ingress', { inputType }),
+  resetIngressKey: () => api.post('/streaming/me/ingress/reset-key'),
   end: (streamId: string) => api.post(`/streaming/${streamId}/end`),
   delete: (streamId: string) => api.delete(`/streaming/${streamId}`),
   join: (streamId: string) => api.post(`/streaming/${streamId}/join`),

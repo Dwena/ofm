@@ -101,6 +101,14 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       LIVEKIT_API_URL: ${LIVEKIT_API_URL:-}
+      # "Diffuser avec OBS" (LiveKit Ingress): public URLs shown to the creators
+      # (default: ingress.rtmp_base_url / whip_base_url of livekit.prod.yaml)
+      LIVEKIT_INGRESS_RTMP_URL: ${LIVEKIT_INGRESS_RTMP_URL:-}
+      LIVEKIT_INGRESS_WHIP_URL: ${LIVEKIT_INGRESS_WHIP_URL:-}
+      # Simulcast layers of the transcoded RTMP inputs: 720p (default) or 1080p
+      LIVEKIT_INGRESS_RTMP_PRESET: ${LIVEKIT_INGRESS_RTMP_PRESET:-720p}
+      # Codec of the transcoded RTMP layers: h264 (default) or vp8 (more CPU)
+      LIVEKIT_INGRESS_RTMP_CODEC: ${LIVEKIT_INGRESS_RTMP_CODEC:-h264}
     ports:
       - "3001:3001"
     volumes:
@@ -218,9 +226,40 @@ services:
     environment:
       # "<key>: <secret>" (secret of 32+ random characters), same values as the api's LIVEKIT_API_KEY / LIVEKIT_API_SECRET
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      # Redis of this compose file (published on 127.0.0.1:6379): needed by the
+      # Ingress below ("Diffuser avec OBS"), which talks to LiveKit through it
+      REDIS_HOST: 127.0.0.1:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     volumes:
       - ./infrastructure/livekit/livekit.prod.yaml:/etc/livekit.yaml:ro
       - ./nginx/ssl:/etc/ssl/livekit:ro
+
+  # LiveKit Ingress: OBS pushes to it (WHIP behind nginx TLS, or RTMP on 1935)
+  # and it publishes in the live's LiveKit room. Profile "livekit", host
+  # networking (WHIP media on UDP 7885). See docs/DEPLOYMENT.md
+  # "Diffuser avec OBS: LiveKit Ingress".
+  livekit-ingress:
+    image: livekit/ingress:v1.4.3
+    container_name: ofm-livekit-ingress-prod
+    restart: always
+    profiles: ["livekit"]
+    network_mode: host
+    depends_on:
+      - livekit
+      - redis
+    environment:
+      INGRESS_CONFIG_FILE: /etc/ingress.yaml
+      # Same key pair as LiveKit and the api
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_WS_URL: ws://127.0.0.1:7880
+    volumes:
+      - ./infrastructure/livekit/ingress.prod.yaml:/etc/ingress.yaml:ro
+    deploy:
+      resources:
+        limits:
+          # RTMP transcoding is CPU-bound (~1-2 cores per 720p input, more in 1080p)
+          cpus: '4.0'
 
 volumes:
   postgres_data:

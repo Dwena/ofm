@@ -8,6 +8,7 @@ import { LiveTipsService } from './live-tips.service';
 import { LiveTipsController } from './live-tips.controller';
 import { LiveKitService } from './livekit.service';
 import { LiveKitWebhookController } from './livekit-webhook.controller';
+import { LiveIngressService } from './live-ingress.service';
 import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
@@ -19,7 +20,7 @@ import { PaymentsModule } from '../payments/payments.module';
     }),
   ],
   controllers: [StreamingController, LiveTipsController, LiveKitWebhookController],
-  providers: [StreamingService, StreamingGateway, IceServersService, LiveTipsService, LiveKitService],
-  exports: [StreamingService, StreamingGateway, LiveTipsService, LiveKitService],
+  providers: [StreamingService, StreamingGateway, IceServersService, LiveTipsService, LiveKitService, LiveIngressService],
+  exports: [StreamingService, StreamingGateway, LiveTipsService, LiveKitService, LiveIngressService],
 })
 export class StreamingModule {}

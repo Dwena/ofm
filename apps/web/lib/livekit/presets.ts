@@ -133,3 +133,19 @@ export function viewerQualityRequest(mode: LiveKitViewerQualityMode): ViewerQual
       return { layer: 'high', fps: FULL_FPS }
   }
 }
+
+/**
+ * Quality choices that make sense for the video being played. A browser
+ * broadcast (and an OBS RTMP input, transcoded by the Ingress) has three
+ * simulcast layers; an OBS WHIP input is forwarded as is, with a single
+ * layer: only "Auto" then (the SFU cannot send a lower resolution).
+ * `layerCount` null = not known yet (every choice).
+ */
+export function viewerQualityOptionsFor(layerCount: number | null) {
+  if (layerCount === null || layerCount >= 3) return LIVEKIT_VIEWER_QUALITY_OPTIONS
+  if (layerCount === 2) return LIVEKIT_VIEWER_QUALITY_OPTIONS.filter((option) => option.value !== 'medium')
+  return LIVEKIT_VIEWER_QUALITY_OPTIONS.filter((option) => option.value === 'auto').map((option) => ({
+    ...option,
+    description: 'Qualité unique : celle envoyée par le créateur',
+  }))
+}

@@ -108,6 +108,11 @@ export class LiveKitService implements OnModuleDestroy {
     return this.config ? 'livekit' : 'p2p';
   }
 
+  /** Server URL and API keys (null in P2P mode), for the other LiveKit API clients (ingress) */
+  getConfig(): LiveKitConfig | null {
+    return this.config;
+  }
+
   /**
    * Access token to join the live's room. The publisher (the creator) may
    * only publish its camera and microphone; viewers only subscribe and are
