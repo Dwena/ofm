@@ -1,5 +1,6 @@
 'use client'
 
+import { memo } from 'react'
 import { Gift, MicOff, MoreVertical, Trash2, Volume2 } from 'lucide-react'
 import type { LiveChatMessage } from '@/lib/live'
 import { cn, formatEuros } from '@/lib/utils'
@@ -25,9 +26,11 @@ interface LiveChatMessageItemProps {
 }
 
 /**
- * One line of a live chat: regular message, or a highlighted paid tip
+ * One line of a live chat: regular message, or a highlighted paid tip.
+ * Memoized: a new message only renders that message (callbacks passed in
+ * must be stable).
  */
-export function LiveChatMessageItem({
+export const LiveChatMessageItem = memo(function LiveChatMessageItem({
   message,
   creatorLabel = 'Créateur',
   muted = false,
@@ -105,4 +108,4 @@ export function LiveChatMessageItem({
       )}
     </div>
   )
-}
+})

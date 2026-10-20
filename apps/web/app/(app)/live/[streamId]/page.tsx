@@ -7,7 +7,6 @@ import { liveApi } from '@/lib/api';
 import {
   createLiveSocket,
   closeLiveSocket,
-  getIceServers,
   ACCESS_DENIED_MESSAGES,
   CHAT_ERROR_MESSAGES,
   LIVE_ACK_TIMEOUT,
@@ -46,6 +45,11 @@ import { fr } from 'date-fns/locale';
 import type { Socket } from 'socket.io-client';
 import OneTimeCheckout from '@/components/checkout/one-time-checkout';
 import { LiveChatMessageItem } from '@/components/live/live-chat-message';
+import { ViewerQualityIndicator, ViewerQualityMenu } from '@/components/live/viewer-connection-quality';
+import { useViewerConnectionQuality } from '@/hooks/use-viewer-connection-quality';
+import { useChatAutoscroll } from '@/hooks/use-chat-autoscroll';
+import { getLiveIceServers, prefetchLiveIceServers } from '@/lib/webrtc/ice-servers';
+import type { ViewerQualityMode } from '@/lib/webrtc/bitrate-controller';
 import { formatEuros } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
@@ -71,7 +75,15 @@ interface LiveStream {
   };
 }
 
-type ConnectionState = 'connecting' | 'waiting' | 'playing' | 'error' | 'offline';
+type ConnectionState = 'connecting' | 'waiting' | 'playing' | 'reconnecting' | 'error' | 'offline';
+
+// Automatic video reconnection: delays of the attempts before the manual "Réessayer"
+const RETRY_DELAYS_MS = [1000, 3000, 6000];
+// ICE 'disconnected' often recovers by itself: wait this long before reacting
+const ICE_DISCONNECTED_GRACE_MS = 3000;
+// An offer that does not lead to a connection within this delay counts as a failure
+const CONNECT_TIMEOUT_MS = 15000;
+const QUALITY_STORAGE_KEY = 'live-viewer-quality';
 
 const REACTION_EMOJIS = ['❤️', '🔥', '👏', '😍', '🎉', '💎'];
 const TIP_PRESETS = [5, 10, 20, 50, 100, 200];
@@ -107,6 +119,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const [mutedInChat, setMutedInChat] = useState(false);
   // Bumped to rebuild the socket connection (retry button)
   const [connectAttempt, setConnectAttempt] = useState(0);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [qualityMode, setQualityMode] = useState<ViewerQualityMode>('auto');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -114,6 +128,11 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const socketRef = useRef<Socket>();
   const requestOfferRef = useRef<() => void>();
   const chatErrorTimer = useRef<ReturnType<typeof setTimeout>>();
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const qualityModeRef = useRef<ViewerQualityMode>('auto');
+  const reactionTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  // Once watching, a poll result (e.g. hasAccess flipping) never tears the connection down
+  const watchingRef = useRef(false);
 
   // Fetch live stream info
   const {
@@ -128,10 +147,14 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       const response = await liveApi.getStream(streamId);
       return response.data as LiveStream;
     },
-    // Poll while waiting for a scheduled live to start or for a purchase
+    // Poll while waiting for a scheduled live to start or for a purchase. While
+    // watching, the socket pushes everything (viewer count, end of the live):
+    // only a slow poll runs while it is disconnected.
     refetchInterval: (query) => {
       const data = query.state.data as LiveStream | undefined;
-      return data && (data.status === 'ENDED' || data.status === 'CANCELLED') ? false : 10000;
+      if (data && (data.status === 'ENDED' || data.status === 'CANCELLED')) return false;
+      if (data?.status === 'LIVE' && data.hasAccess !== false) return socketConnected ? false : 60000;
+      return 10000;
     },
     retry: (count, error: any) => error?.response?.status !== 404 && error?.response?.status !== 403 && count < 2,
   });
@@ -148,7 +171,9 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   };
 
   const isLive = stream?.status === 'LIVE';
-  const canWatch = isLive && stream?.hasAccess !== false;
+  if (isLive && stream?.hasAccess !== false) watchingRef.current = true;
+  else if (!isLive) watchingRef.current = false;
+  const canWatch = isLive && (stream?.hasAccess !== false || watchingRef.current);
   const userId = user?.id;
 
   // WebSocket + WebRTC (the creator is the offerer, this page answers)
@@ -156,6 +181,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     if (!canWatch || !userId) return;
 
     setConnectionState('connecting');
+    prefetchLiveIceServers(true);
     const socket = createLiveSocket({
       onAuthError: () => {
         setJoined(false);
@@ -167,31 +193,132 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     // Negotiation id chosen by the broadcaster for the current offer
     let sessionId: string | undefined;
     let pendingCandidates: RTCIceCandidateInit[] = [];
+    let hasVideo = false;
+    // Automatic recovery state
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let disconnectedTimer: ReturnType<typeof setTimeout> | undefined;
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+
+    const clearRecoveryTimers = () => {
+      clearTimeout(retryTimer);
+      clearTimeout(disconnectedTimer);
+      clearTimeout(connectTimer);
+      retryTimer = disconnectedTimer = connectTimer = undefined;
+    };
 
     const closePeer = () => {
       if (peer) {
         peer.ontrack = null;
         peer.onicecandidate = null;
         peer.onconnectionstatechange = null;
+        peer.oniceconnectionstatechange = null;
         peer.close();
         peer = null;
       }
+      peerRef.current = null;
       sessionId = undefined;
       pendingCandidates = [];
+      hasVideo = false;
       if (videoRef.current) {
         videoRef.current.srcObject = null;
       }
     };
 
-    const createPeer = (offerSessionId?: string) => {
-      closePeer();
-      const pc = new RTCPeerConnection({ iceServers: getIceServers() });
-      sessionId = offerSessionId;
+    const sendQualityMode = () => {
+      if (qualityModeRef.current !== 'auto' && socket.connected) {
+        socket.emit('set-viewer-quality', { streamId, mode: qualityModeRef.current });
+      }
+    };
+
+    const requestOffer = (options: { iceRestart?: boolean } = {}) => {
+      if (!options.iceRestart) closePeer();
+      setConnectionState(hasVideo ? 'reconnecting' : 'connecting');
+      socket
+        .timeout(LIVE_ACK_TIMEOUT)
+        .emit('request-offer', { streamId, iceRestart: !!options.iceRestart }, (err: Error | null, ack: LiveAck) => {
+          if (disposed) return;
+          if (err) {
+            scheduleRecovery();
+            return;
+          }
+          if (ack?.reason === 'BROADCASTER_OFFLINE') {
+            clearRecoveryTimers();
+            retryCount = 0;
+            closePeer();
+            setConnectionState('waiting');
+          } else if (ack?.error) {
+            scheduleRecovery();
+          } else {
+            // Watchdog: the negotiation must end with a connection
+            clearTimeout(connectTimer);
+            connectTimer = setTimeout(() => {
+              if (!peer || peer.connectionState !== 'connected') scheduleRecovery();
+            }, CONNECT_TIMEOUT_MS);
+          }
+        });
+    };
+
+    // Retry with backoff (ICE restart first when the connection still exists,
+    // then fresh offers); after the last attempt the manual button is shown.
+    const scheduleRecovery = () => {
+      if (disposed || retryTimer) return;
+      clearTimeout(connectTimer);
+      clearTimeout(disconnectedTimer);
+      if (retryCount >= RETRY_DELAYS_MS.length) {
+        setConnectionState('error');
+        return;
+      }
+      const attempt = retryCount;
+      retryCount += 1;
+      setConnectionState(hasVideo ? 'reconnecting' : 'connecting');
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        // Without the socket, the reconnection handler rejoins and asks for an offer
+        if (!socket.connected) return;
+        const canRestart = attempt === 0 && !!peer && peer.signalingState === 'stable' && !!sessionId;
+        requestOffer({ iceRestart: canRestart });
+      }, RETRY_DELAYS_MS[attempt]);
+    };
+
+    const manualRetry = () => {
+      clearRecoveryTimers();
+      retryCount = 0;
+      requestOffer();
+    };
+    requestOfferRef.current = manualRetry;
+
+    const onPeerStateChange = (pc: RTCPeerConnection) => {
+      if (peer !== pc) return;
+      const ice = pc.iceConnectionState;
+      if (pc.connectionState === 'connected' || ice === 'connected' || ice === 'completed') {
+        clearRecoveryTimers();
+        retryCount = 0;
+        if (hasVideo) setConnectionState('playing');
+      } else if (pc.connectionState === 'failed' || ice === 'failed') {
+        scheduleRecovery();
+      } else if (ice === 'disconnected' && !disconnectedTimer) {
+        disconnectedTimer = setTimeout(() => {
+          disconnectedTimer = undefined;
+          if (peer === pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+            scheduleRecovery();
+          }
+        }, ICE_DISCONNECTED_GRACE_MS);
+      }
+    };
+
+    const createPeer = (iceServers: RTCIceServer[]) => {
+      const pc = new RTCPeerConnection({ iceServers });
+      const offerSessionId = sessionId;
 
       pc.ontrack = (event) => {
         if (videoRef.current && event.streams[0]) {
-          videoRef.current.srcObject = event.streams[0];
+          if (videoRef.current.srcObject !== event.streams[0]) {
+            videoRef.current.srcObject = event.streams[0];
+          }
           videoRef.current.play().catch(() => undefined);
+          hasVideo = true;
           setConnectionState('playing');
         }
       };
@@ -206,35 +333,17 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         }
       };
 
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed') {
-          setConnectionState('error');
-        }
-      };
+      pc.onconnectionstatechange = () => onPeerStateChange(pc);
+      pc.oniceconnectionstatechange = () => onPeerStateChange(pc);
 
       peer = pc;
+      peerRef.current = pc;
       return pc;
     };
 
-    const requestOffer = () => {
-      setConnectionState('connecting');
-      socket.timeout(LIVE_ACK_TIMEOUT).emit('request-offer', { streamId }, (err: Error | null, ack: LiveAck) => {
-        if (err) {
-          setConnectionState('error');
-          return;
-        }
-        if (ack?.reason === 'BROADCASTER_OFFLINE') {
-          closePeer();
-          setConnectionState('waiting');
-        } else if (ack?.error) {
-          setConnectionState('error');
-        }
-      });
-    };
-    requestOfferRef.current = requestOffer;
-
     // (Re)join on every connection, including automatic reconnections
     socket.on('connect', () => {
+      setSocketConnected(true);
       socket.timeout(LIVE_ACK_TIMEOUT).emit('join-live-stream', { streamId }, (err: Error | null, ack: LiveAck) => {
         if (err) {
           setConnectionState('offline');
@@ -267,31 +376,46 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     });
 
     socket.on('disconnect', () => {
+      // The server drops this socket's viewer slot: a new offer is negotiated after reconnecting
+      setSocketConnected(false);
       setJoined(false);
+      clearRecoveryTimers();
       closePeer();
       setConnectionState('offline');
     });
 
-    // Every offer starts a fresh peer connection
+    // A new session id starts a fresh peer connection; the same session id is
+    // an ICE restart of the current one
     socket.on(
       'offer',
       async (data: { streamId: string; offer: RTCSessionDescriptionInit; sessionId?: string }) => {
+        const offerSessionId = data.sessionId;
+        const restart =
+          !!peer && !!offerSessionId && offerSessionId === sessionId && peer.signalingState === 'stable';
+        if (!restart) {
+          closePeer();
+          // Candidates of this session that arrive meanwhile are queued
+          sessionId = offerSessionId;
+        }
         try {
-          const pc = createPeer(data.sessionId);
+          const iceServers = await getLiveIceServers();
+          if (disposed || sessionId !== offerSessionId) return; // superseded by a newer offer
+          const pc = restart && peer ? peer : createPeer(iceServers);
           await pc.setRemoteDescription(data.offer);
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           if (peer !== pc) return; // superseded by a newer offer
-          socket.emit('answer', { streamId, answer: pc.localDescription, sessionId: data.sessionId });
+          socket.emit('answer', { streamId, answer: pc.localDescription, sessionId: offerSessionId });
+          sendQualityMode();
 
           const queued = pendingCandidates;
           pendingCandidates = [];
           for (const candidate of queued) {
-            await pc.addIceCandidate(candidate);
+            await pc.addIceCandidate(candidate).catch(() => undefined);
           }
         } catch (error) {
           console.error('WebRTC offer error:', error);
-          setConnectionState('error');
+          scheduleRecovery();
         }
       },
     );
@@ -300,9 +424,9 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       'ice-candidate',
       async (data: { streamId: string; candidate: RTCIceCandidateInit; sessionId?: string }) => {
         const candidate = data.candidate;
-        if (!peer || !candidate || data.sessionId !== sessionId) return;
+        if (!candidate || data.sessionId !== sessionId) return;
         try {
-          if (peer.remoteDescription && peer.signalingState === 'stable') {
+          if (peer && peer.remoteDescription && peer.signalingState === 'stable') {
             await peer.addIceCandidate(candidate);
           } else {
             pendingCandidates.push(candidate);
@@ -313,14 +437,25 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       },
     );
 
-    socket.on('broadcaster-ready', () => requestOffer());
+    // The broadcaster (re)connected its socket: keep a working connection
+    socket.on('broadcaster-ready', () => {
+      if (peer && peer.connectionState === 'connected') return;
+      clearRecoveryTimers();
+      retryCount = 0;
+      requestOffer();
+    });
 
     socket.on('broadcaster-disconnected', () => {
+      // Only signaling is gone (e.g. the creator's network blipped): the video
+      // keeps flowing peer-to-peer, so a connected peer is kept
+      if (peer && peer.connectionState === 'connected') return;
+      clearRecoveryTimers();
       closePeer();
       setConnectionState('waiting');
     });
 
     socket.on('stream-ended', () => {
+      clearRecoveryTimers();
       closePeer();
       queryClient.setQueryData(['live-stream', streamId], (old: LiveStream | undefined) =>
         old ? { ...old, status: 'ENDED' } : old,
@@ -345,12 +480,15 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       });
     });
 
+    const timers = reactionTimers.current;
     socket.on('reaction', (reaction: { emoji: string; x: number; y: number }) => {
       const id = Math.random().toString();
       setReactions((prev) => [...prev.slice(-30), { id, emoji: reaction.emoji, x: reaction.x, y: reaction.y }]);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
         setReactions((prev) => prev.filter((r) => r.id !== id));
       }, 3000);
+      timers.add(timer);
     });
 
     socket.on('viewer-count', (count: number) => {
@@ -360,6 +498,10 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     });
 
     return () => {
+      disposed = true;
+      clearRecoveryTimers();
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
       // Leave the room before closing (the server also cleans up on disconnect)
       if (socket.connected) socket.emit('leave-live-stream', { streamId });
       closeLiveSocket(socket);
@@ -367,15 +509,42 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       requestOfferRef.current = undefined;
       closePeer();
       setJoined(false);
+      setSocketConnected(false);
     };
   }, [canWatch, userId, streamId, queryClient, toast, connectAttempt]);
 
-  // Auto-scroll chat
+  // Last quality choice of this browser
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    try {
+      const saved = localStorage.getItem(QUALITY_STORAGE_KEY);
+      if (saved === 'low' || saved === 'auto') {
+        qualityModeRef.current = saved;
+        setQualityMode(saved);
+      }
+    } catch {
+      // Storage unavailable
     }
-  }, [chatMessages]);
+  }, []);
+
+  const handleQualityChange = (mode: ViewerQualityMode) => {
+    qualityModeRef.current = mode;
+    setQualityMode(mode);
+    try {
+      localStorage.setItem(QUALITY_STORAGE_KEY, mode);
+    } catch {
+      // Storage unavailable
+    }
+    // Applied by the creator to this viewer's connection (re-sent after each new offer)
+    if (joined) socketRef.current?.emit('set-viewer-quality', { streamId, mode });
+  };
+
+  const videoQuality = useViewerConnectionQuality(
+    peerRef,
+    connectionState === 'playing' || connectionState === 'reconnecting',
+  );
+
+  // Auto-scroll chat (unless the user scrolled up to read older messages)
+  const { onScroll: onChatScroll } = useChatAutoscroll(chatContainerRef, chatMessages);
 
   // Keep the fullscreen button in sync when the user presses Escape
   useEffect(() => {
@@ -576,7 +745,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
     );
   }
 
-  const deniedReason = stream.hasAccess === false ? stream.accessDeniedReason || 'PRIVATE' : joinError;
+  const deniedReason =
+    stream.hasAccess === false && !canWatch ? stream.accessDeniedReason || 'PRIVATE' : joinError;
   // PPV lives (live or scheduled) can be bought from this page
   const canPurchase = deniedReason === 'PPV_PURCHASE_REQUIRED' && Number(stream.ppvPrice) > 0;
 
@@ -803,10 +973,18 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                       ? isOwnStream
                         ? "Vous ne diffusez pas encore : lancez la caméra depuis l'espace Live."
                         : 'En attente du créateur...'
-                      : 'Connexion au live...'}
+                      : connectionState === 'reconnecting'
+                        ? 'Connexion instable, reconnexion de la vidéo...'
+                        : 'Connexion au live...'}
                   </p>
                 </>
               )}
+            </div>
+          )}
+
+          {(connectionState === 'playing' || connectionState === 'reconnecting') && (
+            <div className="absolute top-3 right-3">
+              <ViewerQualityIndicator quality={videoQuality} />
             </div>
           )}
 
@@ -871,6 +1049,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 onValueChange={([value]) => handleVolume(value)}
                 aria-label="Volume"
               />
+              <ViewerQualityMenu mode={qualityMode} onChange={handleQualityChange} />
               <Button
                 variant="ghost"
                 size="icon"
@@ -897,7 +1076,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         </div>
 
         {/* Messages */}
-        <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div ref={chatContainerRef} onScroll={onChatScroll} className="flex-1 overflow-y-auto p-4 space-y-3">
           {!joined && chatMessages.length === 0 && (
             <p className="text-sm text-muted-foreground text-center">Connexion au chat...</p>
           )}
