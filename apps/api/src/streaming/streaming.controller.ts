@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { StreamingService } from './streaming.service';
 import { StreamingGateway } from './streaming.gateway';
+import { IceServersService } from './ice-servers.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -14,7 +15,18 @@ export class StreamingController {
   constructor(
     private readonly streamingService: StreamingService,
     private readonly streamingGateway: StreamingGateway,
+    private readonly iceServersService: IceServersService,
   ) {}
+
+  /**
+   * ICE servers for the live WebRTC connections (STUN, plus short-lived TURN
+   * credentials when TURN_URLS / TURN_SECRET are configured). Declared before
+   * `:id` so it is not taken for a stream id.
+   */
+  @Get('ice-servers')
+  getIceServers(@CurrentUser('id') userId: string) {
+    return this.iceServersService.getIceServers(userId);
+  }
 
   /**
    * Create a new live stream (creators only)
@@ -98,6 +110,8 @@ export class StreamingController {
     @CurrentUser('id') userId: string,
     @Param('id') streamId: string,
   ) {
+    // Write the throttled viewer stats (peak) while the stream is still LIVE
+    await this.streamingGateway.flushViewerStats(streamId);
     const stream = await this.streamingService.endStream(userId, streamId);
     this.streamingGateway.notifyStreamEnded(streamId);
     return stream;

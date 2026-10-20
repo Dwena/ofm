@@ -229,6 +229,15 @@ describe('StreamingService', () => {
       });
     });
 
+    it('keeps the highest count seen since the last write as peak', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue({ peakViewers: 3, status: 'LIVE' });
+      await service.updateViewerStats('stream-1', 2, 7);
+      expect(mockPrismaService.liveStream.update).toHaveBeenCalledWith({
+        where: { id: 'stream-1' },
+        data: { viewerCount: 2, peakViewers: 7 },
+      });
+    });
+
     it('does nothing once the stream has ended', async () => {
       mockPrismaService.liveStream.findUnique.mockResolvedValue({ peakViewers: 10, status: 'ENDED' });
       await service.updateViewerStats('stream-1', 0);
