@@ -347,6 +347,25 @@ describe('OneTimePaymentService', () => {
         expect.objectContaining({ transactionId: 'tx-1', streamId: 'stream-1', amount: 20, message: 'Bravo' }),
       ]);
     });
+
+    it('passes the tip menu item chosen in the live along', async () => {
+      const events: TipCompletedEvent[] = [];
+      service.tipCompleted$.subscribe((event) => events.push(event));
+      mockStripeService.createOneTimePaymentIntent.mockResolvedValue(intent({ amount: 2000 }));
+
+      await service.startPayment({
+        payerId: 'fan-1',
+        creatorId: 'creator-1',
+        kind: 'tip',
+        amount: 20,
+        metadata: { streamId: 'stream-1', menuItemId: 'item-1', menuItemLabel: 'Chanter une chanson' },
+      });
+      await service.handlePaymentIntentSucceeded(succeeded({ amount: 2000, amount_received: 2000 }));
+
+      expect(events).toEqual([
+        expect.objectContaining({ menuItemId: 'item-1', menuItemLabel: 'Chanter une chanson', message: null }),
+      ]);
+    });
   });
 
   describe('PPV messages', () => {

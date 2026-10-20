@@ -23,6 +23,7 @@ describe('PaymentsService (money units)', () => {
     transaction: { aggregate: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     payout: { aggregate: jest.fn(), create: jest.fn(), findMany: jest.fn() },
     liveStream: { findUnique: jest.fn() },
+    liveTipMenuItem: { findUnique: jest.fn() },
   };
 
   const mockStripeService = {
@@ -250,6 +251,79 @@ describe('PaymentsService (money units)', () => {
       await expect(
         service.sendTip('fan-1', 'creator-1', { amount: 10, streamId: 'stream-1' }),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('refuses a tip from a live that is not in progress', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue(creator);
+
+      for (const status of ['SCHEDULED', 'ENDED', 'CANCELLED']) {
+        mockPrismaService.liveStream.findUnique.mockResolvedValue({ creatorId: 'creator-1', status });
+        await expect(
+          service.sendTip('fan-1', 'creator-1', { amount: 10, streamId: 'stream-1' }),
+        ).rejects.toThrow('This live stream is not in progress');
+      }
+      expect(mockOneTimePayments.startPayment).not.toHaveBeenCalled();
+    });
+
+    describe('with a tip menu item', () => {
+      const menuItem = {
+        id: 'item-1',
+        creatorId: 'creator-1',
+        label: 'Chanter une chanson',
+        amount: new Prisma.Decimal('20'),
+        isActive: true,
+      };
+
+      beforeEach(() => {
+        mockPrismaService.user.findUnique.mockResolvedValue(creator);
+        mockPrismaService.liveStream.findUnique.mockResolvedValue({ creatorId: 'creator-1', status: 'LIVE' });
+        mockOneTimePayments.startPayment.mockResolvedValue({ status: 'requires_payment_method', completed: false });
+      });
+
+      it('stores the item and its label in the transaction metadata', async () => {
+        mockPrismaService.liveTipMenuItem.findUnique.mockResolvedValue(menuItem);
+
+        await service.sendTip('fan-1', 'creator-1', { amount: 25, streamId: 'stream-1', menuItemId: 'item-1' });
+
+        expect(mockOneTimePayments.startPayment).toHaveBeenCalledWith(
+          expect.objectContaining({
+            amount: 25,
+            metadata: expect.objectContaining({
+              streamId: 'stream-1',
+              menuItemId: 'item-1',
+              menuItemLabel: 'Chanter une chanson',
+            }),
+          }),
+        );
+      });
+
+      it('refuses an amount below the item amount', async () => {
+        mockPrismaService.liveTipMenuItem.findUnique.mockResolvedValue(menuItem);
+
+        await expect(
+          service.sendTip('fan-1', 'creator-1', { amount: 19.99, streamId: 'stream-1', menuItemId: 'item-1' }),
+        ).rejects.toThrow('This tip menu item costs at least €20.00');
+        expect(mockOneTimePayments.startPayment).not.toHaveBeenCalled();
+      });
+
+      it("refuses another creator's item, a hidden item or an unknown one", async () => {
+        for (const item of [{ ...menuItem, creatorId: 'someone-else' }, { ...menuItem, isActive: false }, null]) {
+          mockPrismaService.liveTipMenuItem.findUnique.mockResolvedValue(item);
+          await expect(
+            service.sendTip('fan-1', 'creator-1', { amount: 50, streamId: 'stream-1', menuItemId: 'item-1' }),
+          ).rejects.toThrow('Tip menu item not found');
+        }
+        expect(mockOneTimePayments.startPayment).not.toHaveBeenCalled();
+      });
+
+      it('requires the live the tip is sent from', async () => {
+        mockPrismaService.liveTipMenuItem.findUnique.mockResolvedValue(menuItem);
+
+        await expect(service.sendTip('fan-1', 'creator-1', { amount: 50, menuItemId: 'item-1' })).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(mockPrismaService.liveTipMenuItem.findUnique).not.toHaveBeenCalled();
+      });
     });
 
     it('confirms through the one-time payment flow', async () => {

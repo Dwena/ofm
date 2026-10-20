@@ -1,9 +1,18 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { nanoid } from 'nanoid';
 import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { LiveTipsService } from './live-tips.service';
 
 export type StreamAccessDeniedReason =
   | 'PRIVATE'
@@ -42,6 +51,7 @@ export class StreamingService {
     private prisma: PrismaService,
     private configService: ConfigService,
     private oneTimePayments: OneTimePaymentService,
+    @Optional() private liveTips?: LiveTipsService,
   ) {}
 
   /**
@@ -372,21 +382,27 @@ export class StreamingService {
 
   /**
    * PPV sales (PPV_UNLOCK transactions keyed by the stream id) and tips sent
-   * from each stream (TIP transactions with metadata.streamId), gross euros
+   * from each stream (running LiveStream.tipTotal, counted from the TIP
+   * transactions carrying metadata.streamId), gross euros
    */
-  private async getStreamRevenue(creatorId: string, streams: { id: string; createdAt: Date }[]) {
+  private async getStreamRevenue(
+    creatorId: string,
+    streams: { id: string; tipTotal?: Prisma.Decimal | number | null }[],
+  ) {
     const ids = streams.map((stream) => stream.id);
-    const since = new Date(Math.min(...streams.map((stream) => stream.createdAt.getTime())));
 
-    const [sales, tips] = await Promise.all([
+    const [sales, tipCounts] = await Promise.all([
       this.prisma.transaction.findMany({
         where: { toUserId: creatorId, type: 'PPV_UNLOCK', status: 'COMPLETED', contentId: { in: ids } },
         select: { contentId: true, amount: true },
       }),
-      this.prisma.transaction.findMany({
-        where: { toUserId: creatorId, type: 'TIP', status: 'COMPLETED', createdAt: { gte: since } },
-        select: { amount: true, metadata: true },
-      }),
+      // Grouped in the database (the metadata is JSON)
+      this.prisma.$queryRaw<{ streamId: string; count: bigint }[]>`
+        SELECT "metadata"->>'streamId' AS "streamId", COUNT(*) AS "count"
+        FROM "Transaction"
+        WHERE "toUserId" = ${creatorId} AND "type" = 'TIP' AND "status" = 'COMPLETED'
+          AND "metadata"->>'streamId' IN (${Prisma.join(ids)})
+        GROUP BY 1`,
     ]);
 
     const stats = new Map<string, { tipsCount: number; tipsTotal: number; ppvCount: number; ppvTotal: number }>();
@@ -407,14 +423,12 @@ export class StreamingService {
       value.ppvTotal = round(value.ppvTotal + Number(sale.amount));
     }
 
-    const known = new Set(ids);
-    for (const tip of tips) {
-      const metadata = tip.metadata as Record<string, unknown> | null;
-      const streamId = typeof metadata?.streamId === 'string' ? metadata.streamId : null;
-      if (!streamId || !known.has(streamId)) continue;
-      const value = entry(streamId);
-      value.tipsCount += 1;
-      value.tipsTotal = round(value.tipsTotal + Number(tip.amount));
+    for (const tips of tipCounts ?? []) {
+      entry(tips.streamId).tipsCount = Number(tips.count);
+    }
+    for (const stream of streams) {
+      const total = Number(stream.tipTotal ?? 0);
+      if (total > 0) entry(stream.id).tipsTotal = round(total);
     }
 
     return stats;
@@ -478,9 +492,13 @@ export class StreamingService {
       : { allowed: stream.visibility === 'PUBLIC' && !stream.isPpv, isCreator: false };
 
     const { creatorProfile, ...creator } = stream.creator;
+    const tipState = this.liveTips
+      ? await this.liveTips.getLiveTipState(stream.id)
+      : { tipGoal: null, tipMenu: [], pendingTipActions: [] };
 
     return {
       ...publicStream,
+      ...tipState,
       creator,
       // The stream key is only useful to the creator
       streamKey: access.isCreator ? streamKey : undefined,

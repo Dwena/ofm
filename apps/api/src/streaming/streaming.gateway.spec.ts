@@ -509,4 +509,203 @@ describe('StreamingGateway', () => {
       expect(eventsTo(streamRoom('stream-1'), 'chat-message')).toHaveLength(1);
     });
   });
+
+  describe('live tips (menu, goal, requests)', () => {
+    const fan = { id: 'user-1', username: 'fan', displayName: 'Sophie', avatar: null };
+    const tip = {
+      transactionId: 'tx-1',
+      streamId: 'stream-1',
+      creatorId: 'creator-1',
+      fromUser: fan,
+      amount: 20,
+      message: null,
+      menuItemId: 'item-1',
+      menuItemLabel: 'Chanter une chanson',
+      completedAt: new Date('2026-10-20T12:00:00Z'),
+    };
+    const action = {
+      id: 'action-1',
+      streamId: 'stream-1',
+      menuItemId: 'item-1',
+      label: 'Chanter une chanson',
+      amount: 20,
+      status: 'PENDING',
+      createdAt: '2026-10-20T12:00:00.000Z',
+      completedAt: null,
+      fromUser: fan,
+    };
+    const storedTipLine = {
+      id: 'msg-1',
+      senderId: 'user-1',
+      message: 'a envoyé un pourboire de 20.00€',
+      type: 'TIP',
+      tipAmount: 20,
+      transactionId: 'tx-1',
+      createdAt: new Date('2026-10-20T12:00:00Z'),
+      sender: fan,
+    };
+
+    const mockLiveTips = {
+      recordTip: jest.fn(),
+      updateTipAction: jest.fn(),
+      getLiveTipState: jest.fn(),
+      getActionLabels: jest.fn(),
+    };
+
+    let tipsGateway: StreamingGateway;
+
+    beforeEach(() => {
+      tipsGateway = new StreamingGateway(
+        mockPrismaService as any,
+        mockJwtService as any,
+        mockStreamingService as any,
+        undefined,
+        mockLiveTips as any,
+      );
+      tipsGateway.server = gateway.server;
+      mockLiveTips.getLiveTipState.mockResolvedValue({
+        tipGoal: { amount: 300, label: 'Nouvelle caméra', total: 45 },
+        tipMenu: [{ id: 'item-1', label: 'Chanter une chanson', amount: 20 }],
+        pendingTipActions: [action],
+      });
+      mockLiveTips.getActionLabels.mockResolvedValue(new Map([['tx-1', 'Chanter une chanson']]));
+    });
+
+    it('records the tip, then announces it with its request and the goal progress', async () => {
+      mockLiveTips.recordTip.mockResolvedValue({
+        creatorId: 'creator-1',
+        message: storedTipLine,
+        action,
+        goal: { amount: 300, label: 'Nouvelle caméra', total: 65, reached: false },
+        goalReachedNow: false,
+        systemMessage: null,
+      });
+
+      await tipsGateway.notifyTip(tip);
+
+      const room = streamRoom('stream-1');
+      expect(eventsTo(room, 'chat-message')).toEqual([
+        expect.objectContaining({
+          id: 'msg-1',
+          type: 'TIP',
+          tipAmount: 20,
+          menuItemLabel: 'Chanter une chanson',
+          isCreator: false,
+        }),
+      ]);
+      expect(eventsTo(room, 'tip')).toEqual([expect.objectContaining({ transactionId: 'tx-1', menuItemLabel: 'Chanter une chanson' })]);
+      expect(eventsTo(room, 'tip-goal-progress')).toEqual([
+        { streamId: 'stream-1', amount: 300, label: 'Nouvelle caméra', total: 65, reached: false },
+      ]);
+      expect(eventsTo(room, 'tip-action-created')).toEqual([{ action }]);
+    });
+
+    it('announces the goal in the chat the time it is reached', async () => {
+      mockLiveTips.recordTip.mockResolvedValue({
+        creatorId: 'creator-1',
+        message: storedTipLine,
+        action: null,
+        goal: { amount: 300, label: 'Nouvelle caméra', total: 300, reached: true },
+        goalReachedNow: true,
+        systemMessage: {
+          id: 'msg-2',
+          senderId: 'creator-1',
+          message: 'Objectif atteint : Nouvelle caméra 🎉',
+          type: 'SYSTEM',
+          tipAmount: null,
+          createdAt: new Date(),
+          sender: { username: 'alice' },
+        },
+      });
+
+      await tipsGateway.notifyTip({ ...tip, menuItemId: null, menuItemLabel: null });
+
+      const room = streamRoom('stream-1');
+      expect(eventsTo(room, 'chat-message')).toEqual([
+        expect.objectContaining({ type: 'TIP', menuItemLabel: null }),
+        expect.objectContaining({ type: 'SYSTEM', message: 'Objectif atteint : Nouvelle caméra 🎉', isCreator: false }),
+      ]);
+      expect(eventsTo(room, 'tip-goal-progress')).toEqual([expect.objectContaining({ reached: true })]);
+      expect(eventsTo(room, 'tip-action-created')).toEqual([]);
+    });
+
+    it('does not announce a tip twice (already recorded)', async () => {
+      mockLiveTips.recordTip.mockResolvedValue(null);
+      await tipsGateway.notifyTip(tip);
+      expect(emitted).toEqual([]);
+    });
+
+    it('still announces the tip when it could not be recorded', async () => {
+      mockLiveTips.recordTip.mockRejectedValue(new Error('db down'));
+      await tipsGateway.notifyTip(tip);
+      expect(eventsTo(streamRoom('stream-1'), 'chat-message')).toEqual([
+        expect.objectContaining({ id: 'tip-tx-1', type: 'TIP', menuItemLabel: 'Chanter une chanson' }),
+      ]);
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-progress')).toEqual([]);
+    });
+
+    it('sends the tip state and the tip lines with their request when joining', async () => {
+      mockStreamingService.getRecentChatMessages.mockResolvedValue([storedTipLine]);
+      const socket = createSocket('viewer-socket', 'user-1');
+
+      const ack: any = await tipsGateway.handleJoinStream(socket, { streamId: 'stream-1' });
+
+      expect(ack.success).toBe(true);
+      expect(ack.tipGoal).toEqual({ amount: 300, label: 'Nouvelle caméra', total: 45 });
+      expect(ack.tipMenu).toHaveLength(1);
+      expect(ack.pendingTipActions).toEqual([action]);
+      expect(ack.messages).toEqual([
+        expect.objectContaining({ id: 'msg-1', type: 'TIP', tipAmount: 20, menuItemLabel: 'Chanter une chanson' }),
+      ]);
+    });
+
+    it('lets the creator mark a request done and broadcasts it', async () => {
+      const done = { ...action, status: 'DONE', completedAt: '2026-10-20T12:05:00.000Z' };
+      mockLiveTips.updateTipAction.mockResolvedValue(done);
+      const socket = createSocket('creator-socket', 'creator-1');
+
+      const ack = await tipsGateway.handleUpdateTipAction(socket, {
+        streamId: 'stream-1',
+        actionId: 'action-1',
+        status: 'DONE',
+      });
+
+      expect(ack).toEqual({ success: true, action: done });
+      expect(mockLiveTips.updateTipAction).toHaveBeenCalledWith('creator-1', 'stream-1', 'action-1', 'DONE');
+      expect(eventsTo(streamRoom('stream-1'), 'tip-action-updated')).toEqual([{ action: done }]);
+    });
+
+    it('refuses request updates from anyone but the creator', async () => {
+      const { ForbiddenException } = jest.requireActual('@nestjs/common');
+      mockLiveTips.updateTipAction.mockRejectedValue(new ForbiddenException('Only the creator can update tip actions'));
+      const socket = createSocket('viewer-socket', 'user-1');
+
+      const ack = await tipsGateway.handleUpdateTipAction(socket, {
+        streamId: 'stream-1',
+        actionId: 'action-1',
+        status: 'DONE',
+      });
+
+      expect(ack).toEqual(expect.objectContaining({ reason: 'NOT_CREATOR' }));
+      expect(eventsTo(streamRoom('stream-1'), 'tip-action-updated')).toEqual([]);
+    });
+
+    it('validates the request update payload', async () => {
+      const socket = createSocket('creator-socket', 'creator-1');
+      await expect(
+        tipsGateway.handleUpdateTipAction(socket, { streamId: 'stream-1', actionId: 'action-1', status: 'PENDING' as any }),
+      ).resolves.toEqual({ error: 'Invalid status' });
+      await expect(
+        tipsGateway.handleUpdateTipAction(createSocket('anon'), { streamId: 'stream-1', actionId: 'a', status: 'DONE' }),
+      ).resolves.toEqual({ error: 'Unauthorized' });
+      expect(mockLiveTips.updateTipAction).not.toHaveBeenCalled();
+    });
+
+    it('broadcasts tip goal changes to the room', () => {
+      tipsGateway.notifyTipGoalUpdated({ streamId: 'stream-1', amount: null, label: null, total: 45 });
+      expect(eventsTo(streamRoom('stream-1'), 'tip-goal-updated')).toEqual([
+        { streamId: 'stream-1', amount: null, label: null, total: 45 },
+      ]);
+    });
+  });
 });
