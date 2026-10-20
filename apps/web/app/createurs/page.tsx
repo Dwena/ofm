@@ -14,6 +14,7 @@ const features = [
   'Vous fixez vos prix : un ou plusieurs paliers mensuels, plus des posts payants à l’unité.',
   'Photos, vidéos, stories et lives, visibles seulement par les abonnés du bon palier.',
   'Une messagerie privée avec vos fans, et les pourboires qui vont avec.',
+  'En live, des objectifs de dons par paliers : 100 €, 200 €, 500 €… chacun se débloque devant vos spectateurs.',
   'Vos revenus et vos abonnés suivis jour par jour, retrait sur votre compte bancaire.',
 ]
 
@@ -51,6 +52,11 @@ const faq: FaqItem[] = [
     question: 'Faut-il vérifier son identité ?',
     answer:
       'Oui, avant de recevoir de l’argent : Stripe demande une pièce d’identité et un RIB, comme n’importe quel service de paiement.',
+  },
+  {
+    question: 'Comment marchent les objectifs de dons en live ?',
+    answer:
+      'Avant ou pendant le live, vous fixez quelques paliers avec ce que vous ferez en échange. Les pourboires du live remplissent une cagnotte commune : chaque palier atteint s’affiche en direct, et vous le marquez comme fait une fois réalisé.',
   },
   {
     question: 'Je peux couper les messages privés ?',
