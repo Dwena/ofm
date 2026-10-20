@@ -29,6 +29,13 @@ export type LiveKitViewerState = 'connecting' | 'waiting' | 'playing' | 'reconne
 const RETRY_DELAYS_MS = [1000, 3000, 6000, 10000]
 const STATS_INTERVAL_MS = 2000
 
+/**
+ * Simulcast layers of a video publication: 3 for a browser broadcast or an
+ * OBS RTMP input (transcoded), 1 for an OBS WHIP input (forwarded as is)
+ */
+const layerCountOf = (publication: RemoteTrackPublication) =>
+  publication.simulcasted ? Math.max(1, publication.trackInfo?.layers?.length ?? 1) : 1
+
 const LAYER_QUALITY = {
   high: VideoQuality.HIGH,
   medium: VideoQuality.MEDIUM,
@@ -59,6 +66,8 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
   const [accessError, setAccessError] = useState<string | null>(null)
   const [quality, setQuality] = useState<ViewerQuality | null>(null)
   const [attempt, setAttempt] = useState(0)
+  // Simulcast layers of the video being played (null until it arrives)
+  const [layerCount, setLayerCount] = useState<number | null>(null)
   const roomRef = useRef<Room | null>(null)
   const videoPublicationRef = useRef<RemoteTrackPublication | null>(null)
   const modeRef = useRef(mode)
@@ -130,6 +139,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
             if (!video || roomRef.current !== current) return
             if (track.kind === Track.Kind.Video) {
               videoPublicationRef.current = publication
+              setLayerCount(layerCountOf(publication))
               track.attach(video)
               applyMode(publication)
               setState('playing')
@@ -212,6 +222,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
       const video = element()
       if (video) video.srcObject = null
       setQuality(null)
+      setLayerCount(null)
     }
     // `attempt` restarts the connection (Réessayer)
   }, [enabled, streamId, videoRef, mutedRef, applyMode, attempt])
@@ -260,5 +271,5 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
-  return { state, quality, accessError, retry }
+  return { state, quality, accessError, retry, layerCount }
 }
