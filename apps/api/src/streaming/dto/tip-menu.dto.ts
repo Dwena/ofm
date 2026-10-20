@@ -11,7 +11,6 @@ import {
   Max,
   MaxLength,
   Min,
-  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -68,19 +67,49 @@ export class ReplaceTipMenuDto {
   items: TipMenuItemInputDto[];
 }
 
-export class UpdateTipGoalDto {
-  // Euros, null clears the goal
-  @ValidateIf((dto) => dto.amount !== null)
+export const MAX_TIP_GOALS = 10;
+export const MAX_TIP_GOAL_LABEL_LENGTH = 120;
+
+/** Milestone of a live's donation goal, as sent by the goals editor */
+export class TipGoalInputDto {
+  // Existing milestone to keep (its reached / done state is preserved)
+  @IsOptional()
+  @IsUUID()
+  id?: string;
+
+  // Euros
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(1)
   @Max(MAX_TIP_GOAL_AMOUNT)
-  amount: number | null;
+  amount: number;
 
-  @Transform(trimToNull)
+  // Free text of the creator
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(MAX_TIP_GOAL_LABEL_LENGTH)
+  label: string;
+}
+
+export class ReplaceTipGoalsDto {
+  @IsArray()
+  @ArrayMaxSize(MAX_TIP_GOALS)
+  @ValidateNested({ each: true })
+  @Type(() => TipGoalInputDto)
+  goals: TipGoalInputDto[];
+}
+
+export class UpdateTipGoalStatusDto {
+  // Raw value: the implicit conversion would turn any string into true
+  @Transform(({ obj }) => obj?.completed)
+  @IsBoolean()
+  completed: boolean;
+}
+
+export class LatestTipGoalsQueryDto {
   @IsOptional()
   @IsString()
-  @MaxLength(120)
-  label?: string | null;
+  excludeStreamId?: string;
 }
 
 export const TIP_ACTION_UPDATE_STATUSES = ['DONE', 'SKIPPED'] as const;

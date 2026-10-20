@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useReducer } from 'react';
+import { useState, useEffect, useRef, useReducer, useCallback } from 'react';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { liveApi } from '@/lib/api';
@@ -61,7 +61,7 @@ import {
 import { formatEuros } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
-// Tip goal, tip menu and requests come with the stream detail (LiveTipSnapshot)
+// Tip total, donation goals, tip menu and requests come with the stream detail (LiveTipSnapshot)
 interface LiveStream extends LiveTipSnapshot {
   id: string;
   title: string;
@@ -121,7 +121,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const [tipCheckout, setTipCheckout] = useState(false);
   // Tip menu item the tip pays for (null: free tip)
   const [tipMenuItem, setTipMenuItem] = useState<TipMenuItem | null>(null);
-  // Tip goal, tip menu and requests of the live (stream detail + socket events)
+  // Tip total, donation goals, tip menu and requests of the live (stream detail + socket events)
   const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState);
   const [showPurchase, setShowPurchase] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
@@ -178,22 +178,23 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const tipValue = Number(tipAmount.replace(',', '.'));
 
   // Tip fields of the stream detail (kept by reference between polls)
-  const streamTipGoal = stream?.tipGoal;
+  const streamTipGoals = stream?.tipGoals;
   const streamTipTotal = stream?.tipTotal;
   const streamTipMenu = stream?.tipMenu;
   const streamTipActions = stream?.pendingTipActions;
   useEffect(() => {
-    if (streamTipMenu === undefined && streamTipGoal === undefined) return;
+    if (streamTipMenu === undefined && streamTipGoals === undefined) return;
     dispatchTips({
       type: 'snapshot',
       snapshot: {
-        tipGoal: streamTipGoal,
+        tipGoals: streamTipGoals,
         tipTotal: streamTipTotal,
         tipMenu: streamTipMenu,
         pendingTipActions: streamTipActions,
       },
     });
-  }, [streamTipGoal, streamTipTotal, streamTipMenu, streamTipActions]);
+  }, [streamTipGoals, streamTipTotal, streamTipMenu, streamTipActions]);
+  const endGoalCelebration = useCallback((key: number) => dispatchTips({ type: 'celebration-end', key }), []);
 
   const openTipModal = (item: TipMenuItem | null) => {
     setTipMenuItem(item);
@@ -1112,12 +1113,13 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
           </div>
         </div>
 
-        {/* Tip goal, tip menu and requests in progress */}
+        {/* Donation goals, tip menu and requests in progress */}
         <TipMenuPanel
           state={tipState}
           canTip={canTip}
           currentUserId={user?.id}
           onSelectItem={(item) => openTipModal(item)}
+          onCelebrationEnd={endGoalCelebration}
           className="shrink-0"
         />
       </div>

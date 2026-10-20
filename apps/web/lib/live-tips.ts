@@ -1,17 +1,11 @@
 import type { Socket } from 'socket.io-client'
 import { api } from './api'
 import { LIVE_ACK_TIMEOUT } from './live'
+import type { TipGoal } from './live-tip-goals'
+import type { LiveTipEvent, TipAction, TipActionStatus, TipMenuItem } from './live-tips-state'
 
-/** Item of a creator's live tip menu ("paliers de dons"), amount in euros */
-export interface TipMenuItem {
-  id: string
-  label: string
-  description: string | null
-  amount: number
-  emoji: string | null
-  position: number
-  isActive: boolean
-}
+export * from './live-tips-state'
+export type { TipGoal } from './live-tip-goals'
 
 /** The creator's own menu, with the bounds of an item amount (euros) */
 export interface OwnTipMenu {
@@ -21,114 +15,34 @@ export interface OwnTipMenu {
   maxItems: number
 }
 
-export interface TipGoal {
-  /** Euros */
-  amount: number
-  label: string | null
-  /** Euros of completed tips sent from the live */
-  total: number
-}
-
-export type TipActionStatus = 'PENDING' | 'DONE' | 'SKIPPED'
-
-/** Request a fan paid for from the tip menu, for the creator to perform */
-export interface TipAction {
-  id: string
+/** Milestones of a live with its running total (PUT response, tip-goals-updated, tip-goal-progress) */
+export interface TipGoalsSnapshot {
   streamId: string
-  menuItemId: string | null
-  label: string
-  amount: number
-  status: TipActionStatus
-  createdAt: string
-  completedAt: string | null
-  fromUser: { id: string; username: string; displayName: string | null; avatar: string | null }
-}
-
-/** Tip fields of the stream detail and of the join / broadcast acknowledgements */
-export interface LiveTipSnapshot {
-  tipGoal?: TipGoal | null
-  tipTotal?: number
-  tipMenu?: TipMenuItem[]
-  pendingTipActions?: TipAction[]
-}
-
-export interface LiveTipState {
-  goalAmount: number | null
-  goalLabel: string | null
   total: number
-  menu: TipMenuItem[]
-  actions: TipAction[]
+  goals: TipGoal[]
 }
 
-export const initialLiveTipState: LiveTipState = {
-  goalAmount: null,
-  goalLabel: null,
-  total: 0,
-  menu: [],
-  actions: [],
-}
-
-export type LiveTipEvent =
-  | { type: 'snapshot'; snapshot: LiveTipSnapshot }
-  | { type: 'goal'; amount: number | null; label: string | null; total: number }
-  | { type: 'action'; action: TipAction }
-  | { type: 'reset' }
-
-const MAX_ACTIONS = 100
+const toGoals = (goals: unknown): TipGoal[] => (Array.isArray(goals) ? (goals as TipGoal[]) : [])
 
 /**
- * Live tip state, fed by the stream detail, the socket acknowledgements and
- * the tip events of the room
- */
-export function liveTipsReducer(state: LiveTipState, event: LiveTipEvent): LiveTipState {
-  switch (event.type) {
-    case 'snapshot': {
-      const { snapshot } = event
-      const next = { ...state }
-      if (snapshot.tipGoal !== undefined) {
-        next.goalAmount = snapshot.tipGoal?.amount ?? null
-        next.goalLabel = snapshot.tipGoal?.label ?? null
-        if (snapshot.tipGoal) next.total = Math.max(next.total, snapshot.tipGoal.total)
-      }
-      // The total only grows: a snapshot older than a socket event never lowers it
-      if (typeof snapshot.tipTotal === 'number') next.total = Math.max(next.total, snapshot.tipTotal)
-      if (Array.isArray(snapshot.tipMenu)) next.menu = snapshot.tipMenu
-      if (Array.isArray(snapshot.pendingTipActions)) next.actions = snapshot.pendingTipActions
-      return next
-    }
-    case 'goal':
-      return {
-        ...state,
-        goalAmount: event.amount,
-        goalLabel: event.amount === null ? null : event.label,
-        // Never go back to an older total (events may cross)
-        total: Math.max(state.total, event.total),
-      }
-    case 'action': {
-      const exists = state.actions.some((action) => action.id === event.action.id)
-      const actions = exists
-        ? state.actions.map((action) => (action.id === event.action.id ? event.action : action))
-        : [...state.actions, event.action]
-      return { ...state, actions: actions.slice(-MAX_ACTIONS) }
-    }
-    case 'reset':
-      return initialLiveTipState
-    default:
-      return state
-  }
-}
-
-/**
- * Feed the reducer with the tip events of a live socket (goal, requests)
+ * Feed the reducer with the tip events of a live socket (milestones, requests)
  */
 export function bindLiveTipEvents(socket: Socket, dispatch: (event: LiveTipEvent) => void) {
-  const onGoal = (data: { amount: number | null; label: string | null; total: number }) =>
-    dispatch({ type: 'goal', amount: data.amount ?? null, label: data.label ?? null, total: Number(data.total) || 0 })
+  const onGoals = (data: { total?: number; goals?: TipGoal[] }) =>
+    dispatch({ type: 'goals', total: Number(data?.total) || 0, goals: toGoals(data?.goals) })
+  const onGoal = (data: { goal?: TipGoal }) => {
+    if (data?.goal) dispatch({ type: 'goal', goal: data.goal })
+  }
+  const onReached = (data: { goal?: TipGoal; total?: number }) => {
+    if (data?.goal) dispatch({ type: 'reached', goal: data.goal, total: Number(data.total) || 0, at: Date.now() })
+  }
   const onAction = (data: { action: TipAction }) => {
     if (data?.action) dispatch({ type: 'action', action: data.action })
   }
-  socket.on('tip-goal-progress', onGoal)
+  socket.on('tip-goal-progress', onGoals)
+  socket.on('tip-goals-updated', onGoals)
   socket.on('tip-goal-updated', onGoal)
+  socket.on('tip-goal-reached', onReached)
   socket.on('tip-action-created', onAction)
   socket.on('tip-action-updated', onAction)
 }
@@ -160,17 +74,17 @@ export const liveTipsApi = {
     items: { id?: string; label: string; description?: string | null; amount: number; emoji?: string | null; isActive?: boolean }[],
   ) => api.put<OwnTipMenu>('/streaming/me/tip-menu', { items }),
   getCreatorMenu: (creatorId: string) => api.get<TipMenuItem[]>(`/streaming/creators/${creatorId}/tip-menu`),
-  setGoal: (streamId: string, amount: number | null, label?: string | null) =>
-    api.patch<{ streamId: string; amount: number | null; label: string | null; total: number }>(
-      `/streaming/${streamId}/tip-goal`,
-      { amount, label: label ?? null },
-    ),
-}
-
-/** Progress of a goal, 0-100 */
-export function goalPercent(total: number, amount: number | null) {
-  if (!amount || amount <= 0) return 0
-  return Math.min(100, Math.floor((total / amount) * 100))
+  /** Replace the milestones of a scheduled or live stream (empty list: no goals) */
+  replaceGoals: (streamId: string, goals: { id?: string; amount: number; label: string }[]) =>
+    api.put<TipGoalsSnapshot>(`/streaming/${streamId}/tip-goals`, { goals }),
+  /** Mark a reached milestone as done / not done */
+  setGoalCompleted: (streamId: string, goalId: string, completed: boolean) =>
+    api.patch<{ streamId: string; goal: TipGoal }>(`/streaming/${streamId}/tip-goals/${goalId}`, { completed }),
+  /** Milestones of the creator's last live that has some */
+  getLatestGoals: (excludeStreamId?: string) =>
+    api.get<{ goals: { amount: number; label: string }[] }>('/streaming/me/tip-goals/latest', {
+      params: excludeStreamId ? { excludeStreamId } : undefined,
+    }),
 }
 
 const API_ERRORS: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
@@ -179,13 +93,26 @@ const API_ERRORS: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
     `Chaque montant doit être compris entre ${m[1].replace('.', ',')} € et ${Number(m[2]).toLocaleString('fr-FR')} €.`],
   [/label is required/i, 'Chaque palier doit avoir un intitulé.'],
   [/duplicate tip menu item/i, 'Un palier est présent deux fois.'],
-  [/before or during the live/i, "L'objectif ne peut être modifié qu'avant ou pendant le live."],
+  [/more than (\d+) tip goals|goals must contain no more than (\d+)/i, (m) =>
+    `Un live ne peut pas avoir plus de ${m[1] ?? m[2]} paliers.`],
+  [/goals\.\d+\.amount must not be (less|greater)/i, 'Chaque palier doit être compris entre 1 € et 100 000 €.'],
+  [/goals\.\d+\.amount must be a number/i, 'Montant invalide : deux décimales maximum.'],
+  [/goals\.\d+\.label should not be empty/i, 'Chaque palier doit avoir un intitulé.'],
+  [/goals\.\d+\.label must be shorter/i, 'Chaque intitulé doit faire 120 caractères maximum.'],
+  [/tip goal amount must be between/i, 'Chaque palier doit être compris entre 1 € et 100 000 €.'],
+  [/at most 2 decimals|maxDecimalPlaces|decimal places/i, 'Deux décimales maximum par montant.'],
+  [/amounts must be distinct/i, 'Deux paliers ne peuvent pas avoir le même montant.'],
+  [/duplicate tip goal/i, 'Un palier est présent deux fois.'],
+  [/label must be at most (\d+)|label must be shorter/i, 'Chaque intitulé doit faire 120 caractères maximum.'],
+  [/only a reached tip goal/i, "Ce palier n'est pas encore atteint."],
+  [/tip goal not found/i, 'Ce palier a été supprimé entre-temps.'],
+  [/before or during the live/i, "Les paliers ne peuvent être modifiés qu'avant ou pendant le live."],
   [/only update your own streams/i, "Ce live ne vous appartient pas."],
   [/stream not found/i, 'Ce live est introuvable.'],
 ]
 
 /**
- * French message for an error of the tip menu / goal endpoints
+ * French message for an error of the tip menu / goals endpoints
  */
 export function tipErrorMessage(error: unknown, fallback: string): string {
   const raw = (error as { response?: { data?: { message?: unknown } } })?.response?.data?.message

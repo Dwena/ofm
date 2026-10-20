@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react'
 import { ChevronDown, Gift, ListTodo } from 'lucide-react'
 import { cn, formatEuros } from '@/lib/utils'
 import type { LiveTipState, TipMenuItem } from '@/lib/live-tips'
-import { TipGoalProgress } from './tip-goal-progress'
+import { TipGoalsProgress } from './tip-goals-progress'
 import { TipActionsList } from './tip-actions-list'
 
 interface TipMenuPanelProps {
@@ -14,21 +14,30 @@ interface TipMenuPanelProps {
   currentUserId?: string
   /** Open the tip modal pre-filled with an item */
   onSelectItem: (item: TipMenuItem) => void
+  /** The milestone celebration banner is over */
+  onCelebrationEnd?: (key: number) => void
   className?: string
 }
 
 type Tab = 'menu' | 'requests'
 
 /**
- * Viewer panel under the player: goal progress, tip menu and the requests
+ * Viewer panel under the player: donation goals, tip menu and the requests
  * in progress (collapsible, tabs on every screen size)
  */
-export function TipMenuPanel({ state, canTip, currentUserId, onSelectItem, className }: TipMenuPanelProps) {
+export function TipMenuPanel({
+  state,
+  canTip,
+  currentUserId,
+  onSelectItem,
+  onCelebrationEnd,
+  className,
+}: TipMenuPanelProps) {
   const [open, setOpen] = useState(true)
   const [tab, setTab] = useState<Tab>('menu')
 
   const hasMenu = state.menu.length > 0
-  const hasGoal = !!state.goalAmount
+  const hasGoal = state.goals.length > 0
   const pendingCount = state.actions.filter((action) => action.status === 'PENDING').length
   if (!hasMenu && !hasGoal && state.actions.length === 0) return null
 
@@ -38,7 +47,12 @@ export function TipMenuPanel({ state, canTip, currentUserId, onSelectItem, class
     <section className={cn('bg-card text-card-foreground border-t min-w-0', className)} data-testid="tip-menu-panel">
       {hasGoal && (
         <div className="px-3 pt-3 sm:px-4">
-          <TipGoalProgress amount={state.goalAmount} label={state.goalLabel} total={state.total} />
+          <TipGoalsProgress
+            total={state.total}
+            goals={state.goals}
+            celebration={state.celebration}
+            onCelebrationEnd={onCelebrationEnd}
+          />
         </div>
       )}
       {showTabs && (
