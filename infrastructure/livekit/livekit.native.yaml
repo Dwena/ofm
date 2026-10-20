@@ -1,0 +1,55 @@
+# LiveKit SFU - développement local sous Windows, lancé HORS de Docker par
+# `npm run dev:up` (binaire officiel téléchargé dans .cache/livekit).
+#
+# Pourquoi pas Docker sous Windows : Docker Desktop ne transmet pas au conteneur
+# l'UDP WebRTC envoyé par Chrome / Edge (image noire, « requestsReceived: 0 »
+# dans les logs de LiveKit). En processus Windows, le navigateur joint LiveKit
+# directement sur <IP du PC>:7882/udp (ou 7881/tcp).
+#
+# Windows peut demander d'autoriser livekit-server.exe dans le pare-feu :
+# acceptez pour les réseaux privés.
+#
+# Clés de DÉVELOPPEMENT uniquement (les mêmes que livekit.dev.yaml).
+
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+
+rtc:
+  tcp_port: 7881
+  # Un seul port UDP pour tout le média (pas de plage : Docker Desktop publie
+  # très lentement les grandes plages UDP)
+  udp_port: 7882
+  use_external_ip: false
+  # Remplacé au lancement par --node-ip <IP du PC> (npm run dev:up)
+  node_ip: 127.0.0.1
+
+keys:
+  devkey: fanvip_dev_livekit_secret_change_me_0123456789abcdef
+
+room:
+  auto_create: true
+  # Une salle vide (live quitté sans être terminé) est fermée après 5 min
+  empty_timeout: 300
+  departure_timeout: 20
+
+# Redis du docker-compose (port publié sur l'hôte) : indispensable à LiveKit
+# Ingress ("Diffuser avec OBS", conteneur ofm-livekit-ingress) qui dialogue avec
+# LiveKit par Redis.
+redis:
+  address: localhost:6379
+  password: redis_password_dev_only
+
+# URLs annoncées pour les entrées OBS (vues depuis la machine hôte)
+ingress:
+  rtmp_base_url: rtmp://localhost:1935/live
+  whip_base_url: http://localhost:8080/w
+
+# Spectateurs connectés à la vidéo et statut OBS, vus par l'API (POST /api/v1/webhooks/livekit)
+webhook:
+  api_key: devkey
+  urls:
+    - http://localhost:3001/api/v1/webhooks/livekit
+
+logging:
+  level: info

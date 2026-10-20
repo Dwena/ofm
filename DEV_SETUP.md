@@ -174,6 +174,15 @@ les réactions, les pourboires et les objectifs de dons restent sur socket.io.
 
 - Ports publiés : 7880 (signalisation), 7881/tcp et **7882/udp** (média, un seul
   port UDP : les grandes plages UDP sont très lentes sur Docker Desktop).
+- **Sous Windows**, `npm run dev:up` lance LiveKit **hors de Docker** : il
+  télécharge une fois le binaire officiel (`.cache/livekit/`) et le démarre avec
+  la config `infrastructure/livekit/livekit.native.yaml` ; seul le module OBS
+  (`ofm-livekit-ingress`) reste dans Docker. Docker Desktop ne transmet pas au
+  conteneur l'UDP WebRTC des navigateurs (image noire). Journal :
+  `.cache/livekit/livekit.log`. Windows peut demander d'autoriser
+  `livekit-server.exe` dans le pare-feu : acceptez pour les réseaux privés.
+  `LIVEKIT_MODE=docker` force l'ancien mode, `LIVEKIT_MODE=native` le mode natif
+  ailleurs (Linux).
 - LiveKit annonce aux navigateurs l'**IP du PC sur le réseau local** pour la
   vidéo : `npm run dev:up` la détecte et la passe au conteneur (`LIVEKIT_NODE_IP`
   pour la forcer, par exemple si un VPN est actif). Pas 127.0.0.1 : sous Windows,

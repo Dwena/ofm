@@ -19,7 +19,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import { networkInterfaces } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +65,89 @@ function runOrFail(command, options, errorMessage) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---------- Native LiveKit (Windows) ----------
+const LIVEKIT_VERSION = '1.8.4';
+const LIVEKIT_ASSETS = {
+  win32: { file: `livekit_${LIVEKIT_VERSION}_windows_amd64.zip`, exe: 'livekit-server.exe' },
+  linux: { file: `livekit_${LIVEKIT_VERSION}_linux_amd64.tar.gz`, exe: 'livekit-server' },
+};
+
+// Downloads the official livekit-server release once into .cache/livekit/<version>
+async function ensureLivekitBinary() {
+  const asset = LIVEKIT_ASSETS[process.platform];
+  if (!asset) fail(`LiveKit natif non disponible sur ${process.platform} : utilisez LIVEKIT_MODE=docker`);
+  const dir = join(ROOT, '.cache', 'livekit', LIVEKIT_VERSION);
+  const exe = join(dir, asset.exe);
+  if (existsSync(exe)) return exe;
+
+  mkdirSync(dir, { recursive: true });
+  const archive = join(dir, asset.file);
+  const url = `https://github.com/livekit/livekit/releases/download/v${LIVEKIT_VERSION}/${asset.file}`;
+  console.log(`Téléchargement de LiveKit ${LIVEKIT_VERSION} (${url})`);
+  const response = await fetch(url);
+  if (!response.ok || !response.body) fail(`Téléchargement de LiveKit impossible (HTTP ${response.status})`);
+  await new Promise((resolve, reject) => {
+    const out = createWriteStream(archive);
+    const reader = response.body.getReader();
+    const pump = () =>
+      reader.read().then(({ done, value }) => {
+        if (done) return out.end(resolve);
+        out.write(Buffer.from(value), (error) => (error ? reject(error) : pump()));
+      }, reject);
+    pump();
+  });
+  // bsdtar ships with Windows 10+ and reads zip archives too
+  const extracted =
+    spawnSync('tar', ['-xf', archive, '-C', dir], { stdio: 'inherit' }).status === 0 ||
+    (IS_WINDOWS &&
+      spawnSync(
+        'powershell',
+        ['-NoProfile', '-Command', `Expand-Archive -Force -LiteralPath '${archive}' -DestinationPath '${dir}'`],
+        { stdio: 'inherit' },
+      ).status === 0);
+  rmSync(archive, { force: true });
+  if (!extracted || !existsSync(exe)) fail(`Extraction de LiveKit impossible dans ${dir}`);
+  return exe;
+}
+
+async function livekitResponds() {
+  try {
+    const response = await fetch('http://127.0.0.1:7880', { signal: AbortSignal.timeout(1500) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Starts livekit-server as a child of this script (stopped with it). Returns null
+// when a LiveKit already answers on 7880 (left running by a previous dev:up).
+async function startNativeLivekit(nodeIp) {
+  if (await livekitResponds()) {
+    console.log('LiveKit répond déjà sur le port 7880 : réutilisé');
+    return null;
+  }
+  const exe = await ensureLivekitBinary();
+  const logPath = join(ROOT, '.cache', 'livekit', 'livekit.log');
+  const log = openSync(logPath, 'a');
+  const child = spawn(
+    exe,
+    ['--config', join(ROOT, 'infrastructure', 'livekit', 'livekit.native.yaml'), '--node-ip', nodeIp],
+    { cwd: ROOT, stdio: ['ignore', log, log], windowsHide: true },
+  );
+  child.on('exit', (code) => {
+    if (code) console.error(`\x1b[1;31m✖ LiveKit s'est arrêté (code ${code}) : voir ${logPath}\x1b[0m`);
+  });
+  for (let i = 0; i < 40; i++) {
+    if (await livekitResponds()) {
+      console.log(`LiveKit natif lancé (journal : ${logPath})`);
+      return child;
+    }
+    if (child.exitCode !== null) break;
+    await sleep(500);
+  }
+  fail(`LiveKit ne démarre pas : voir ${logPath}`);
+}
 
 // IPv4 of the interface that routes to the internet (no packet is sent: a UDP
 // "connect" only picks the route). Falls back to the first private address of a
@@ -214,6 +297,7 @@ if (!existsSync(join(ROOT, 'node_modules', '.bin')) || installedHash !== lockHas
   writeFileSync(LOCK_HASH_PATH, lockHash);
 }
 
+let nativeLivekit = null;
 if (!SKIP_DOCKER) {
   if (!run('docker --version', { quiet: true })) {
     fail('Docker requis (https://docs.docker.com/get-docker/), ou SKIP_DOCKER=1 avec vos propres services');
@@ -230,19 +314,40 @@ if (!SKIP_DOCKER) {
   // video stayed black. The PC's LAN IP reaches the ports Docker publishes.
   const livekitNodeIp = process.env.LIVEKIT_NODE_IP || (await detectLanIp()) || '127.0.0.1';
   console.log(`Adresse annoncée par LiveKit pour la vidéo : ${livekitNodeIp}`);
+  // Windows: LiveKit as a native process (Docker Desktop drops the browsers'
+  // WebRTC UDP), only its OBS ingress in Docker. Elsewhere: both in Docker.
+  const livekitMode = process.env.LIVEKIT_MODE || (IS_WINDOWS ? 'native' : 'docker');
+  const composeEnv = { POSTGRES_PORT: pgPort, LIVEKIT_NODE_IP: livekitNodeIp };
   const composeUp = () =>
     runOrFail(
-      `${compose} -f docker-compose.dev.yml up -d`,
-      { env: { POSTGRES_PORT: pgPort, LIVEKIT_NODE_IP: livekitNodeIp } },
+      `${compose} -f docker-compose.dev.yml --profile livekit-${livekitMode} up -d`,
+      { env: { ...composeEnv, POSTGRES_PORT: pgPort } },
       'Impossible de démarrer les conteneurs Docker',
     );
+  if (livekitMode === 'native') {
+    // Containers of the Docker mode would hold ports 7880-7882 / the ingress name
+    run('docker rm -f ofm-livekit ofm-livekit-ingress', { quiet: true });
+  }
   composeUp();
-  // The ingress shares the network of the livekit container: recreate it so it
-  // follows a livekit container recreated for a new NODE_IP
-  run(`${compose} -f docker-compose.dev.yml up -d --force-recreate --no-deps livekit-ingress`, {
-    env: { POSTGRES_PORT: pgPort, LIVEKIT_NODE_IP: livekitNodeIp },
-    quiet: true,
-  });
+  if (livekitMode === 'docker') {
+    // The ingress shares the network of the livekit container: recreate it so
+    // it follows a livekit container recreated for a new NODE_IP
+    run(`${compose} -f docker-compose.dev.yml --profile livekit-docker up -d --force-recreate --no-deps livekit-ingress`, {
+      env: composeEnv,
+      quiet: true,
+    });
+  } else {
+    // After compose: LiveKit needs the Redis container to answer
+    for (let i = 0; i < 30; i++) {
+      if (run(`docker exec ofm-redis redis-cli -a ${REDIS_PASSWORD} --no-auth-warning ping`, { quiet: true })) break;
+      await sleep(500);
+    }
+    nativeLivekit = await startNativeLivekit(livekitNodeIp);
+    run(`${compose} -f docker-compose.dev.yml --profile livekit-native up -d --force-recreate --no-deps livekit-ingress-native`, {
+      env: composeEnv,
+      quiet: true,
+    });
+  }
   await waitForPostgres();
 
   // A volume created by an older setup may hold another password: the
@@ -438,8 +543,8 @@ ${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL ? `  OBS        ${LIVEKIT_ENV.LIVEKIT_ING
 ` : ''}  Stockage   http://localhost:9001   (MinIO : minioadmin / minioadmin_dev_only)
 
   Comptes : docs/SEED_ACCOUNTS.md — mot de passe SecurePass123!
-  Ctrl+C pour arrêter l'API et le front ; les services Docker restent lancés
-  (arrêt : docker compose -f docker-compose.dev.yml down)
+  Ctrl+C pour arrêter l'API, le front (et LiveKit sous Windows) ; les services
+  Docker restent lancés (arrêt : docker compose -f docker-compose.dev.yml down)
 `);
 
 const dev = spawn('npx turbo run dev --filter=@ofm/api --filter=@ofm/web', {
@@ -449,4 +554,7 @@ const dev = spawn('npx turbo run dev --filter=@ofm/api --filter=@ofm/web', {
 });
 // Ctrl+C reaches turbo directly through the shared console; just mirror its exit
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => IS_WINDOWS || dev.kill(signal));
-dev.on('exit', (code) => process.exit(code ?? 0));
+dev.on('exit', (code) => {
+  nativeLivekit?.kill();
+  process.exit(code ?? 0);
+});
