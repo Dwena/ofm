@@ -1,6 +1,6 @@
-# 🚀 OFM Platform - Guide de développement local
+# 🚀 FanVIP - Guide de développement local
 
-Guide complet pour configurer et lancer la plateforme OFM en développement local.
+Guide complet pour configurer et lancer la plateforme FanVIP en développement local.
 
 ---
 

@@ -105,7 +105,7 @@ function RegisterForm() {
     try {
       await register(values.email, values.username, values.password, role)
       toast({
-        title: 'Bienvenue sur OFM !',
+        title: 'Bienvenue sur FanVIP !',
         description: `Votre compte a été créé. Un e-mail de vérification a été envoyé à ${values.email}.`,
         duration: 8000,
       })

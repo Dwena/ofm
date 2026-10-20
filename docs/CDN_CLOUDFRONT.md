@@ -1,8 +1,8 @@
-# Configuration AWS CloudFront CDN pour OFM Platform
+# Configuration AWS CloudFront CDN pour FanVIP
 
 ## Vue d'ensemble
 
-Guide de configuration d'AWS CloudFront comme CDN pour servir les assets statiques et médias de la plateforme OFM avec de hautes performances et une faible latence globale.
+Guide de configuration d'AWS CloudFront comme CDN pour servir les assets statiques et médias de la plateforme FanVIP avec de hautes performances et une faible latence globale.
 
 ## Prérequis
 
@@ -47,7 +47,7 @@ aws s3api put-bucket-cors --bucket ofm-cdn-assets --cors-configuration file://co
 ```bash
 aws cloudfront create-cloud-front-origin-access-identity \
   --cloud-front-origin-access-identity-config \
-  CallerReference=ofm-oai-$(date +%s),Comment="OFM CDN OAI"
+  CallerReference=ofm-oai-$(date +%s),Comment="FanVIP CDN OAI"
 ```
 
 ### 3. Configurer Bucket Policy
@@ -104,7 +104,7 @@ aws cloudfront create-distribution \
 ```json
 {
   "CallerReference": "ofm-distribution",
-  "Comment": "OFM Platform CDN",
+  "Comment": "FanVIP CDN",
   "Enabled": true,
   "Origins": {
     "Quantity": 1,
@@ -413,7 +413,7 @@ resource "aws_cloudfront_distribution" "ofm_cdn" {
 
   enabled             = true
   is_ipv6_enabled     = true
-  comment             = "OFM Platform CDN"
+  comment             = "FanVIP CDN"
   default_root_object = "index.html"
 
   aliases = ["cdn.yourdomain.com"]

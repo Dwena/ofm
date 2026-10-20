@@ -162,7 +162,7 @@ Documentation complète disponible : `apps/api/CDN_CONFIGURATION.md`
 ```env
 # .env
 WATERMARK_ENABLED=true
-WATERMARK_TEXT=OFM
+WATERMARK_TEXT=FanVIP
 ```
 
 ### Changer les Limites de Taille

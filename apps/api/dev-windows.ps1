@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
-# OFM API - Windows Development Setup (PowerShell)
+# FanVIP API - Windows Development Setup (PowerShell)
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "OFM API - Windows Development Setup" -ForegroundColor Cyan
+Write-Host "FanVIP API - Windows Development Setup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 

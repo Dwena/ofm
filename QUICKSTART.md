@@ -1,4 +1,4 @@
-# OFM - Guide de Démarrage Rapide
+# FanVIP - Guide de Démarrage Rapide
 
 ## 🚀 Démarrage en 5 minutes
 

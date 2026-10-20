@@ -1,8 +1,8 @@
-# Guide de Sécurité OFM
+# Guide de Sécurité FanVIP
 
 ## 🔒 Vue d'ensemble
 
-La sécurité est la priorité absolue pour OFM. Ce document décrit toutes les mesures de sécurité implémentées et les bonnes pratiques à suivre.
+La sécurité est la priorité absolue pour FanVIP. Ce document décrit toutes les mesures de sécurité implémentées et les bonnes pratiques à suivre.
 
 ## Authentification
 

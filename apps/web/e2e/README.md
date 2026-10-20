@@ -1,6 +1,6 @@
 # E2E Tests
 
-Tests end-to-end automatisés pour la plateforme OFM.
+Tests end-to-end automatisés pour la plateforme FanVIP.
 
 ## Prérequis
 

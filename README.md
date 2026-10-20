@@ -1,4 +1,4 @@
-# OFM - Content Creator Monetization Platform
+# FanVIP - Content Creator Monetization Platform
 
 > A secure, scalable platform for content creators to monetize their work through subscriptions, pay-per-view content, and direct fan engagement.
 

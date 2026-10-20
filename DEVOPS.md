@@ -1,6 +1,6 @@
-# DevOps - OFM Platform
+# DevOps - FanVIP
 
-Documentation complète de l'infrastructure DevOps et du déploiement de la plateforme OFM.
+Documentation complète de l'infrastructure DevOps et du déploiement de la plateforme FanVIP.
 
 ## 📋 Table des Matières
 
@@ -658,4 +658,4 @@ docker-compose exec nginx nginx -s reload
 ---
 
 **Dernière mise à jour**: 2025-11-05  
-**Mainteneur**: OFM DevOps Team
+**Mainteneur**: FanVIP DevOps Team

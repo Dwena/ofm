@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-Ce document couvre toutes les fonctionnalités UI avancées implémentées pour la plateforme OFM. Toutes les fonctionnalités sont prêtes à l'emploi et entièrement intégrées.
+Ce document couvre toutes les fonctionnalités UI avancées implémentées pour la plateforme FanVIP. Toutes les fonctionnalités sont prêtes à l'emploi et entièrement intégrées.
 
 ---
 

@@ -1,5 +1,6 @@
 import { Card, CardContent } from '@/components/ui/card'
 import { DollarSign, Lock, TrendingUp, Video, MessageCircle, Star, Heart, ShieldCheck, CreditCard, Radio } from 'lucide-react'
+import { BRAND_NAME, Logo } from '@/components/brand/logo'
 import {
   LandingFooterCta,
   LandingHeaderActions,
@@ -15,14 +16,7 @@ export default function Home() {
         <LandingMaintenanceBanner />
         {/* Navigation */}
         <nav className="flex justify-between items-center gap-4 mb-12 sm:mb-20">
-          <div className="flex items-center space-x-2">
-            <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-lg flex items-center justify-center">
-              <Heart className="w-6 h-6 text-white" />
-            </div>
-            <span className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-              OFM
-            </span>
-          </div>
+          <Logo markClassName="h-10 w-10" />
           <LandingHeaderActions />
         </nav>
 
@@ -173,7 +167,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="border-t border-gray-200 dark:border-gray-800 py-8">
         <div className="container mx-auto px-4 text-center text-gray-600 dark:text-gray-400">
-          <p>&copy; {new Date().getFullYear()} OFM. Tous droits réservés.</p>
+          <p>&copy; {new Date().getFullYear()} {BRAND_NAME}. Tous droits réservés.</p>
         </div>
       </footer>
     </div>

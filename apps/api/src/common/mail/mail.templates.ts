@@ -36,14 +36,14 @@ function layout(title: string, body: string): string {
         <td align="center">
           <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background:#ffffff;border-radius:8px;padding:32px;">
             <tr>
-              <td style="font-size:24px;font-weight:bold;color:#4f46e5;padding-bottom:16px;">OFM</td>
+              <td style="font-size:24px;font-weight:bold;color:#4f46e5;padding-bottom:16px;">FanVIP</td>
             </tr>
             <tr>
               <td style="font-size:15px;line-height:1.6;">${body}</td>
             </tr>
             <tr>
               <td style="font-size:12px;color:#6b7280;padding-top:24px;border-top:1px solid #e5e7eb;">
-                Cet e-mail vous a été envoyé automatiquement par la plateforme OFM. Merci de ne pas y répondre.
+                Cet e-mail vous a été envoyé automatiquement par la plateforme FanVIP. Merci de ne pas y répondre.
               </td>
             </tr>
           </table>
@@ -71,13 +71,13 @@ export function verificationEmailTemplate(
   const html = layout(
     subject,
     `<p>Bonjour ${escapeHtml(username)},</p>
-<p>Merci de vous être inscrit sur OFM ! Pour activer votre compte, veuillez confirmer votre adresse e-mail.</p>
+<p>Merci de vous être inscrit sur FanVIP ! Pour activer votre compte, veuillez confirmer votre adresse e-mail.</p>
 ${button(url, 'Confirmer mon adresse e-mail')}
 <p>Ce lien expire dans ${expiresInHours} heures. Si vous n'êtes pas à l'origine de cette inscription, ignorez simplement cet e-mail.</p>`,
   );
   const text = `Bonjour ${username},
 
-Merci de vous être inscrit sur OFM ! Pour confirmer votre adresse e-mail, ouvrez ce lien :
+Merci de vous être inscrit sur FanVIP ! Pour confirmer votre adresse e-mail, ouvrez ce lien :
 ${url}
 
 Ce lien expire dans ${expiresInHours} heures. Si vous n'êtes pas à l'origine de cette inscription, ignorez cet e-mail.`;
@@ -93,13 +93,13 @@ export function passwordResetEmailTemplate(
   const html = layout(
     subject,
     `<p>Bonjour ${escapeHtml(username)},</p>
-<p>Nous avons reçu une demande de réinitialisation du mot de passe de votre compte OFM.</p>
+<p>Nous avons reçu une demande de réinitialisation du mot de passe de votre compte FanVIP.</p>
 ${button(url, 'Réinitialiser mon mot de passe')}
 <p>Ce lien expire dans ${expiresInMinutes} minutes. Si vous n'avez pas fait cette demande, ignorez cet e-mail : votre mot de passe restera inchangé.</p>`,
   );
   const text = `Bonjour ${username},
 
-Nous avons reçu une demande de réinitialisation du mot de passe de votre compte OFM.
+Nous avons reçu une demande de réinitialisation du mot de passe de votre compte FanVIP.
 Pour choisir un nouveau mot de passe, ouvrez ce lien :
 ${url}
 
@@ -112,13 +112,13 @@ export function passwordChangedEmailTemplate(username: string, loginUrl: string)
   const html = layout(
     subject,
     `<p>Bonjour ${escapeHtml(username)},</p>
-<p>Le mot de passe de votre compte OFM vient d'être modifié. Toutes vos sessions actives ont été déconnectées.</p>
+<p>Le mot de passe de votre compte FanVIP vient d'être modifié. Toutes vos sessions actives ont été déconnectées.</p>
 ${button(loginUrl, 'Se connecter')}
 <p>Si vous n'êtes pas à l'origine de ce changement, réinitialisez immédiatement votre mot de passe et contactez notre support.</p>`,
   );
   const text = `Bonjour ${username},
 
-Le mot de passe de votre compte OFM vient d'être modifié. Toutes vos sessions actives ont été déconnectées.
+Le mot de passe de votre compte FanVIP vient d'être modifié. Toutes vos sessions actives ont été déconnectées.
 Connexion : ${loginUrl}
 
 Si vous n'êtes pas à l'origine de ce changement, réinitialisez immédiatement votre mot de passe et contactez notre support.`;

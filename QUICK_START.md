@@ -1,4 +1,4 @@
-# ⚡ OFM Platform - Démarrage rapide
+# ⚡ FanVIP - Démarrage rapide
 
 ## 🚀 Démarrage en 3 commandes
 

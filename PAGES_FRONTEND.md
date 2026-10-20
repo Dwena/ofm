@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-Cette documentation couvre toutes les pages frontend créées pour la plateforme OFM. Toutes les pages sont développées avec Next.js 14 App Router, TanStack React Query, et shadcn/ui.
+Cette documentation couvre toutes les pages frontend créées pour la plateforme FanVIP. Toutes les pages sont développées avec Next.js 14 App Router, TanStack React Query, et shadcn/ui.
 
 ## Pages Créées
 

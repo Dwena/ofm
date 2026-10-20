@@ -197,7 +197,7 @@ async function main() {
     throw new Error('Refus de seeder une base de production (SEED_ALLOW_PRODUCTION=true pour forcer).');
   }
 
-  console.log('🌱 Seed de démonstration OFM');
+  console.log('🌱 Seed de démonstration FanVIP');
 
   if (
     process.argv.includes('--reset') ||
@@ -218,14 +218,14 @@ async function main() {
     username: 'admin',
     displayName: 'Administrateur',
     role: UserRole.ADMIN,
-    bio: 'Compte administrateur de la plateforme OFM',
+    bio: 'Compte administrateur de la plateforme FanVIP',
     avatar: avatar(68),
     createdAt: daysAgo(365),
   });
   const moderator = await createUser({
     email: 'moderator@ofm.com',
     username: 'moderateur',
-    displayName: 'Modération OFM',
+    displayName: 'Modération FanVIP',
     role: UserRole.MODERATOR,
     bio: 'Équipe de modération',
     avatar: avatar(60),
@@ -281,7 +281,7 @@ async function main() {
     username: 'nouveau_createur',
     displayName: 'Hugo Leroy',
     role: UserRole.CREATOR,
-    bio: 'Nouveau sur OFM — KYC en cours de vérification',
+    bio: 'Nouveau sur FanVIP — KYC en cours de vérification',
     avatar: avatar(14),
     kycStatus: KycStatus.PENDING,
     createdAt: daysAgo(2),
@@ -1102,7 +1102,7 @@ async function main() {
     { from: 'a', text: 'Merci de me suivre David ! Les messages sont fermés, mais je réponds ici 😉', minutesAgo: 60 * 24 * 9 },
   ]);
   await conversation(admin, alice, [
-    { from: 'a', text: 'Bonjour Alice, votre KYC est validé. Bienvenue sur OFM !', minutesAgo: 60 * 24 * 230 },
+    { from: 'a', text: 'Bonjour Alice, votre KYC est validé. Bienvenue sur FanVIP !', minutesAgo: 60 * 24 * 230 },
     { from: 'b', text: 'Merci beaucoup !', minutesAgo: 60 * 24 * 230 - 60 },
   ]);
   await conversation(suspended, alice, [
@@ -1157,7 +1157,7 @@ async function main() {
       notif(david.id, NotificationType.NEW_MESSAGE, 'Nouveau message', 'Alice Martin vous a envoyé un message', 1, { linkUrl: '/messages?user=demo_creator', metadata: { kind: 'NEW_MESSAGE' } }),
       notif(david.id, NotificationType.SYSTEM, 'Nouveau contenu', 'Alice Martin a publié « Coucher de soleil à Bali »', 48, { linkUrl: `/content/${aliceBali}`, metadata: { kind: 'NEW_CONTENT' } }),
       notif(david.id, NotificationType.SUBSCRIPTION_RENEWAL, 'Abonnement renouvelé', 'Votre abonnement Premium chez Alice Martin a été renouvelé (24,99 €)', 24 * 10, { read: true, linkUrl: '/subscriptions', metadata: { kind: 'SUBSCRIPTION_RENEWAL', amount: 24.99 } }),
-      notif(david.id, NotificationType.SYSTEM, 'Bienvenue sur OFM', 'Découvrez les créateurs à suivre dans l’onglet Découvrir', 24 * 180, { read: true, linkUrl: '/discover' }),
+      notif(david.id, NotificationType.SYSTEM, 'Bienvenue sur FanVIP', 'Découvrez les créateurs à suivre dans l’onglet Découvrir', 24 * 180, { read: true, linkUrl: '/discover' }),
       // Alice
       notif(alice.id, NotificationType.NEW_TIP, 'Nouveau pourboire', 'David Bernard vous a envoyé 20,00 € : « Merci pour le vlog Islande »', 72, { linkUrl: '/creator/earnings', metadata: { kind: 'TIP', amount: 20, fromUserId: david.id } }),
       notif(alice.id, NotificationType.NEW_SUBSCRIBER, 'Nouvel abonné', `${fans[2].displayName} s’est abonné(e) à Premium`, 5, { linkUrl: '/creator/subscriptions', metadata: { kind: 'NEW_SUBSCRIBER' } }),

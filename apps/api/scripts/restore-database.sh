@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Database Restore Script for OFM Platform
+# Database Restore Script for FanVIP
 # This script restores a PostgreSQL database backup
 
 set -e  # Exit on error
@@ -21,7 +21,7 @@ DB_HOST=$(echo $DATABASE_URL | sed -n 's/.*@\([^:]*\):.*/\1/p')
 DB_PORT=$(echo $DATABASE_URL | sed -n 's/.*:\([0-9]*\)\/.*/\1/p')
 DB_NAME=$(echo $DATABASE_URL | sed -n 's/.*\/\([^?]*\).*/\1/p')
 
-echo "🗄️  OFM Database Restore Utility"
+echo "🗄️  FanVIP Database Restore Utility"
 echo "=================================="
 echo ""
 

@@ -20,6 +20,7 @@ import { ThemeSubMenu } from '@/components/theme-toggle'
 import { LanguageSubMenu } from '@/components/language-selector'
 import { useTranslation } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
+import { BRAND_NAME, Logo } from '@/components/brand/logo'
 import {
   getHomeRoute,
   getRoleNavigation,
@@ -93,8 +94,8 @@ export function Navigation() {
             >
               <Menu className="h-5 w-5" />
             </Button>
-            <Link href={getHomeRoute(user.role)} className="text-2xl font-bold" data-testid="nav-logo">
-              OFM
+            <Link href={getHomeRoute(user.role)} aria-label={BRAND_NAME} data-testid="nav-logo">
+              <Logo className="text-xl" markClassName="h-8 w-8" />
             </Link>
             <div className="hidden items-center gap-1 lg:flex">
               {nav.primary.map((item) => {
@@ -234,8 +235,8 @@ export function Navigation() {
           >
             <div className="flex h-16 items-center justify-between border-b px-4">
               <DialogPrimitive.Title asChild>
-                <Link href={getHomeRoute(user.role)} className="text-2xl font-bold">
-                  OFM
+                <Link href={getHomeRoute(user.role)} aria-label={BRAND_NAME}>
+                  <Logo className="text-xl" markClassName="h-8 w-8" />
                 </Link>
               </DialogPrimitive.Title>
               <DialogPrimitive.Description className="sr-only">{t.shell.sectionMain}</DialogPrimitive.Description>

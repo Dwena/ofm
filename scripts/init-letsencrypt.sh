@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Initialize Let's Encrypt SSL certificates for OFM Platform
+# Initialize Let's Encrypt SSL certificates for FanVIP
 
 set -e
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Database Backup Script for OFM Platform
+# Database Backup Script for FanVIP
 # This script creates automated backups of the PostgreSQL database
 
 set -e  # Exit on error

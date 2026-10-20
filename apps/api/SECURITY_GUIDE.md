@@ -1,6 +1,6 @@
 # Security Guide
 
-This document describes all security features implemented in the OFM platform.
+This document describes all security features implemented in the FanVIP platform.
 
 ## 1. Rate Limiting
 
@@ -225,7 +225,7 @@ Using Sharp library:
 ```typescript
 // Text watermark
 const watermarked = await watermarkService.watermarkImage(imageBuffer, {
-  text: 'OFM Premium',
+  text: 'FanVIP Premium',
   position: 'bottom-right',
   opacity: 0.5,
   fontSize: 32,
@@ -249,7 +249,7 @@ await watermarkService.watermarkVideo(
   inputPath,
   outputPath,
   {
-    text: 'OFM Premium',
+    text: 'FanVIP Premium',
     position: 'bottom-right',
     opacity: 0.5,
     fontSize: 24

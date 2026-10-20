@@ -1,10 +1,10 @@
-# CDN Configuration Guide for OFM Platform
+# CDN Configuration Guide for FanVIP
 
 This document describes how to configure a Content Delivery Network (CDN) for optimal media delivery performance.
 
 ## Overview
 
-The OFM platform serves media files (images, videos) through S3/MinIO storage. To optimize performance globally, we recommend using a CDN service.
+The FanVIP platform serves media files (images, videos) through S3/MinIO storage. To optimize performance globally, we recommend using a CDN service.
 
 ## Supported CDN Providers
 

@@ -23,7 +23,7 @@ export class WatermarkService {
   constructor(private configService: ConfigService) {
     this.defaultWatermarkText = this.configService.get(
       'WATERMARK_TEXT',
-      'OFM Premium',
+      'FanVIP Premium',
     );
     this.defaultLogoPath = this.configService.get(
       'WATERMARK_LOGO_PATH',

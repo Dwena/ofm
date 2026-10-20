@@ -1,8 +1,8 @@
-# Configuration CloudFlare CDN pour OFM Platform
+# Configuration CloudFlare CDN pour FanVIP
 
 ## Vue d'ensemble
 
-Ce guide explique comment configurer CloudFlare comme CDN pour la plateforme OFM, incluant la protection DDoS, le cache, et l'optimisation des performances.
+Ce guide explique comment configurer CloudFlare comme CDN pour la plateforme FanVIP, incluant la protection DDoS, le cache, et l'optimisation des performances.
 
 ## Prérequis
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes all payment-related features implemented in the OFM platform, including Stripe integration, webhooks, refunds, disputes, and automatic billing.
+This document describes all payment-related features implemented in the FanVIP platform, including Stripe integration, webhooks, refunds, disputes, and automatic billing.
 
 ---
 
