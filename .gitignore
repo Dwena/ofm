@@ -100,3 +100,6 @@ kubeconfig
 
 # Playwright output
 test-results/
+
+# Binaries downloaded by scripts/dev-up.mjs (native LiveKit on Windows)
+.cache/

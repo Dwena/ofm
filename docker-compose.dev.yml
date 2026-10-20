@@ -75,7 +75,14 @@ services:
   # (dev keys). NODE_IP = the PC's LAN IP, set by `npm run dev:up`: browsers on
   # Windows do not send WebRTC media to 127.0.0.1. Single UDP port: big UDP
   # ranges are slow on Docker Desktop.
+  #
+  # Profile `livekit-docker` (macOS / Linux): LiveKit and its ingress run here.
+  # On Windows `npm run dev:up` uses the profile `livekit-native` instead: Docker
+  # Desktop does not forward the browsers' WebRTC UDP to this container (black
+  # video), so LiveKit runs as a native Windows process and only the ingress
+  # (service livekit-ingress-native) stays in Docker.
   livekit:
+    profiles: ["livekit-docker"]
     image: livekit/livekit-server:v1.8.4
     container_name: ofm-livekit
     restart: unless-stopped
@@ -106,6 +113,7 @@ services:
   # network namespace of `livekit`: LiveKit advertises 127.0.0.1 in its ICE
   # candidates (Docker Desktop), which only reaches it from its own namespace.
   livekit-ingress:
+    profiles: ["livekit-docker"]
     image: livekit/ingress:v1.4.3
     container_name: ofm-livekit-ingress
     restart: unless-stopped
@@ -116,6 +124,27 @@ services:
       - ./infrastructure/livekit/ingress.dev.yaml:/etc/ingress.yaml:ro
     depends_on:
       - livekit
+      - redis
+
+  # Windows (profile `livekit-native`): the ingress alone, talking to the native
+  # LiveKit of the host through host.docker.internal. OBS on the host reaches it
+  # on localhost (1935 RTMP, 8080 WHIP, 7885/udp WHIP media).
+  livekit-ingress-native:
+    profiles: ["livekit-native"]
+    image: livekit/ingress:v1.4.3
+    container_name: ofm-livekit-ingress
+    restart: unless-stopped
+    ports:
+      - "1935:1935"
+      - "8080:8080"
+      - "7885:7885/udp"
+    environment:
+      INGRESS_CONFIG_FILE: /etc/ingress.yaml
+    volumes:
+      - ./infrastructure/livekit/ingress.native.yaml:/etc/ingress.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
       - redis
 
 volumes:
