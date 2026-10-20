@@ -179,16 +179,17 @@ les réactions, les pourboires et les objectifs de dons restent sur socket.io.
   la config `infrastructure/livekit/livekit.native.yaml` ; seul le module OBS
   (`ofm-livekit-ingress`) reste dans Docker. Docker Desktop ne transmet pas au
   conteneur l'UDP WebRTC des navigateurs (image noire). Journal :
-  `.cache/livekit/livekit.log`. Windows peut demander d'autoriser
-  `livekit-server.exe` dans le pare-feu : acceptez pour les réseaux privés.
+  `.cache/livekit/livekit.log`. Pare-feu : depuis un terminal ouvert en
+  administrateur, `dev:up` crée lui-même la règle « FanVIP LiveKit (dev) »
+  (aucune question de Windows ensuite) ; sinon Windows demande une seule fois
+  d'autoriser `livekit-server.exe`.
   `LIVEKIT_MODE=docker` force l'ancien mode, `LIVEKIT_MODE=native` le mode natif
   ailleurs (Linux).
 - LiveKit annonce aux navigateurs l'**IP du PC sur le réseau local** pour la
   vidéo : `npm run dev:up` la détecte et la passe au conteneur (`LIVEKIT_NODE_IP`
   pour la forcer, par exemple si un VPN est actif). Pas 127.0.0.1 : sous Windows,
   Chrome / Edge n'envoient pas la vidéo WebRTC vers l'adresse de bouclage (image
-  noire, « Signal OBS reçu, la vidéo arrive… » sans fin). Si Windows demande
-  d'autoriser Docker dans le pare-feu, acceptez pour les réseaux privés.
+  noire, « Signal OBS reçu, la vidéo arrive… » sans fin).
 - Tester depuis un téléphone du réseau local : ajouter
   `LIVEKIT_URL=ws://<IP du PC>:7880` dans `apps/api/.env`.
 - Vérifier : `docker logs ofm-livekit` (ligne `starting LiveKit server ... nodeIP <IP du PC>`)
