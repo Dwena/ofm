@@ -599,7 +599,7 @@ export const liveApi = {
   sendTip: (
     creatorId: string,
     amount: number,
-    options: { streamId?: string; message?: string; paymentMethodId?: string } = {},
+    options: { streamId?: string; menuItemId?: string; message?: string; paymentMethodId?: string } = {},
   ) => paymentsApi.sendTip(creatorId, { amount, ...options }),
   confirmTip: (creatorId: string, paymentIntentId: string) =>
     paymentsApi.confirmTip(creatorId, paymentIntentId),

@@ -210,6 +210,8 @@ model User {
   liveStreams             LiveStream[]    @relation("CreatorStreams")
   streamViews             StreamViewer[]  @relation("StreamViews")
   streamMessages          StreamMessage[] @relation("StreamMessages")
+  liveTipMenuItems        LiveTipMenuItem[] @relation("LiveTipMenuItems")
+  liveTipActions          LiveTipAction[]   @relation("LiveTipActions")
   following               Follow[]        @relation("FollowsAsFollower")
   followers               Follow[]        @relation("FollowsAsCreator")
 
@@ -876,12 +878,18 @@ model LiveStream {
   startedAt    DateTime?
   endedAt      DateTime?
 
+  // Tip goal (euros) and running total of the completed tips sent from this live
+  tipGoalAmount Decimal?   @db.Decimal(10, 2)
+  tipGoalLabel  String?
+  tipTotal      Decimal    @default(0) @db.Decimal(10, 2)
+
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
   // Relations
   viewers     StreamViewer[]
   messages    StreamMessage[]
+  tipActions  LiveTipAction[]
 
   @@index([creatorId])
   @@index([status])
@@ -916,9 +924,71 @@ model StreamMessage {
   sender    User       @relation("StreamMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
   message   String
+  type      StreamMessageType @default(MESSAGE)
+  // Euros, for TIP messages
+  tipAmount Decimal?   @db.Decimal(10, 2)
+  // Tip transaction announced by this message (one message per tip)
+  transactionId String? @unique
   createdAt DateTime   @default(now())
 
   @@index([streamId])
   @@index([senderId])
   @@index([createdAt])
+}
+
+enum StreamMessageType {
+  MESSAGE
+  TIP
+  SYSTEM
+}
+
+// Tip menu of a creator ("paliers de dons"), reused from one live to the next
+model LiveTipMenuItem {
+  id          String   @id @default(uuid())
+
+  creatorId   String
+  creator     User     @relation("LiveTipMenuItems", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  label       String
+  description String?
+  // Euros, minimum amount of a tip choosing this item
+  amount      Decimal  @db.Decimal(10, 2)
+  emoji       String?
+  position    Int
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([creatorId])
+}
+
+enum TipActionStatus {
+  PENDING
+  DONE
+  SKIPPED
+}
+
+// Request a fan paid for from the tip menu during a live, for the creator to perform
+model LiveTipAction {
+  id            String          @id @default(uuid())
+
+  streamId      String
+  stream        LiveStream      @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  transactionId String          @unique
+  // No foreign key: the menu item may be edited or deleted afterwards
+  menuItemId    String?
+  label         String
+  // Euros actually paid
+  amount        Decimal         @db.Decimal(10, 2)
+
+  fromUserId    String
+  fromUser      User            @relation("LiveTipActions", fields: [fromUserId], references: [id], onDelete: Cascade)
+
+  status        TipActionStatus @default(PENDING)
+  createdAt     DateTime        @default(now())
+  completedAt   DateTime?
+
+  @@index([streamId, status])
 }

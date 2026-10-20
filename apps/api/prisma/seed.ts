@@ -31,7 +31,7 @@ import {
   UserStatus,
 } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
 
@@ -822,6 +822,9 @@ async function main() {
       streamKey: streamKey(),
       visibility: ContentVisibility.SUBSCRIBERS_ONLY,
       scheduledFor: daysFromNow(1, 2),
+      // Tip goal shown as soon as the live starts
+      tipGoalAmount: 300,
+      tipGoalLabel: 'Nouvelle caméra',
     },
   });
   const alicePpvLive = await prisma.liveStream.create({
@@ -904,17 +907,101 @@ async function main() {
   for (const viewer of sample(fans, 5)) {
     await prisma.streamViewer.create({ data: { streamId: claireEndedLive.id, viewerId: viewer.id, joinedAt: daysAgo(14), leftAt: daysAgo(14) } });
   }
-  // Tip sent during the ended live (shows in the creator's tip history)
-  transactions.push({
-    fromUserId: david.id,
-    toUserId: alice.id,
-    type: TransactionType.TIP,
-    status: TransactionStatus.COMPLETED,
-    amount: 10,
-    ...fees(10),
-    metadata: { kind: 'TIP', streamId: aliceEndedLive.id, message: 'Pour le live 🙏' },
-    processedAt: daysAgo(6),
-    createdAt: daysAgo(6),
+  // ---------- Live tip menu ("paliers de dons") ----------
+  // Alice's menu, reused from one live to the next; the ended live got a goal,
+  // tips (free and from the menu) counted in tipTotal, their chat lines and requests
+  const aliceMenu = [
+    { emoji: '👋', label: 'Je dis ton prénom', amount: 5, description: 'Un petit coucou personnalisé en direct' },
+    { emoji: '🎵', label: 'Je chante une chanson', amount: 20, description: 'Tu choisis le titre dans ton message' },
+    { emoji: '💪', label: '10 pompes', amount: 10, description: null },
+    { emoji: '❓', label: 'Je réponds à ta question', amount: 15, description: 'Pose ta question avec le pourboire' },
+    { emoji: '🎁', label: 'Surprise', amount: 50, description: 'Je te réserve une surprise en fin de live' },
+  ];
+  const aliceMenuItems = [];
+  for (const [position, item] of aliceMenu.entries()) {
+    aliceMenuItems.push(await prisma.liveTipMenuItem.create({ data: { creatorId: alice.id, position, ...item } }));
+  }
+
+  const endedLiveStart = daysAgo(6).getTime();
+  const endedLiveTips: {
+    fan: { id: string };
+    amount: number;
+    minute: number;
+    message?: string;
+    item?: number;
+    status?: 'PENDING' | 'DONE' | 'SKIPPED';
+  }[] = [
+    // Free tip (shows in the creator's tip history)
+    { fan: david, amount: 10, minute: 12, message: 'Pour le live 🙏' },
+    { fan: david, amount: 20, minute: 18, item: 1, status: 'DONE', message: 'La Reine des neiges !' },
+    { fan: liveViewers[1], amount: 5, minute: 24, item: 0, status: 'DONE' },
+    { fan: liveViewers[2], amount: 15, minute: 41, item: 3, status: 'DONE', message: 'Ton meilleur souvenir là-bas ?' },
+    { fan: liveViewers[3], amount: 10, minute: 52, item: 2, status: 'SKIPPED' },
+    { fan: david, amount: 50, minute: 70, item: 4, status: 'PENDING' },
+  ];
+  let endedLiveTipTotal = 0;
+  for (const tipSeed of endedLiveTips) {
+    const id = randomUUID();
+    const at = new Date(endedLiveStart + tipSeed.minute * 60 * 1000);
+    const item = tipSeed.item !== undefined ? aliceMenuItems[tipSeed.item] : null;
+    endedLiveTipTotal += tipSeed.amount;
+    transactions.push({
+      id,
+      fromUserId: tipSeed.fan.id,
+      toUserId: alice.id,
+      type: TransactionType.TIP,
+      status: TransactionStatus.COMPLETED,
+      amount: tipSeed.amount,
+      ...fees(tipSeed.amount),
+      metadata: {
+        kind: 'tip',
+        streamId: aliceEndedLive.id,
+        message: tipSeed.message ?? null,
+        ...(item && { menuItemId: item.id, menuItemLabel: item.label }),
+      },
+      processedAt: at,
+      createdAt: at,
+    });
+    await prisma.streamMessage.create({
+      data: {
+        streamId: aliceEndedLive.id,
+        senderId: tipSeed.fan.id,
+        type: 'TIP',
+        tipAmount: tipSeed.amount,
+        transactionId: id,
+        message: tipSeed.message ?? `a envoyé un pourboire de ${tipSeed.amount.toFixed(2)}€`,
+        createdAt: at,
+      },
+    });
+    if (item) {
+      await prisma.liveTipAction.create({
+        data: {
+          streamId: aliceEndedLive.id,
+          transactionId: id,
+          menuItemId: item.id,
+          label: item.label,
+          amount: tipSeed.amount,
+          fromUserId: tipSeed.fan.id,
+          status: tipSeed.status ?? 'PENDING',
+          createdAt: at,
+          completedAt: tipSeed.status && tipSeed.status !== 'PENDING' ? new Date(at.getTime() + 3 * 60 * 1000) : null,
+        },
+      });
+    }
+  }
+  // Goal of the ended live, reached during the live (announced once in the chat)
+  await prisma.liveStream.update({
+    where: { id: aliceEndedLive.id },
+    data: { tipGoalAmount: 100, tipGoalLabel: 'Tirage photo pour les abonnés', tipTotal: endedLiveTipTotal },
+  });
+  await prisma.streamMessage.create({
+    data: {
+      streamId: aliceEndedLive.id,
+      senderId: alice.id,
+      type: 'SYSTEM',
+      message: 'Objectif atteint : Tirage photo pour les abonnés 🎉',
+      createdAt: new Date(endedLiveStart + 70 * 60 * 1000 + 1000),
+    },
   });
   // Sophie already bought the upcoming PPV live (she can join it), David has not
   transactions.push({

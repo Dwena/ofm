@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useReducer } from 'react';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { liveApi } from '@/lib/api';
@@ -50,10 +50,19 @@ import { useViewerConnectionQuality } from '@/hooks/use-viewer-connection-qualit
 import { useChatAutoscroll } from '@/hooks/use-chat-autoscroll';
 import { getLiveIceServers, prefetchLiveIceServers } from '@/lib/webrtc/ice-servers';
 import type { ViewerQualityMode } from '@/lib/webrtc/bitrate-controller';
+import { TipMenuPanel } from '@/components/live/tip-menu-panel';
+import {
+  bindLiveTipEvents,
+  initialLiveTipState,
+  liveTipsReducer,
+  type LiveTipSnapshot,
+  type TipMenuItem,
+} from '@/lib/live-tips';
 import { formatEuros } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
-interface LiveStream {
+// Tip goal, tip menu and requests come with the stream detail (LiveTipSnapshot)
+interface LiveStream extends LiveTipSnapshot {
   id: string;
   title: string;
   description?: string | null;
@@ -110,6 +119,10 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const [tipError, setTipError] = useState<string | null>(null);
   // Amount chosen: show the payment step of the tip modal
   const [tipCheckout, setTipCheckout] = useState(false);
+  // Tip menu item the tip pays for (null: free tip)
+  const [tipMenuItem, setTipMenuItem] = useState<TipMenuItem | null>(null);
+  // Tip goal, tip menu and requests of the live (stream detail + socket events)
+  const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState);
   const [showPurchase, setShowPurchase] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [joined, setJoined] = useState(false);
@@ -160,11 +173,40 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   });
 
   const tipMinimum = Math.max(1, stream?.tips?.minimum ?? 1);
+  // A tip menu item cannot be paid less than its amount
+  const tipFloor = Math.max(tipMinimum, tipMenuItem?.amount ?? 0);
   const tipValue = Number(tipAmount.replace(',', '.'));
+
+  // Tip fields of the stream detail (kept by reference between polls)
+  const streamTipGoal = stream?.tipGoal;
+  const streamTipTotal = stream?.tipTotal;
+  const streamTipMenu = stream?.tipMenu;
+  const streamTipActions = stream?.pendingTipActions;
+  useEffect(() => {
+    if (streamTipMenu === undefined && streamTipGoal === undefined) return;
+    dispatchTips({
+      type: 'snapshot',
+      snapshot: {
+        tipGoal: streamTipGoal,
+        tipTotal: streamTipTotal,
+        tipMenu: streamTipMenu,
+        pendingTipActions: streamTipActions,
+      },
+    });
+  }, [streamTipGoal, streamTipTotal, streamTipMenu, streamTipActions]);
+
+  const openTipModal = (item: TipMenuItem | null) => {
+    setTipMenuItem(item);
+    setTipAmount(String(item ? Math.max(item.amount, tipMinimum) : Math.max(5, tipMinimum)));
+    setTipError(null);
+    setTipCheckout(false);
+    setShowTipModal(true);
+  };
 
   const closeTipModal = () => {
     setShowTipModal(false);
     setTipCheckout(false);
+    setTipMenuItem(null);
     setTipAmount(String(Math.max(5, tipMinimum)));
     setTipMessage('');
     setTipError(null);
@@ -189,6 +231,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       },
     });
     socketRef.current = socket;
+    bindLiveTipEvents(socket, dispatchTips);
     let peer: RTCPeerConnection | null = null;
     // Negotiation id chosen by the broadcaster for the current offer
     let sessionId: string | undefined;
@@ -362,6 +405,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         setJoined(true);
         setMutedInChat(!!ack.muted);
         setChatMessages(ack.messages ?? []);
+        dispatchTips({ type: 'snapshot', snapshot: ack as LiveTipSnapshot });
         if (typeof ack.viewerCount === 'number') {
           queryClient.setQueryData(['live-stream', streamId], (old: LiveStream | undefined) =>
             old ? { ...old, viewerCount: ack.viewerCount as number } : old,
@@ -657,8 +701,12 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
       setTipError('Indiquez un montant.');
       return;
     }
-    if (tipValue < tipMinimum) {
-      setTipError(`Le pourboire minimum est de ${formatEuros(tipMinimum)}.`);
+    if (tipValue < tipFloor) {
+      setTipError(
+        tipMenuItem
+          ? `« ${tipMenuItem.label} » coûte au moins ${formatEuros(tipFloor)}.`
+          : `Le pourboire minimum est de ${formatEuros(tipMinimum)}.`,
+      );
       return;
     }
     if (tipValue > TIP_MAX) {
@@ -867,7 +915,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   }
 
   const canTip = !isOwnStream && stream.tips?.allowed !== false;
-  const tipPresets = TIP_PRESETS.filter((amount) => amount >= tipMinimum);
+  const tipPresets = TIP_PRESETS.filter((amount) => amount >= tipFloor);
 
   return (
     <div className="lg:h-[calc(100vh-8rem)] lg:min-h-[500px] flex flex-col lg:flex-row bg-background rounded-lg overflow-hidden border">
@@ -1063,6 +1111,15 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
             </div>
           </div>
         </div>
+
+        {/* Tip goal, tip menu and requests in progress */}
+        <TipMenuPanel
+          state={tipState}
+          canTip={canTip}
+          currentUserId={user?.id}
+          onSelectItem={(item) => openTipModal(item)}
+          className="shrink-0"
+        />
       </div>
 
       {/* Chat Section */}
@@ -1129,10 +1186,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
             <Button
               variant="outline"
               className="w-full"
-              onClick={() => {
-                setTipAmount(String(Math.max(5, tipMinimum)));
-                setShowTipModal(true);
-              }}
+              onClick={() => openTipModal(null)}
             >
               <Euro className="h-4 w-4 mr-2" />
               Envoyer un pourboire
@@ -1159,11 +1213,12 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 kind="tip"
                 compact
                 amount={tipValue}
-                description={`Pourboire pour @${stream.creator.username}`}
+                description={`Pourboire pour @${stream.creator.username}${tipMenuItem ? ` · Demande : ${tipMenuItem.label}` : ''}`}
                 start={async (paymentMethodId) =>
                   (
                     await liveApi.sendTip(stream.creator.id, tipValue, {
                       streamId,
+                      menuItemId: tipMenuItem?.id,
                       message: tipMessage.trim() || undefined,
                       paymentMethodId,
                     })
@@ -1194,6 +1249,34 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                   handleTipContinue();
                 }}
               >
+                {tipMenuItem && (
+                  <div
+                    className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-700 dark:bg-amber-950/40"
+                    data-testid="tip-modal-request"
+                  >
+                    <span className="text-xl leading-5 shrink-0" aria-hidden>
+                      {tipMenuItem.emoji || '🎁'}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium break-words">Demande : {tipMenuItem.label}</p>
+                      <p className="text-xs text-muted-foreground">
+                        À partir de {formatEuros(tipMenuItem.amount)} · le créateur la verra dans ses demandes.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 px-2 text-xs"
+                      onClick={() => {
+                        setTipMenuItem(null);
+                        setTipError(null);
+                      }}
+                    >
+                      Pourboire libre
+                    </Button>
+                  </div>
+                )}
                 {tipPresets.length > 0 && (
                   <div className="grid grid-cols-3 gap-2">
                     {tipPresets.map((amount) => (
@@ -1217,7 +1300,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                     id="tip-amount"
                     type="number"
                     inputMode="decimal"
-                    min={tipMinimum}
+                    min={tipFloor}
                     max={TIP_MAX}
                     step="0.01"
                     value={tipAmount}
@@ -1231,7 +1314,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                   {tipError ? (
                     <p className="text-sm text-destructive">{tipError}</p>
                   ) : (
-                    <p className="text-xs text-muted-foreground">Minimum {formatEuros(tipMinimum)}</p>
+                    <p className="text-xs text-muted-foreground">Minimum {formatEuros(tipFloor)}</p>
                   )}
                 </div>
                 <div className="space-y-1">

@@ -15,6 +15,8 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
 import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
+import { LiveTipsService, LiveTipState, RecordedLiveTip } from './live-tips.service';
+import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 
 interface SocketUser {
   id: string;
@@ -47,6 +49,8 @@ export interface LiveChatMessage {
   isCreator: boolean;
   /** Euros, for TIP messages */
   tipAmount?: number;
+  /** Tip menu item requested with a TIP message */
+  menuItemLabel?: string | null;
 }
 
 type Ack = { success: true; [key: string]: unknown } | { error: string; reason?: string };
@@ -121,11 +125,14 @@ export class StreamingGateway
     private jwtService: JwtService,
     private streamingService: StreamingService,
     @Optional() private oneTimePayments?: OneTimePaymentService,
+    @Optional() private liveTips?: LiveTipsService,
   ) {}
 
   onModuleInit() {
     // Paid tips sent from a live are announced in its chat
-    this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => this.notifyTip(tip));
+    this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => {
+      void this.notifyTip(tip);
+    });
   }
 
   onModuleDestroy() {
@@ -247,7 +254,8 @@ export class StreamingGateway
         viewerCount,
         broadcasterOnline: !!room.broadcasterSocketId,
         muted: this.isMuted(streamId, client.userId),
-        messages: messages.map((message) => this.toChatMessage(message, stream.creatorId)),
+        messages: await this.toChatHistory(messages, stream.creatorId),
+        ...(await this.getTipState(streamId)),
       };
     } catch (error) {
       this.logger.error('Join stream error:', error);
@@ -310,7 +318,8 @@ export class StreamingGateway
         success: true,
         viewerCount,
         mutedUserIds: [...(this.mutedUsers.get(streamId) ?? [])],
-        messages: messages.map((message) => this.toChatMessage(message, stream.creatorId)),
+        messages: await this.toChatHistory(messages, stream.creatorId),
+        ...(await this.getTipState(streamId)),
       };
     } catch (error) {
       this.logger.error('Start broadcast error:', error);
@@ -558,6 +567,41 @@ export class StreamingGateway
   }
 
   /**
+   * Creator marks a tip menu request as done or skipped
+   */
+  @SubscribeMessage('update-tip-action')
+  async handleUpdateTipAction(
+    @ConnectedSocket() client: AuthenticatedStreamSocket,
+    @MessageBody() data: { streamId: string; actionId: string; status: TipActionUpdateStatus },
+  ): Promise<Ack> {
+    if (!client.userId) return { error: 'Unauthorized' };
+    if (!this.liveTips) return { error: 'Tip actions unavailable' };
+    if (!isNonEmptyString(data?.streamId) || !isNonEmptyString(data.actionId)) {
+      return { error: 'Invalid tip action' };
+    }
+    if (!TIP_ACTION_UPDATE_STATUSES.includes(data.status)) return { error: 'Invalid status' };
+
+    try {
+      const action = await this.liveTips.updateTipAction(
+        client.userId,
+        data.streamId,
+        data.actionId,
+        data.status,
+      );
+      this.server.to(streamRoom(data.streamId)).emit('tip-action-updated', { action });
+      return { success: true, action };
+    } catch (error) {
+      const status = error?.getStatus?.();
+      if (status === 403) {
+        return { error: 'Only the creator can update tip actions', reason: 'NOT_CREATOR' };
+      }
+      if (status === 404) return { error: error.message, reason: 'NOT_FOUND' };
+      this.logger.error('Update tip action error:', error);
+      return { error: 'Unable to update tip action' };
+    }
+  }
+
+  /**
    * Called when a stream ends (REST end endpoint): notify everyone and drop the room
    */
   notifyStreamEnded(streamId: string) {
@@ -580,33 +624,76 @@ export class StreamingGateway
 
   /**
    * Announce a paid tip in the live chat (`chat-message` of type TIP, plus a
-   * `tip` event for on-screen effects)
+   * `tip` event for on-screen effects). The tip is first recorded in the
+   * stream (running total, persisted chat line, menu request): a tip already
+   * recorded (completed twice) is not announced again.
    */
-  notifyTip(tip: TipCompletedEvent) {
+  async notifyTip(tip: TipCompletedEvent) {
     if (!this.server || !tip.streamId) return;
-
-    const message: LiveChatMessage = {
-      id: `tip-${tip.transactionId}`,
-      userId: tip.fromUser.id,
-      username: tip.fromUser.username,
-      displayName: tip.fromUser.displayName,
-      avatar: tip.fromUser.avatar,
-      message: tip.message || `a envoyé un pourboire de ${tip.amount.toFixed(2)}€`,
-      timestamp: tip.completedAt.toISOString(),
-      type: 'TIP',
-      isCreator: false,
-      tipAmount: tip.amount,
-    };
-
     const room = streamRoom(tip.streamId);
+
+    let recorded: RecordedLiveTip | null = null;
+    if (this.liveTips) {
+      try {
+        recorded = await this.liveTips.recordTip(tip);
+        if (!recorded) return;
+      } catch (error) {
+        // Still announce the paid tip, even if it could not be recorded
+        this.logger.error(`Unable to record tip ${tip.transactionId}:`, error);
+      }
+    }
+
+    const menuItemLabel = tip.menuItemLabel ?? null;
+    const message: LiveChatMessage = recorded
+      ? { ...this.toChatMessage(recorded.message, recorded.creatorId), menuItemLabel }
+      : {
+          id: `tip-${tip.transactionId}`,
+          userId: tip.fromUser.id,
+          username: tip.fromUser.username,
+          displayName: tip.fromUser.displayName,
+          avatar: tip.fromUser.avatar,
+          message: tip.message || `a envoyé un pourboire de ${tip.amount.toFixed(2)}€`,
+          timestamp: tip.completedAt.toISOString(),
+          type: 'TIP',
+          isCreator: false,
+          tipAmount: tip.amount,
+          menuItemLabel,
+        };
+
     this.server.to(room).emit('chat-message', message);
     this.server.to(room).emit('tip', {
       streamId: tip.streamId,
       transactionId: tip.transactionId,
       amount: tip.amount,
       message: tip.message,
+      menuItemLabel,
       fromUser: tip.fromUser,
     });
+
+    if (!recorded) return;
+
+    this.server.to(room).emit('tip-goal-progress', { streamId: tip.streamId, ...recorded.goal });
+    if (recorded.action) {
+      this.server.to(room).emit('tip-action-created', { action: recorded.action });
+    }
+    if (recorded.systemMessage) {
+      this.server
+        .to(room)
+        .emit('chat-message', this.toChatMessage(recorded.systemMessage, recorded.creatorId));
+    }
+  }
+
+  /**
+   * Tip goal changed by the creator (REST endpoint)
+   */
+  notifyTipGoalUpdated(goal: {
+    streamId: string;
+    amount: number | null;
+    label: string | null;
+    total: number;
+  }) {
+    if (!this.server) return;
+    this.server.to(streamRoom(goal.streamId)).emit('tip-goal-updated', goal);
   }
 
   getViewerCount(streamId: string) {
@@ -801,10 +888,13 @@ export class StreamingGateway
       senderId: string;
       message: string;
       createdAt: Date;
+      type?: LiveChatMessage['type'] | null;
+      tipAmount?: { toString(): string } | number | null;
       sender?: { username: string; displayName?: string | null; avatar?: string | null } | null;
     },
     creatorId: string,
   ): LiveChatMessage {
+    const type = message.type ?? 'MESSAGE';
     return {
       id: message.id,
       userId: message.senderId,
@@ -813,8 +903,45 @@ export class StreamingGateway
       avatar: message.sender?.avatar ?? null,
       message: message.message,
       timestamp: message.createdAt.toISOString(),
-      type: 'MESSAGE',
-      isCreator: message.senderId === creatorId,
+      type,
+      // Tip lines are the fan's, system lines (goal reached) nobody's in particular
+      isCreator: type === 'MESSAGE' && message.senderId === creatorId,
+      ...(type === 'TIP' && message.tipAmount != null && { tipAmount: Number(message.tipAmount) }),
     };
+  }
+
+  /**
+   * Chat history of a join / broadcast acknowledgement, tip lines with their menu request
+   */
+  private async toChatHistory(
+    messages: Awaited<ReturnType<StreamingService['getRecentChatMessages']>>,
+    creatorId: string,
+  ): Promise<LiveChatMessage[]> {
+    const tipIds = messages
+      .map((message) => (message.type === 'TIP' ? message.transactionId : null))
+      .filter((id): id is string => !!id);
+    const labels =
+      tipIds.length > 0 && this.liveTips
+        ? await this.liveTips.getActionLabels(tipIds)
+        : new Map<string, string>();
+
+    return messages.map((message) => {
+      const chatMessage = this.toChatMessage(message, creatorId);
+      const label = message.transactionId ? labels.get(message.transactionId) : undefined;
+      return label ? { ...chatMessage, menuItemLabel: label } : chatMessage;
+    });
+  }
+
+  /**
+   * Tip goal, menu and requests sent with the join / broadcast acknowledgements
+   */
+  private async getTipState(streamId: string): Promise<Partial<LiveTipState>> {
+    if (!this.liveTips) return {};
+    try {
+      return await this.liveTips.getLiveTipState(streamId);
+    } catch (error) {
+      this.logger.error('Tip state error:', error);
+      return {};
+    }
   }
 }

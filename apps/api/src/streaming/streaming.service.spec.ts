@@ -41,6 +41,7 @@ describe('StreamingService', () => {
       findMany: jest.fn(),
     },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
   };
 
   const mockOneTimePayments = {
@@ -380,22 +381,27 @@ describe('StreamingService', () => {
     });
 
     it('adds PPV sales and tips of each live for its creator', async () => {
-      mockPrismaService.liveStream.findMany.mockResolvedValue([stream('s1'), stream('s2')]);
-      mockPrismaService.transaction.findMany
-        .mockResolvedValueOnce([
-          { contentId: 's1', amount: 12.99 },
-          { contentId: 's1', amount: 12.99 },
-        ])
-        .mockResolvedValueOnce([
-          { amount: 5, metadata: { streamId: 's1' } },
-          { amount: 10, metadata: { streamId: 's2', message: 'Bravo' } },
-          { amount: 20, metadata: { kind: 'TIP' } },
-          { amount: 7, metadata: { streamId: 'someone-else' } },
-        ]);
+      mockPrismaService.liveStream.findMany.mockResolvedValue([
+        stream('s1', { tipTotal: 5 }),
+        stream('s2', { tipTotal: 25.5 }),
+        stream('s3', { tipTotal: 0 }),
+      ]);
+      mockPrismaService.transaction.findMany.mockResolvedValueOnce([
+        { contentId: 's1', amount: 12.99 },
+        { contentId: 's1', amount: 12.99 },
+      ]);
+      // Tips are counted in the database, totals come from LiveStream.tipTotal
+      mockPrismaService.$queryRaw.mockResolvedValueOnce([
+        { streamId: 's1', count: BigInt(1) },
+        { streamId: 's2', count: BigInt(2) },
+      ]);
 
       const result = (await service.getCreatorStreams('creator-1', 'creator-1')) as any[];
       expect(result.find((s) => s.id === 's1').stats).toEqual({ tipsCount: 1, tipsTotal: 5, ppvCount: 2, ppvTotal: 25.98 });
-      expect(result.find((s) => s.id === 's2').stats).toEqual({ tipsCount: 1, tipsTotal: 10, ppvCount: 0, ppvTotal: 0 });
+      expect(result.find((s) => s.id === 's2').stats).toEqual({ tipsCount: 2, tipsTotal: 25.5, ppvCount: 0, ppvTotal: 0 });
+      expect(result.find((s) => s.id === 's3').stats).toEqual({ tipsCount: 0, tipsTotal: 0, ppvCount: 0, ppvTotal: 0 });
+      // No in-memory scan of every tip of the creator anymore
+      expect(mockPrismaService.transaction.findMany).toHaveBeenCalledTimes(1);
     });
   });
 

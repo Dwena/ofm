@@ -142,6 +142,11 @@ export class SendTipDto {
   @IsOptional()
   streamId?: string;
 
+  // Item of the creator's live tip menu the fan pays for (requires streamId)
+  @IsUUID()
+  @IsOptional()
+  menuItemId?: string;
+
   // Saved card (GET /payments/methods); without it the client confirms with Stripe Elements
   @IsString()
   @IsOptional()

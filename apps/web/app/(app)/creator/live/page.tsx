@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Socket } from 'socket.io-client'
@@ -63,6 +63,10 @@ import { QUALITY_PRESETS, type QualityPresetId } from '@/lib/webrtc/quality-pres
 import { openBroadcastMedia, switchDevice, switchPreset } from '@/lib/webrtc/media'
 import { addBroadcastTracks } from '@/lib/webrtc/sender-params'
 import { getLiveIceServers, prefetchLiveIceServers } from '@/lib/webrtc/ice-servers'
+import { TipMenuEditor } from '@/components/live/tip-menu-editor'
+import { TipGoalEditor } from '@/components/live/tip-goal-editor'
+import { TipActionsQueue } from '@/components/live/tip-actions-queue'
+import { bindLiveTipEvents, initialLiveTipState, liveTipsReducer, type LiveTipSnapshot } from '@/lib/live-tips'
 
 interface StreamStats {
   tipsCount: number
@@ -159,6 +163,8 @@ export default function CreatorLivePage() {
   const [chatError, setChatError] = useState<string | null>(null)
   const [sendingChat, setSendingChat] = useState(false)
   const [mutedUserIds, setMutedUserIds] = useState<Set<string>>(new Set())
+  // Tip goal and tip menu requests of the live being broadcast
+  const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -459,6 +465,7 @@ export default function CreatorLivePage() {
     setMutedUserIds(new Set())
     setViewerCount(0)
     setSocketReconnecting(false)
+    dispatchTips({ type: 'reset' })
   }
 
   const connectBroadcast = (stream: CreatorStream) => {
@@ -476,6 +483,7 @@ export default function CreatorLivePage() {
       },
     })
     socketRef.current = socket
+    bindLiveTipEvents(socket, dispatchTips)
     const streamId = stream.id
 
     socket.on('connect', () => {
@@ -497,6 +505,7 @@ export default function CreatorLivePage() {
         setViewerCount(ack.viewerCount ?? 0)
         setChatMessages(ack.messages ?? [])
         setMutedUserIds(new Set(ack.mutedUserIds ?? []))
+        dispatchTips({ type: 'snapshot', snapshot: ack as LiveTipSnapshot })
       })
     })
 
@@ -612,6 +621,7 @@ export default function CreatorLivePage() {
     setViewerCount(stream.viewerCount ?? 0)
     setChatMessages([])
     setChatError(null)
+    dispatchTips({ type: 'reset' })
     connectBroadcast(stream)
   }
 
@@ -1057,6 +1067,27 @@ export default function CreatorLivePage() {
             </Card>
           )}
 
+          {/* Tip menu requests, tip goal and menu while broadcasting */}
+          {activeStream && (
+            <>
+              <TipActionsQueue
+                streamId={activeStream.id}
+                socketRef={socketRef}
+                actions={tipState.actions}
+                connected={broadcasting}
+                onActionUpdated={(action) => dispatchTips({ type: 'action', action })}
+              />
+              <TipGoalEditor
+                streamId={activeStream.id}
+                amount={tipState.goalAmount}
+                label={tipState.goalLabel}
+                total={tipState.total}
+                onSaved={(goal) => dispatchTips({ type: 'goal', ...goal })}
+              />
+              <TipMenuEditor defaultOpen={false} />
+            </>
+          )}
+
           {!activeStream && (
             <Card>
               <CardHeader>
@@ -1199,6 +1230,9 @@ export default function CreatorLivePage() {
               </CardContent>
             </Card>
           )}
+
+          {/* The tip menu is reused from one live to the next */}
+          {!activeStream && <TipMenuEditor defaultOpen={false} />}
 
           {!activeStream && streamsLoading && (
             <div className="flex justify-center py-6">
