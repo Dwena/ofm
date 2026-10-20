@@ -589,6 +589,10 @@ export const liveApi = {
   delete: (streamId: string) => api.delete(`/streaming/${streamId}`),
   join: (streamId: string) => api.post(`/streaming/${streamId}/join`),
   leave: (streamId: string) => api.post(`/streaming/${streamId}/leave`),
+  // LiveKit transport: access token for the live's video (publisher for the
+  // creator, viewer otherwise; the creator watching its own live asks 'viewer')
+  livekitToken: (streamId: string, role?: 'publisher' | 'viewer') =>
+    api.post(`/streaming/${streamId}/livekit-token`, role ? { role } : {}),
   // PPV streams: access is granted once the payment is confirmed
   purchase: (streamId: string, paymentMethodId?: string) =>
     api.post(`/streaming/${streamId}/purchase`, paymentMethodId ? { paymentMethodId } : {}),
