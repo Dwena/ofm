@@ -83,6 +83,11 @@ services:
       - "7880:7880"          # signaling (ws://localhost:7880) + room service API
       - "7881:7881/tcp"      # WebRTC over TCP (fallback when UDP is blocked)
       - "7882:7882/udp"      # WebRTC over UDP (single multiplexed port)
+      # LiveKit Ingress ("Diffuser avec OBS", service livekit-ingress below, which
+      # shares this container's network: its ports are published here)
+      - "1935:1935"          # RTMP: rtmp://localhost:1935/live
+      - "8080:8080"          # WHIP: http://localhost:8080/w
+      - "7885:7885/udp"      # WHIP media (WebRTC from OBS)
     environment:
       # Advertised address of the media ports (LAN IP to test from a phone)
       NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
@@ -91,6 +96,26 @@ services:
     extra_hosts:
       # Webhooks to the API running on the host (built in on Docker Desktop, needed on Linux)
       - "host.docker.internal:host-gateway"
+    # Ingress (OBS) talks to LiveKit through Redis
+    depends_on:
+      - redis
+
+  # LiveKit Ingress: receives OBS (WHIP or RTMP) and publishes it in the live's
+  # LiveKit room. Config: infrastructure/livekit/ingress.dev.yaml. Runs in the
+  # network namespace of `livekit`: LiveKit advertises 127.0.0.1 in its ICE
+  # candidates (Docker Desktop), which only reaches it from its own namespace.
+  livekit-ingress:
+    image: livekit/ingress:v1.4.3
+    container_name: ofm-livekit-ingress
+    restart: unless-stopped
+    network_mode: "service:livekit"
+    environment:
+      INGRESS_CONFIG_FILE: /etc/ingress.yaml
+    volumes:
+      - ./infrastructure/livekit/ingress.dev.yaml:/etc/ingress.yaml:ro
+    depends_on:
+      - livekit
+      - redis
 
 volumes:
   postgres_data:
