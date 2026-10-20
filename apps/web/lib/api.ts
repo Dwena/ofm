@@ -110,7 +110,13 @@ export const authApi = {
   resetPassword: (token: string, password: string) =>
     api.post('/auth/reset-password', { token, password }),
   getPublicSettings: () =>
-    api.get<{ registrationOpen: boolean; maintenanceMode: boolean; maintenanceMessage: string | null }>(
+    api.get<{
+      registrationOpen: boolean
+      maintenanceMode: boolean
+      maintenanceMessage: string | null
+      platformFeePercentage: number
+      minimumPayoutAmount: number
+    }>(
       '/settings/public'
     ),
   // Returns fresh { accessToken, refreshToken } (other sessions are revoked)

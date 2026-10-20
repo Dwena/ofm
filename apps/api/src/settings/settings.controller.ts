@@ -50,6 +50,9 @@ export class PublicSettingsController {
       registrationOpen: settings.registrationOpen,
       maintenanceMode: settings.maintenanceMode,
       maintenanceMessage: settings.maintenanceMode ? settings.maintenanceMessage : null,
+      // Shown on the landing page (pricing explanation)
+      platformFeePercentage: settings.platformFeePercentage,
+      minimumPayoutAmount: settings.minimumPayoutAmount,
     };
   }
 }
