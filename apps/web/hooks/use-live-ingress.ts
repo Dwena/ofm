@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { liveApi } from '@/lib/api'
-import { isIngressUnavailable, type IngressInputType, type LiveIngress } from '@/lib/live-ingress'
+import { isIngressUnavailable, type LiveIngress } from '@/lib/live-ingress'
 
 export const LIVE_INGRESS_QUERY_KEY = ['live-ingress'] as const
 
@@ -32,11 +32,6 @@ export function useLiveIngress({ enabled = true, refetchInterval = false }: Opti
 
   const store = (ingress: LiveIngress) => queryClient.setQueryData(LIVE_INGRESS_QUERY_KEY, ingress)
 
-  const setInputType = useMutation({
-    mutationFn: async (inputType: IngressInputType) => (await liveApi.setIngressInput(inputType)).data as LiveIngress,
-    onSuccess: store,
-  })
-
   const resetKey = useMutation({
     mutationFn: async () => (await liveApi.resetIngressKey()).data as LiveIngress,
     onSuccess: store,
@@ -51,7 +46,6 @@ export function useLiveIngress({ enabled = true, refetchInterval = false }: Opti
     /** Update the status pushed by the socket (`obs-status`) without waiting for the next poll */
     setStatus: (status: LiveIngress['status'], streamId: string | null) =>
       queryClient.setQueryData<LiveIngress>(LIVE_INGRESS_QUERY_KEY, (old) => (old ? { ...old, status, streamId } : old)),
-    setInputType,
     resetKey,
   }
 }

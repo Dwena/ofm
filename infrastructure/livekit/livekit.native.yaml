@@ -43,7 +43,6 @@ redis:
 # URLs annoncées pour les entrées OBS (vues depuis la machine hôte)
 ingress:
   rtmp_base_url: rtmp://localhost:1935/live
-  whip_base_url: http://localhost:8080/w
 
 # Spectateurs connectés à la vidéo et statut OBS, vus par l'API (POST /api/v1/webhooks/livekit)
 webhook:

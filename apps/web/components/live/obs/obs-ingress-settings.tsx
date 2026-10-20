@@ -8,11 +8,9 @@ import { useToast } from '@/hooks/use-toast'
 import { useConfirm } from '@/hooks/use-confirm'
 import type { useLiveIngress } from '@/hooks/use-live-ingress'
 import {
-  INPUT_TYPE_OPTIONS,
   ingressErrorMessage,
   maskSecret,
   obsSetupSteps,
-  type IngressInputType,
   type LiveIngress,
 } from '@/lib/live-ingress'
 import { cn } from '@/lib/utils'
@@ -106,42 +104,21 @@ interface ObsIngressSettingsProps {
   controls: IngressControls
   /** Hide the step-by-step guide (e.g. while live, shown on demand) */
   showGuide?: boolean
-  /** A live is in progress in OBS mode: changing protocol / key disconnects OBS */
+  /** A live is in progress in OBS mode: a new key disconnects OBS */
   live?: boolean
 }
 
 /**
- * OBS settings of the creator: protocol (WHIP / RTMP), server URL, stream key
+ * OBS settings of the creator (RTMP): server URL, stream key
  * (masked, show / copy / regenerate) and the OBS setup guide
  */
 export function ObsIngressSettings({ controls, showGuide = true, live = false }: ObsIngressSettingsProps) {
   const { toast } = useToast()
   const { confirm } = useConfirm()
-  const { ingress, setInputType, resetKey } = controls
+  const { ingress, resetKey } = controls
   if (!ingress) return null
 
-  const busy = setInputType.isPending || resetKey.isPending
-
-  const handleInputType = async (inputType: IngressInputType) => {
-    if (inputType === ingress.inputType || busy) return
-    const ok = await confirm({
-      title: inputType === 'WHIP' ? 'Passer en WHIP ?' : 'Passer en RTMP ?',
-      description: `Une nouvelle URL de serveur et une nouvelle clé seront générées : mettez à jour les réglages d’OBS.${
-        live ? ' OBS sera déconnecté du live en cours.' : ''
-      }`,
-      confirmText: 'Changer de protocole',
-    })
-    if (!ok) return
-    setInputType.mutate(inputType, {
-      onSuccess: () => toast({ title: `Protocole ${inputType} activé`, description: 'Copiez la nouvelle clé dans OBS.' }),
-      onError: (error) =>
-        toast({
-          title: 'Changement impossible',
-          description: ingressErrorMessage(error) ?? 'Une erreur est survenue. Réessayez.',
-          variant: 'destructive',
-        }),
-    })
-  }
+  const busy = resetKey.isPending
 
   const handleReset = async () => {
     const ok = await confirm({
@@ -166,43 +143,10 @@ export function ObsIngressSettings({ controls, showGuide = true, live = false }:
 
   return (
     <div className="space-y-5 min-w-0" data-testid="obs-settings">
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium mb-2">Protocole</legend>
-        <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Protocole">
-          {INPUT_TYPE_OPTIONS.map((option) => {
-            const selected = option.value === ingress.inputType
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                disabled={busy}
-                onClick={() => void handleInputType(option.value)}
-                data-testid={`obs-input-${option.value}`}
-                className={cn(
-                  'rounded-lg border p-3 text-left transition-colors disabled:opacity-60',
-                  selected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-muted',
-                )}
-              >
-                <span className="flex items-center gap-2 font-medium">
-                  {option.label}
-                  {option.badge && (
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-normal">{option.badge}</span>
-                  )}
-                  {selected && setInputType.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-                </span>
-                <span className="mt-1 block text-xs text-muted-foreground">{option.description}</span>
-              </button>
-            )
-          })}
-        </div>
-      </fieldset>
-
       <CopyField id="obs-server-url" label="URL du serveur" value={ingress.serverUrl} />
       <CopyField
         id="obs-stream-key"
-        label={ingress.inputType === 'WHIP' ? 'Clé de stream (Bearer Token)' : 'Clé de stream'}
+        label="Clé de stream"
         value={ingress.streamKey}
         secret
         hint="Gardez cette clé secrète : toute personne qui la possède peut diffuser sur vos lives."
@@ -218,12 +162,12 @@ export function ObsIngressSettings({ controls, showGuide = true, live = false }:
   )
 }
 
-/** Step-by-step OBS configuration (French), for the protocol in use */
+/** Step-by-step OBS configuration (French) */
 export function ObsSetupGuide({ ingress }: { ingress: LiveIngress }) {
-  const steps = obsSetupSteps(ingress.inputType)
+  const steps = obsSetupSteps()
   return (
     <div className="rounded-lg border p-4 space-y-3" data-testid="obs-guide">
-      <p className="font-medium">Configurer OBS ({ingress.inputType})</p>
+      <p className="font-medium">Configurer OBS</p>
       <ol className="space-y-3 text-sm">
         {steps.map((step, index) => (
           <li key={step.title} className="flex gap-3 min-w-0">
@@ -246,9 +190,7 @@ export function ObsSetupGuide({ ingress }: { ingress: LiveIngress }) {
         ))}
       </ol>
       <p className="text-xs text-muted-foreground">
-        {ingress.inputType === 'WHIP'
-          ? 'WHIP transmet votre vidéo telle quelle : réglez la qualité dans OBS, vos spectateurs recevront exactement ce flux.'
-          : 'En RTMP, votre vidéo est convertie en plusieurs qualités pour s’adapter à la connexion de chaque spectateur.'}
+        Votre vidéo est convertie en plusieurs qualités pour s’adapter à la connexion de chaque spectateur.
       </p>
     </div>
   )

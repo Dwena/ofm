@@ -204,23 +204,20 @@ Production (TLS / wss, ports, TURN intégré, clés, webhook) : `docs/DEPLOYMENT
 
 `npm run dev:up` lance aussi `ofm-livekit-ingress` (LiveKit Ingress v1.4.3,
 config `infrastructure/livekit/ingress.dev.yaml`), qui reçoit OBS et publie sa
-vidéo dans le live. Ports publiés sur la machine : **8080** (WHIP), **1935**
-(RTMP), **7885/udp** (média WHIP). Il partage le réseau du conteneur
-`ofm-livekit` et utilise le Redis du docker-compose (obligatoire).
+vidéo dans le live. Port publié sur la machine : **1935** (RTMP). Il utilise le
+Redis du docker-compose (obligatoire).
 
 1. Connectez-vous en créatrice (creator@demo.com), menu **Live** → « Diffuser
    avec OBS : réglages et tutoriel » (`/creator/live/obs`).
-2. OBS 30+ : Paramètres → Stream → Service « WHIP », Serveur
-   `http://localhost:8080/w`, Bearer Token = votre clé. (Ou RTMP : Service
-   « Personnalisé… », Serveur `rtmp://localhost:1935/live`, Clé = votre clé.)
+2. OBS : Paramètres → Stream → Service « Personnalisé… », Serveur
+   `rtmp://localhost:1935/live`, Clé = votre clé de stream.
 3. Sortie : x264/NVENC, 720p ou 1080p, 30 i/s, intervalle d'images clés 2 s,
-   B-frames 0 en WHIP ; 4 500-6 000 kbit/s en RTMP.
+   4 500-6 000 kbit/s.
 4. Sur `/creator/live`, source « OBS » → « Lancer le live », puis « Démarrer le
    streaming » dans OBS : le statut passe à « Connexion… » puis « En direct ».
 
 Dépannage : `docker logs ofm-livekit-ingress` ; « Le service de réception OBS
-ne répond pas » = Ingress ou Redis arrêté ; port 8080 déjà pris sous Windows →
-libérez-le (ou changez `whip_port` + le port publié + `ingress.whip_base_url`).
+ne répond pas » = Ingress ou Redis arrêté.
 
 ---
 

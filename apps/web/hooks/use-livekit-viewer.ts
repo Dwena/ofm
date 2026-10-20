@@ -31,7 +31,7 @@ const STATS_INTERVAL_MS = 2000
 
 /**
  * Simulcast layers of a video publication: 3 for a browser broadcast or an
- * OBS RTMP input (transcoded), 1 for an OBS WHIP input (forwarded as is)
+ * OBS RTMP input (transcoded), fewer when the publisher sends fewer layers
  */
 const layerCountOf = (publication: RemoteTrackPublication) =>
   publication.simulcasted ? Math.max(1, publication.trackInfo?.layers?.length ?? 1) : 1
@@ -52,6 +52,12 @@ interface Options {
   mode: LiveKitViewerQualityMode
   /** The room was closed or the token refused because the live is over */
   onEnded?: () => void
+  /**
+   * Adaptive stream (default): the layer follows the player size and the video
+   * is paused while the player is off screen. The creator's OBS preview turns
+   * it off, so it keeps playing (and its stats keep coming) when scrolled away.
+   */
+  adaptive?: boolean
 }
 
 /**
@@ -61,7 +67,7 @@ interface Options {
  * viewer picks a quality. LiveKit handles network blips; after a real
  * disconnection the page rejoins with a fresh token.
  */
-export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, onEnded }: Options) {
+export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, onEnded, adaptive = true }: Options) {
   const [state, setState] = useState<LiveKitViewerState>('connecting')
   const [accessError, setAccessError] = useState<string | null>(null)
   const [quality, setQuality] = useState<ViewerQuality | null>(null)
@@ -70,6 +76,8 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
   const [layerCount, setLayerCount] = useState<number | null>(null)
   const roomRef = useRef<Room | null>(null)
   const videoPublicationRef = useRef<RemoteTrackPublication | null>(null)
+  // Tracks currently played, re-attached if the page swaps the <video> element
+  const audioTrackRef = useRef<RemoteTrack | null>(null)
   const modeRef = useRef(mode)
   modeRef.current = mode
   const onEndedRef = useRef(onEnded)
@@ -128,7 +136,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
         // Viewer token even for the creator watching its own live
         const { url, token } = await fetchLiveKitToken(streamId, 'viewer')
         if (disposed) return
-        room = new Room({ ...BASE_ROOM_OPTIONS, adaptiveStream: true, dynacast: true })
+        room = new Room({ ...BASE_ROOM_OPTIONS, adaptiveStream: adaptive, dynacast: true })
         const current = room
         roomRef.current = current
 
@@ -144,6 +152,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
               applyMode(publication)
               setState('playing')
             } else if (track.kind === Track.Kind.Audio) {
+              audioTrackRef.current = track
               track.attach(video)
             }
             play()
@@ -152,6 +161,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
         current.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication: RemoteTrackPublication) => {
           const video = element()
           if (video) track.detach(video)
+          if (audioTrackRef.current === track) audioTrackRef.current = null
           if (track.kind === Track.Kind.Video && videoPublicationRef.current === publication) {
             videoPublicationRef.current = null
             if (roomRef.current === current && !hasVideo(current)) setState('waiting')
@@ -166,6 +176,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
           if (disposed || roomRef.current !== current) return
           roomRef.current = null
           videoPublicationRef.current = null
+          audioTrackRef.current = null
           const video = element()
           if (video) video.srcObject = null
           if (reason === DisconnectReason.CLIENT_INITIATED) return
@@ -218,6 +229,7 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
       const room = roomRef.current
       roomRef.current = null
       videoPublicationRef.current = null
+      audioTrackRef.current = null
       void room?.disconnect()
       const video = element()
       if (video) video.srcObject = null
@@ -225,7 +237,26 @@ export function useLiveKitViewer({ streamId, enabled, videoRef, mutedRef, mode, 
       setLayerCount(null)
     }
     // `attempt` restarts the connection (Réessayer)
-  }, [enabled, streamId, videoRef, mutedRef, applyMode, attempt])
+  }, [enabled, streamId, videoRef, mutedRef, applyMode, attempt, adaptive])
+
+  // The page may re-render a new <video> element (e.g. the creator's OBS
+  // preview while its layout changes): move the playing tracks onto it, else
+  // the new element stays black and adaptive stream pauses the video
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    let reattached = false
+    for (const track of [videoPublicationRef.current?.track, audioTrackRef.current]) {
+      if (track && !track.attachedElements.includes(video)) {
+        track.attach(video)
+        reattached = true
+      }
+    }
+    if (reattached) {
+      video.muted = mutedRef.current
+      video.play().catch(() => undefined)
+    }
+  })
 
   // Quality choice of the viewer
   useEffect(() => {

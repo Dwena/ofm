@@ -621,7 +621,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   }, [liveKitAccessError]);
   // Video state of the player, whatever the transport
   const videoState: ConnectionState = isLiveKit ? liveKit.state : connectionState;
-  // Quality choices: one layer only for an OBS WHIP input (forwarded as is)
+  // Quality choices: only the layers the publisher actually sends
   const liveKitQualityOptions = viewerQualityOptionsFor(liveKit.layerCount);
   const liveKitQualityMode = liveKitQualityOptions.some((option) => option.value === liveKitQuality)
     ? liveKitQuality

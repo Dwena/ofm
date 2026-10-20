@@ -267,7 +267,6 @@ const LIVEKIT_DEV = {
   LIVEKIT_API_SECRET: 'fanvip_dev_livekit_secret_change_me_0123456789abcdef',
   // "Diffuser avec OBS" : URLs publiques du conteneur ofm-livekit-ingress
   LIVEKIT_INGRESS_RTMP_URL: 'rtmp://localhost:1935/live',
-  LIVEKIT_INGRESS_WHIP_URL: 'http://localhost:8080/w',
 };
 const LIVEKIT_ENV = SKIP_DOCKER
   ? Object.fromEntries(
@@ -449,7 +448,6 @@ LIVEKIT_API_KEY=${LIVEKIT_ENV.LIVEKIT_API_KEY ?? ''}
 LIVEKIT_API_SECRET=${LIVEKIT_ENV.LIVEKIT_API_SECRET ?? ''}
 # Diffuser avec OBS (conteneur ofm-livekit-ingress) : URLs à coller dans OBS
 LIVEKIT_INGRESS_RTMP_URL=${LIVEKIT_ENV.LIVEKIT_INGRESS_RTMP_URL ?? ''}
-LIVEKIT_INGRESS_WHIP_URL=${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL ?? ''}
 `,
   );
 } else if (SKIP_DOCKER) {
@@ -539,7 +537,7 @@ console.log(`
   API        ${API_URL}/api/v1   (docs Swagger : ${API_URL}/api/docs)
   E-mails    http://localhost:1080   (MailDev)
   Lives      ${LIVEKIT_ENV.LIVEKIT_URL ? `${LIVEKIT_ENV.LIVEKIT_URL}   (LiveKit)` : 'pair-à-pair (LiveKit non configuré)'}
-${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL ? `  OBS        ${LIVEKIT_ENV.LIVEKIT_INGRESS_WHIP_URL} (WHIP)  ${LIVEKIT_ENV.LIVEKIT_INGRESS_RTMP_URL} (RTMP)   clés : Live > Diffuser avec OBS
+${LIVEKIT_ENV.LIVEKIT_INGRESS_RTMP_URL ? `  OBS        ${LIVEKIT_ENV.LIVEKIT_INGRESS_RTMP_URL} (RTMP)   clé : Live > Diffuser avec OBS
 ` : ''}  Stockage   http://localhost:9001   (MinIO : minioadmin / minioadmin_dev_only)
 
   Comptes : docs/SEED_ACCOUNTS.md — mot de passe SecurePass123!

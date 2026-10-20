@@ -11,27 +11,17 @@ redis:
   password: <same value as REDIS_PASSWORD>
 
 # RTMP: open TCP 1935 (or terminate RTMPS on 443/1936 with nginx `stream` and
-# proxy to 127.0.0.1:1935). WHIP: nginx terminates TLS for
-# https://whip.yourdomain.com and proxies to 127.0.0.1:8080.
+# proxy to 127.0.0.1:1935).
 rtmp_port: 1935
-whip_port: 8080
 http_relay_port: 9090
 health_port: 9091
 prometheus_port: 9092
 
-# WHIP media (WebRTC from OBS): single UDP port, open it in the firewall.
-# The public IP is discovered with STUN and advertised in the ICE candidates.
-rtc_config:
-  udp_port: 7885
-  use_external_ip: true
-
 # CPU cores reserved per input (an input is refused when not enough CPU is
 # idle): RTMP is decoded and re-encoded into 3 H.264 layers (~2 cores in 720p,
-# ~3-4 in 1080p); WHIP without transcoding only forwards packets.
+# ~3-4 in 1080p).
 cpu_cost:
   rtmp_cpu_cost: 2.0
-  whip_cpu_cost: 2.0
-  whip_bypass_transcoding_cpu_cost: 0.1
   url_cpu_cost: 2.0
   min_idle_ratio: 0.2
 

@@ -3,10 +3,8 @@
 # publie dans la salle LiveKit du live, comme le ferait la caméra du créateur.
 #
 # OBS (sur la machine hôte) envoie à :
-#   http://localhost:8080/w       WHIP (recommandé, OBS 30+, sans transcodage)
-#   rtmp://localhost:1935/live    RTMP (compatible avec tous les logiciels, transcodé)
-#   127.0.0.1:7885/udp            média WebRTC du WHIP
-# La clé de stream (RTMP) / le bearer token (WHIP) se trouve dans FanVIP :
+#   rtmp://localhost:1935/live    RTMP (transcodé en plusieurs qualités)
+# La clé de stream se trouve dans FanVIP :
 # Live > Diffuser avec OBS.
 #
 # Le conteneur partage le réseau du conteneur `livekit` (network_mode:
@@ -27,25 +25,14 @@ redis:
   password: redis_password_dev_only
 
 rtmp_port: 1935
-whip_port: 8080
 http_relay_port: 9090
 health_port: 9091
 
-# Média WebRTC du WHIP : un seul port UDP, annoncé en 127.0.0.1 pour OBS sur l'hôte
-rtc_config:
-  udp_port: 7885
-  use_external_ip: false
-  node_ip: 127.0.0.1
-  enable_loopback_candidate: true
-
 # Coût CPU (en cœurs) réservé par flux : une entrée est refusée quand il ne
 # reste pas assez de CPU libre. Valeurs modestes pour un PC de développement :
-# le RTMP est transcodé (décodage + 3 qualités H.264, ~1-2 cœurs en 720p),
-# le WHIP sans transcodage ne fait que relayer les paquets (quasi gratuit).
+# le RTMP est transcodé (décodage + 3 qualités H.264, ~1-2 cœurs en 720p).
 cpu_cost:
   rtmp_cpu_cost: 1.0
-  whip_cpu_cost: 1.0
-  whip_bypass_transcoding_cpu_cost: 0.1
   url_cpu_cost: 1.0
   min_idle_ratio: 0.1
 

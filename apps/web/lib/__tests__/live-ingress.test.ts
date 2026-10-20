@@ -38,19 +38,14 @@ describe('OBS ingress helpers', () => {
     assert.equal(ingressErrorMessage(apiError('Title is required')), null)
   })
 
-  it('guides WHIP (B-frames 0, bearer token) and RTMP (custom service, stream key) setups', () => {
-    const whip = obsSetupSteps('WHIP')
-    assert.ok(whip.some((step) => step.title.includes('WHIP')))
-    assert.ok(whip.some((step) => step.title === 'Bearer Token' && step.copy === 'streamKey'))
-    assert.ok(whip.some((step) => /B-frames : 0/.test(step.detail)))
-    const rtmp = obsSetupSteps('RTMP')
-    assert.ok(rtmp.some((step) => step.title.includes('Personnalisé')))
-    assert.ok(rtmp.some((step) => step.title === 'Clé de stream' && step.copy === 'streamKey'))
-    assert.ok(rtmp.some((step) => /4 500 à 6 000 kbit\/s/.test(step.detail)))
-    for (const steps of [whip, rtmp]) {
-      assert.ok(steps.some((step) => step.copy === 'serverUrl'))
-      assert.ok(steps.some((step) => /images clés 2 s/.test(step.detail)))
-    }
+  it('guides the RTMP setup (custom service, stream key, server URL)', () => {
+    const steps = obsSetupSteps()
+    assert.ok(steps.some((step) => step.title.includes('Personnalisé')))
+    assert.ok(steps.some((step) => step.title === 'Clé de stream' && step.copy === 'streamKey'))
+    assert.ok(steps.some((step) => step.copy === 'serverUrl'))
+    assert.ok(steps.some((step) => /4 500 à 6 000 kbit\/s/.test(step.detail)))
+    assert.ok(steps.some((step) => /images clés 2 s/.test(step.detail)))
+    assert.ok(!steps.some((step) => /WHIP|Bearer/.test(step.title + step.detail)))
   })
 })
 
@@ -60,7 +55,7 @@ describe('viewer quality choices per number of simulcast layers', () => {
     assert.deepEqual(viewerQualityOptionsFor(null), LIVEKIT_VIEWER_QUALITY_OPTIONS)
   })
 
-  it('only offers "Auto" for a single-layer video (OBS WHIP, forwarded as is)', () => {
+  it('only offers "Auto" for a single-layer video', () => {
     const options = viewerQualityOptionsFor(1)
     assert.deepEqual(
       options.map((option) => option.value),

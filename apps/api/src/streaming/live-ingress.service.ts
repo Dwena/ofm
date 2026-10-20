@@ -23,10 +23,6 @@ import {
 import { PrismaService } from '../common/database/prisma.service';
 import { LIVEKIT_REQUEST_TIMEOUT_SECONDS, LiveKitService, liveKitRoomName, streamIdFromRoom } from './livekit.service';
 
-/** Protocol OBS pushes with (Prisma enum LiveIngressInput) */
-export type IngressInputType = 'WHIP' | 'RTMP';
-export const INGRESS_INPUT_TYPES: IngressInputType[] = ['WHIP', 'RTMP'];
-
 /**
  * What OBS is doing, for the creator:
  * - offline: nothing received
@@ -44,16 +40,13 @@ export interface ObsStatusEvent {
 
 /** Creator-only view of the ingress (holds the stream key: never for anyone else) */
 export interface LiveIngressView {
-  inputType: IngressInputType;
-  /** OBS "Serveur" (RTMP) / "Serveur" of the WHIP service */
+  /** OBS "Serveur" (RTMP) */
   serverUrl: string;
-  /** RTMP stream key / WHIP bearer token (the same secret) */
+  /** RTMP stream key */
   streamKey: string;
   status: ObsStatus;
   /** Live receiving OBS's video, null when no live is bound */
   streamId: string | null;
-  /** WHIP: the input forwards OBS's encoding as is (no transcoding) */
-  bypassTranscoding: boolean;
   updatedAt: Date;
 }
 
@@ -80,14 +73,12 @@ const RTMP_VIDEO_PRESETS: Record<string, IngressVideoEncodingPreset> = {
 };
 
 /**
- * Public URLs OBS connects to. Default to what the LiveKit server announces
- * (`ingress.rtmp_base_url` / `ingress.whip_base_url` of livekit.yaml);
- * LIVEKIT_INGRESS_RTMP_URL / LIVEKIT_INGRESS_WHIP_URL override them.
+ * Public RTMP URL OBS connects to. Defaults to what the LiveKit server announces
+ * (`ingress.rtmp_base_url` of livekit.yaml); LIVEKIT_INGRESS_RTMP_URL overrides it.
  */
 export function readIngressUrls(env: NodeJS.ProcessEnv = process.env) {
   return {
     rtmp: env.LIVEKIT_INGRESS_RTMP_URL?.trim() || undefined,
-    whip: env.LIVEKIT_INGRESS_WHIP_URL?.trim() || undefined,
   };
 }
 
@@ -99,8 +90,7 @@ const isNotFound = (error: unknown) => {
 const errorText = (error: unknown) => String((error as { message?: string })?.message ?? error);
 
 /**
- * "Diffuser avec OBS": one persistent LiveKit Ingress per creator (WHIP or
- * RTMP), so the OBS settings never change between lives. The ingress is
+ * "Diffuser avec OBS": one persistent LiveKit RTMP Ingress per creator, so the OBS settings never change between lives. The ingress is
  * bound to the room of the live in progress (`live-<streamId>`, participant
  * identity = creator id, like a browser broadcast, so the viewers play it
  * unchanged) when a live starts in OBS mode, and moved back to its idle room
@@ -140,13 +130,13 @@ export class LiveIngressService implements OnModuleDestroy {
   }
 
   /**
-   * The creator's ingress (created as WHIP on first use), with its live status
+   * The creator's ingress (created on first use), with its live status
    */
   async getIngress(creatorId: string): Promise<LiveIngressView> {
     this.assertAvailable();
     let record = await this.prisma.liveIngress.findUnique({ where: { creatorId } });
     if (!record) {
-      record = await this.createIngress(creatorId, 'WHIP');
+      record = await this.createIngress(creatorId);
     } else {
       await this.syncState(creatorId, record.ingressId);
     }
@@ -154,24 +144,11 @@ export class LiveIngressService implements OnModuleDestroy {
   }
 
   /**
-   * (Re)create the creator's ingress with another protocol: new LiveKit
-   * ingress (and new stream key), the previous one is deleted
-   */
-  async setInputType(creatorId: string, inputType: IngressInputType): Promise<LiveIngressView> {
-    this.assertAvailable();
-    if (!INGRESS_INPUT_TYPES.includes(inputType)) {
-      throw new BadRequestException('INVALID_INPUT_TYPE');
-    }
-    return this.toView(await this.createIngress(creatorId, inputType));
-  }
-
-  /**
-   * New stream key: the LiveKit ingress is deleted and created again (same protocol)
+   * New stream key: the LiveKit ingress is deleted and created again
    */
   async resetKey(creatorId: string): Promise<LiveIngressView> {
     this.assertAvailable();
-    const record = await this.prisma.liveIngress.findUnique({ where: { creatorId }, select: { inputType: true } });
-    return this.toView(await this.createIngress(creatorId, record?.inputType ?? 'WHIP'));
+    return this.toView(await this.createIngress(creatorId));
   }
 
   /**
@@ -180,7 +157,7 @@ export class LiveIngressService implements OnModuleDestroy {
   async ensureIngress(creatorId: string) {
     this.assertAvailable();
     const record = await this.prisma.liveIngress.findUnique({ where: { creatorId } });
-    return record ?? this.createIngress(creatorId, 'WHIP');
+    return record ?? this.createIngress(creatorId);
   }
 
   /**
@@ -197,7 +174,7 @@ export class LiveIngressService implements OnModuleDestroy {
       if (!isNotFound(error)) throw this.unreachable('bind', error);
       // The LiveKit side lost it (e.g. its Redis was reset): a new key is needed
       this.logger.warn(`Ingress of ${creatorId} not found on LiveKit, creating a new one`);
-      await this.createIngress(creatorId, record.inputType, room);
+      await this.createIngress(creatorId, room);
     }
     // A session in progress (idle room) was ended by the update: OBS reconnects,
     // ingress_started / track_published then report it in the live's room
@@ -291,7 +268,7 @@ export class LiveIngressService implements OnModuleDestroy {
     await this.liveKit.deleteRoom(streamId);
   }
 
-  private async createIngress(creatorId: string, inputType: IngressInputType, roomName?: string) {
+  private async createIngress(creatorId: string, roomName?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: creatorId },
       select: { username: true, displayName: true },
@@ -299,44 +276,37 @@ export class LiveIngressService implements OnModuleDestroy {
     if (!user) throw new NotFoundException('User not found');
 
     const existing = await this.prisma.liveIngress.findUnique({ where: { creatorId } });
-    // Keep the binding when the creator changes protocol / key during an OBS live
+    // Keep the binding when the creator changes the key during an OBS live
     const room = roomName ?? (await this.currentRoom(creatorId));
     const client = this.getClient();
-    const isWhip = inputType === 'WHIP';
 
     let info: IngressInfo;
     try {
-      info = await client.createIngress(isWhip ? IngressInput.WHIP_INPUT : IngressInput.RTMP_INPUT, {
+      info = await client.createIngress(IngressInput.RTMP_INPUT, {
         name: `obs-${creatorId}`,
         roomName: room,
         participantIdentity: creatorId,
         participantName: user.displayName || user.username,
-        // WHIP: OBS's H.264 / Opus forwarded as is (low CPU, sub-second latency).
-        // RTMP: transcoded into simulcast layers (viewers get the layer that fits).
-        enableTranscoding: !isWhip,
-        bypassTranscoding: isWhip,
-        ...(isWhip
-          ? {}
-          : {
-              video: new IngressVideoOptions({
-                source: TrackSource.CAMERA,
-                encodingOptions: this.rtmpVideoEncoding(),
-              }),
-              audio: new IngressAudioOptions({
-                source: TrackSource.MICROPHONE,
-                encodingOptions: { case: 'preset', value: IngressAudioEncodingPreset.OPUS_STEREO_96KBPS },
-              }),
-            }),
+        // Transcoded into simulcast layers (viewers get the layer that fits)
+        enableTranscoding: true,
+        video: new IngressVideoOptions({
+          source: TrackSource.CAMERA,
+          encodingOptions: this.rtmpVideoEncoding(),
+        }),
+        audio: new IngressAudioOptions({
+          source: TrackSource.MICROPHONE,
+          encodingOptions: { case: 'preset', value: IngressAudioEncodingPreset.OPUS_STEREO_96KBPS },
+        }),
       });
     } catch (error) {
       throw this.unreachable('create', error);
     }
 
-    const url = this.publicUrl(inputType, info.url);
+    const url = readIngressUrls().rtmp || info.url;
     const record = await this.prisma.liveIngress.upsert({
       where: { creatorId },
-      create: { creatorId, inputType, ingressId: info.ingressId, streamKey: info.streamKey, url },
-      update: { inputType, ingressId: info.ingressId, streamKey: info.streamKey, url },
+      create: { creatorId, ingressId: info.ingressId, streamKey: info.streamKey, url },
+      update: { ingressId: info.ingressId, streamKey: info.streamKey, url },
     });
 
     // The old key stops working right away
@@ -344,7 +314,7 @@ export class LiveIngressService implements OnModuleDestroy {
       await this.deleteRemote(existing.ingressId);
     }
     this.setStatus(creatorId, room, 'offline');
-    this.logger.log(`Ingress ${info.ingressId} (${inputType}) created for ${creatorId}`);
+    this.logger.log(`Ingress ${info.ingressId} (RTMP) created for ${creatorId}`);
     return record;
   }
 
@@ -427,26 +397,18 @@ export class LiveIngressService implements OnModuleDestroy {
 
   private toView(record: {
     creatorId: string;
-    inputType: IngressInputType;
     streamKey: string;
     url: string;
     updatedAt: Date;
   }): LiveIngressView {
     const entry = this.statuses.get(record.creatorId);
     return {
-      inputType: record.inputType,
       serverUrl: record.url,
       streamKey: record.streamKey,
       status: entry?.status ?? 'offline',
       streamId: streamIdFromRoom(entry?.room) ?? null,
-      bypassTranscoding: record.inputType === 'WHIP',
       updatedAt: record.updatedAt,
     };
-  }
-
-  private publicUrl(inputType: IngressInputType, announced: string) {
-    const urls = readIngressUrls();
-    return (inputType === 'WHIP' ? urls.whip : urls.rtmp) || announced;
   }
 
   /**

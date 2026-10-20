@@ -590,7 +590,6 @@ export const liveApi = {
     api.post(`/streaming/${streamId}/start`, source ? { source } : {}),
   // "Diffuser avec OBS": the creator's ingress (server URL + secret stream key)
   getIngress: () => api.get('/streaming/me/ingress'),
-  setIngressInput: (inputType: 'WHIP' | 'RTMP') => api.post('/streaming/me/ingress', { inputType }),
   resetIngressKey: () => api.post('/streaming/me/ingress/reset-key'),
   end: (streamId: string) => api.post(`/streaming/${streamId}/end`),
   delete: (streamId: string) => api.delete(`/streaming/${streamId}`),
