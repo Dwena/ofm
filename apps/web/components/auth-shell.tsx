@@ -16,6 +16,8 @@ export interface PublicSettings {
   registrationOpen: boolean
   maintenanceMode: boolean
   maintenanceMessage: string | null
+  platformFeePercentage: number
+  minimumPayoutAmount: number
 }
 
 /** GET /settings/public: registration status and maintenance mode (no auth needed) */
