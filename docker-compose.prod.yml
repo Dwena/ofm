@@ -91,6 +91,10 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       FRONTEND_URL: ${FRONTEND_URL:-https://yourdomain.com}
+      # WebRTC relay for live streaming (empty = STUN only)
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_SECRET: ${TURN_SECRET:-}
+      STUN_URLS: ${STUN_URLS:-}
     ports:
       - "3001:3001"
     volumes:
@@ -169,6 +173,29 @@ services:
         limits:
           cpus: '0.25'
           memory: 256M
+
+  # TURN relay for live streaming (optional, see docs/DEPLOYMENT.md
+  # "Live streaming: TURN server"). Set TURN_URLS / TURN_SECRET on the api
+  # service to use it; host networking keeps the relay port range reachable.
+  # coturn:
+  #   image: coturn/coturn:4.6
+  #   container_name: ofm-coturn-prod
+  #   restart: always
+  #   network_mode: host
+  #   command:
+  #     - -n
+  #     - --listening-port=3478
+  #     - --tls-listening-port=5349
+  #     - --realm=${TURN_REALM:-yourdomain.com}
+  #     - --use-auth-secret
+  #     - --static-auth-secret=${TURN_SECRET}
+  #     - --min-port=49160
+  #     - --max-port=49200
+  #     - --cert=/etc/ssl/turn/fullchain.pem
+  #     - --pkey=/etc/ssl/turn/privkey.pem
+  #     - --no-cli
+  #   volumes:
+  #     - ./nginx/ssl:/etc/ssl/turn:ro
 
 volumes:
   postgres_data:

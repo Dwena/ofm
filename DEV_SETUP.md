@@ -138,6 +138,23 @@ Le fichier `.env` a été créé automatiquement dans `apps/api/.env` avec les v
 - `STRIPE_SECRET_KEY` - Clé Stripe (obtenir sur https://stripe.com)
 - `DATABASE_URL` - URL de votre base de données de production
 
+### Lives (WebRTC) : STUN / TURN
+
+En développement, rien à configurer : `GET /streaming/ice-servers` renvoie les
+serveurs STUN publics de Google et la vidéo passe en pair-à-pair sur le réseau
+local. En production, ajoutez un relais TURN (coturn) pour les spectateurs
+derrière un NAT strict ou un pare-feu d'entreprise :
+
+- `TURN_URLS` - URLs TURN séparées par des virgules, ex.
+  `turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349`
+- `TURN_SECRET` - même valeur que `static-auth-secret` de coturn ; l'API génère
+  des identifiants temporaires (6 h), le secret n'est jamais envoyé au navigateur
+- `STUN_URLS` (optionnel) - serveurs STUN, séparés par des virgules
+
+Détails et exemple de configuration coturn : `docs/DEPLOYMENT.md`
+(« Live streaming: TURN server ») et le service `coturn` commenté de
+`docker-compose.prod.yml`.
+
 ---
 
 ## 🧪 Tests

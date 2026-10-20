@@ -216,6 +216,47 @@ NEXT_PUBLIC_API_URL=https://api.yourdomain.com
 NEXT_PUBLIC_APP_URL=https://yourdomain.com
 ```
 
+### Live streaming: TURN server
+
+Live video is sent peer-to-peer (WebRTC) from the creator's browser to each
+viewer. STUN alone fails for a noticeable share of viewers (symmetric NAT,
+mobile carriers, corporate firewalls), so production needs a TURN relay such as
+[coturn](https://github.com/coturn/coturn).
+
+1. Run coturn on a host with a public IP (UDP 3478, TCP 3478, TLS 5349 and the
+   relay port range, e.g. UDP 49160-49200, open). Minimal `turnserver.conf`:
+
+   ```
+   listening-port=3478
+   tls-listening-port=5349
+   realm=yourdomain.com
+   use-auth-secret
+   static-auth-secret=<long random secret>
+   min-port=49160
+   max-port=49200
+   cert=/etc/ssl/turn/fullchain.pem
+   pkey=/etc/ssl/turn/privkey.pem
+   no-cli
+   ```
+
+   A commented `coturn` service is provided in `docker-compose.prod.yml`.
+
+2. Configure the API:
+
+   ```bash
+   TURN_URLS=turn:turn.yourdomain.com:3478?transport=udp,turn:turn.yourdomain.com:3478?transport=tcp,turns:turn.yourdomain.com:5349
+   TURN_SECRET=<same value as static-auth-secret>
+   # optional, defaults to Google's public STUN servers
+   STUN_URLS=stun:turn.yourdomain.com:3478
+   ```
+
+`GET /streaming/ice-servers` (authenticated) then returns the STUN servers plus
+TURN credentials valid for 6 hours, built with the coturn REST API scheme
+(`username = <expiry unix>:<userId>`, `credential = base64(HMAC-SHA1(secret, username))`).
+The web app fetches them once per live session and falls back to
+`NEXT_PUBLIC_ICE_SERVERS` (or Google STUN) when the call fails. Without
+`TURN_URLS`/`TURN_SECRET` only STUN is returned, which is fine for development.
+
 ## Monitoring
 
 ### CloudWatch Dashboards

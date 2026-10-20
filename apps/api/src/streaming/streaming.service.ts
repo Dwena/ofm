@@ -682,9 +682,11 @@ export class StreamingService {
   }
 
   /**
-   * Persist the current live viewer count and keep the peak up to date
+   * Persist the current live viewer count and keep the peak up to date.
+   * `peakCandidate` is the highest count seen since the last write (the
+   * gateway throttles these writes), it defaults to the current count.
    */
-  async updateViewerStats(streamId: string, viewerCount: number) {
+  async updateViewerStats(streamId: string, viewerCount: number, peakCandidate = viewerCount) {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
       select: { peakViewers: true, status: true },
@@ -698,7 +700,7 @@ export class StreamingService {
       where: { id: streamId },
       data: {
         viewerCount,
-        peakViewers: Math.max(stream.peakViewers, viewerCount),
+        peakViewers: Math.max(stream.peakViewers, viewerCount, peakCandidate),
       },
     });
   }

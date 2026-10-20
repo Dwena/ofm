@@ -1,4 +1,9 @@
-import { StreamingGateway, AuthenticatedStreamSocket, streamRoom } from './streaming.gateway';
+import {
+  StreamingGateway,
+  AuthenticatedStreamSocket,
+  streamRoom,
+  VIEWER_STATS_INTERVAL_MS,
+} from './streaming.gateway';
 
 type Emitted = { target: string; event: string; payload: any };
 
@@ -73,6 +78,69 @@ describe('StreamingGateway', () => {
     mockStreamingService.registerViewer.mockResolvedValue({ firstView: true });
     mockStreamingService.markViewerLeft.mockResolvedValue(true);
     mockStreamingService.updateViewerStats.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    gateway.onModuleDestroy();
+  });
+
+  describe('viewer stats throttling', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-10-20T10:00:00Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('emits every count right away but writes the stats at most every interval, keeping the peak', async () => {
+      await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v2', 'user-2'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v3', 'user-3'), { streamId: 'stream-1' });
+      await gateway.handleLeaveStream(createSocket('v3', 'user-3'), { streamId: 'stream-1' });
+
+      expect(eventsTo(streamRoom('stream-1'), 'viewer-count')).toEqual([1, 2, 3, 2]);
+      // Leading write only
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(1);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 1, 1);
+
+      jest.advanceTimersByTime(VIEWER_STATS_INTERVAL_MS);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+      // Current count 2, peak 3 reached between the writes
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 2, 3);
+    });
+
+    it('flushes the pending stats when the broadcaster leaves', async () => {
+      const broadcaster = createSocket('b1', 'creator-1');
+      await gateway.handleStartBroadcast(broadcaster, { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v2', 'user-2'), { streamId: 'stream-1' });
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(1);
+
+      await gateway.handleDisconnect(broadcaster);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 2, 2);
+
+      // Nothing left to write afterwards
+      jest.advanceTimersByTime(VIEWER_STATS_INTERVAL_MS * 2);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+    });
+
+    it('flushes on demand before a stream ends', async () => {
+      await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      await gateway.handleJoinStream(createSocket('v2', 'user-2'), { streamId: 'stream-1' });
+      await gateway.flushViewerStats('stream-1');
+      expect(mockStreamingService.updateViewerStats).toHaveBeenLastCalledWith('stream-1', 2, 2);
+      await gateway.flushViewerStats('stream-1');
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not fail the join when the stats write fails', async () => {
+      mockStreamingService.updateViewerStats.mockRejectedValue(new Error('db down'));
+      const result = await gateway.handleJoinStream(createSocket('v1', 'user-1'), { streamId: 'stream-1' });
+      expect(result).toMatchObject({ success: true, viewerCount: 1 });
+    });
   });
 
   describe('handleConnection', () => {
@@ -183,7 +251,7 @@ describe('StreamingGateway', () => {
       expect(socket.join).toHaveBeenCalledWith(streamRoom('stream-1'));
       expect(mockStreamingService.registerViewer).toHaveBeenCalledWith('stream-1', 'user-1');
       expect(eventsTo(streamRoom('stream-1'), 'viewer-count')).toEqual([1]);
-      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledWith('stream-1', 1);
+      expect(mockStreamingService.updateViewerStats).toHaveBeenCalledWith('stream-1', 1, 1);
     });
 
     it('counts a user with several tabs once', async () => {
@@ -235,6 +303,56 @@ describe('StreamingGateway', () => {
     it('forwards offer requests to the broadcaster', () => {
       expect(gateway.handleRequestOffer(viewer, { streamId: 'stream-1' })).toEqual({ success: true });
       expect(eventsTo('b1', 'viewer-joined')).toEqual([{ streamId: 'stream-1', viewerId: 'v1', userId: 'user-1' }]);
+    });
+
+    it('relays ICE restart requests', () => {
+      gateway.handleRequestOffer(viewer, { streamId: 'stream-1', iceRestart: true });
+      gateway.handleRequestOffer(viewer, { streamId: 'stream-1', iceRestart: 'yes' as any });
+      expect(eventsTo('b1', 'viewer-joined')).toEqual([
+        { streamId: 'stream-1', viewerId: 'v1', userId: 'user-1', iceRestart: true },
+        { streamId: 'stream-1', viewerId: 'v1', userId: 'user-1' },
+      ]);
+    });
+
+    describe('set-viewer-quality', () => {
+      it('relays the data saver choice to the broadcaster', () => {
+        expect(gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'low' })).toEqual({
+          success: true,
+          mode: 'low',
+        });
+        gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'auto' });
+        expect(eventsTo('b1', 'viewer-quality')).toEqual([
+          { streamId: 'stream-1', viewerId: 'v1', mode: 'low' },
+          { streamId: 'stream-1', viewerId: 'v1', mode: 'auto' },
+        ]);
+      });
+
+      it('rejects unknown modes', () => {
+        const result = gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'ultra' as any });
+        expect(result).toEqual({ error: 'Invalid quality mode' });
+        expect(emitted).toHaveLength(0);
+      });
+
+      it('rejects sockets that are not watching the stream', () => {
+        const outsider = createSocket('x1', 'user-2');
+        expect(gateway.handleSetViewerQuality(outsider, { streamId: 'stream-1', mode: 'low' })).toHaveProperty('error');
+        // The broadcaster is not a viewer of its own stream
+        expect(gateway.handleSetViewerQuality(broadcaster, { streamId: 'stream-1', mode: 'low' })).toHaveProperty(
+          'error',
+        );
+        expect(gateway.handleSetViewerQuality(viewer, { streamId: 'other', mode: 'low' })).toHaveProperty('error');
+        expect(gateway.handleSetViewerQuality(viewer, undefined as any)).toHaveProperty('error');
+        expect(emitted).toHaveLength(0);
+      });
+
+      it('reports when the broadcaster is offline', async () => {
+        await gateway.handleDisconnect(broadcaster);
+        emitted = [];
+        expect(gateway.handleSetViewerQuality(viewer, { streamId: 'stream-1', mode: 'low' })).toMatchObject({
+          reason: 'BROADCASTER_OFFLINE',
+        });
+        expect(emitted).toHaveLength(0);
+      });
     });
 
     it('reports when the broadcaster is offline', async () => {
@@ -429,6 +547,44 @@ describe('StreamingGateway', () => {
         gateway.notifyStreamEnded('stream-1');
         const rejoin = await gateway.handleJoinStream(createSocket('v3', 'user-1'), { streamId: 'stream-1' });
         expect(rejoin).toMatchObject({ muted: false });
+      });
+    });
+
+    it('rate limits chat messages per user, across tabs', async () => {
+      mockStreamingService.createChatMessage.mockResolvedValue({
+        id: 'msg-1',
+        senderId: 'user-1',
+        message: 'a',
+        createdAt: new Date(),
+      });
+      const secondTab = createSocket('v2', 'user-1');
+      await gateway.handleJoinStream(secondTab, { streamId: 'stream-1' });
+      await gateway.handleChatMessage(viewer, { streamId: 'stream-1', message: 'a' });
+      const fromOtherTab = await gateway.handleChatMessage(secondTab, { streamId: 'stream-1', message: 'b' });
+      expect(fromOtherTab).toMatchObject({ reason: 'RATE_LIMITED' });
+
+      // Reconnecting (new socket id) does not reset the limit either
+      await gateway.handleDisconnect(viewer);
+      const reconnected = createSocket('v3', 'user-1');
+      await gateway.handleJoinStream(reconnected, { streamId: 'stream-1' });
+      expect(await gateway.handleChatMessage(reconnected, { streamId: 'stream-1', message: 'c' })).toMatchObject({
+        reason: 'RATE_LIMITED',
+      });
+
+      // Other users are not affected
+      const other = createSocket('v4', 'user-2');
+      await gateway.handleJoinStream(other, { streamId: 'stream-1' });
+      expect(await gateway.handleChatMessage(other, { streamId: 'stream-1', message: 'd' })).toMatchObject({
+        success: true,
+      });
+    });
+
+    it('rate limits reactions per user, across tabs', async () => {
+      const secondTab = createSocket('v2', 'user-1');
+      await gateway.handleJoinStream(secondTab, { streamId: 'stream-1' });
+      expect(gateway.handleReaction(viewer, { streamId: 'stream-1', emoji: '🔥' })).toEqual({ success: true });
+      expect(gateway.handleReaction(secondTab, { streamId: 'stream-1', emoji: '🔥' })).toMatchObject({
+        reason: 'RATE_LIMITED',
       });
     });
 
