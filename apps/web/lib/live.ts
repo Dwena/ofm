@@ -102,6 +102,8 @@ export type LiveAck = {
   mutedUserIds?: string[]
   /** join-live-stream / start-broadcast: video transport (LiveKit SFU or P2P mesh) */
   transport?: 'livekit' | 'p2p'
+  /** start-broadcast (LiveKit): whether OBS is sending to this live ('offline' | 'connecting' | 'live') */
+  obsStatus?: string
 }
 
 /** Chat errors returned in the acknowledgement of `send-chat-message` */
@@ -128,6 +130,10 @@ const API_ERROR_MESSAGES: Record<string, string> = {
   'Cannot delete live streams. End the stream first.': "Terminez le live avant de le supprimer.",
   'Stream not found': 'Ce live est introuvable.',
   'Only creators can create live streams': 'Seuls les créateurs peuvent lancer un live.',
+  INGRESS_UNAVAILABLE:
+    'La diffusion avec OBS nécessite le serveur vidéo LiveKit, qui n’est pas configuré sur cette plateforme.',
+  INGRESS_SERVICE_UNREACHABLE:
+    'Le service de réception OBS (LiveKit Ingress) ne répond pas. Réessayez dans un instant.',
 }
 
 /**

@@ -50,7 +50,7 @@ import { useViewerConnectionQuality } from '@/hooks/use-viewer-connection-qualit
 import { useLiveKitViewer } from '@/hooks/use-livekit-viewer';
 import {
   isLiveKitViewerQualityMode,
-  LIVEKIT_VIEWER_QUALITY_OPTIONS,
+  viewerQualityOptionsFor,
   type LiveKitViewerQualityMode,
 } from '@/lib/livekit/presets';
 import type { LiveTransport } from '@/lib/livekit/token';
@@ -81,6 +81,8 @@ interface LiveStream extends LiveTipSnapshot {
   accessDeniedReason?: string | null;
   /** Video transport: LiveKit SFU, or the creator's peer-to-peer mesh */
   transport?: LiveTransport;
+  /** Video source: the creator's browser, or OBS (LiveKit Ingress) */
+  source?: 'BROWSER' | 'OBS';
   isPpv?: boolean;
   ppvPrice?: number | null; // euros
   // Creator's tip settings (euros)
@@ -619,6 +621,12 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   }, [liveKitAccessError]);
   // Video state of the player, whatever the transport
   const videoState: ConnectionState = isLiveKit ? liveKit.state : connectionState;
+  // Quality choices: one layer only for an OBS WHIP input (forwarded as is)
+  const liveKitQualityOptions = viewerQualityOptionsFor(liveKit.layerCount);
+  const liveKitQualityMode = liveKitQualityOptions.some((option) => option.value === liveKitQuality)
+    ? liveKitQuality
+    : 'auto';
+  const isObsSource = stream?.source === 'OBS';
 
   const handleQualityChange = (mode: ViewerQualityMode) => {
     qualityModeRef.current = mode;
@@ -1072,9 +1080,11 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                   <Loader2 className="h-8 w-8 animate-spin" />
                   <p>
                     {videoState === 'waiting'
-                      ? isOwnStream
-                        ? "Vous ne diffusez pas encore : lancez la caméra depuis l'espace Live."
-                        : 'En attente du créateur...'
+                      ? isObsSource
+                        ? 'En attente du signal OBS…'
+                        : isOwnStream
+                          ? "Vous ne diffusez pas encore : lancez la caméra depuis l'espace Live."
+                          : 'En attente du créateur...'
                       : videoState === 'reconnecting'
                         ? 'Connexion instable, reconnexion de la vidéo...'
                         : 'Connexion au live...'}
@@ -1153,8 +1163,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
               />
               {isLiveKit ? (
                 <ViewerQualityMenu
-                  mode={liveKitQuality}
-                  options={LIVEKIT_VIEWER_QUALITY_OPTIONS}
+                  mode={liveKitQualityMode}
+                  options={liveKitQualityOptions}
                   onChange={handleLiveKitQualityChange}
                 />
               ) : (

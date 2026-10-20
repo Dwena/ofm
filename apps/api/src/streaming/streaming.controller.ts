@@ -9,6 +9,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
+import { SetIngressInputDto, StartStreamDto } from './dto/live-ingress.dto';
+import { LiveIngressService } from './live-ingress.service';
 
 @Controller('streaming')
 @UseGuards(JwtAuthGuard)
@@ -17,6 +19,7 @@ export class StreamingController {
     private readonly streamingService: StreamingService,
     private readonly streamingGateway: StreamingGateway,
     private readonly iceServersService: IceServersService,
+    private readonly liveIngress: LiveIngressService,
   ) {}
 
   /**
@@ -30,6 +33,39 @@ export class StreamingController {
   }
 
   /**
+   * "Diffuser avec OBS": the creator's ingress (server URL, stream key,
+   * protocol, OBS status), created as WHIP on first call. The stream key is
+   * a secret: only ever returned here, to its creator. 400 INGRESS_UNAVAILABLE
+   * without LiveKit (P2P mode). Declared before `:id`.
+   */
+  @Get('me/ingress')
+  @UseGuards(RolesGuard)
+  @Roles('CREATOR')
+  getMyIngress(@CurrentUser('id') userId: string) {
+    return this.liveIngress.getIngress(userId);
+  }
+
+  /**
+   * Switch the ingress protocol (WHIP / RTMP): a new LiveKit ingress and a new key
+   */
+  @Post('me/ingress')
+  @UseGuards(RolesGuard)
+  @Roles('CREATOR')
+  setMyIngressInput(@CurrentUser('id') userId: string, @Body() dto: SetIngressInputDto) {
+    return this.liveIngress.setInputType(userId, dto.inputType);
+  }
+
+  /**
+   * New stream key (the old one stops working immediately)
+   */
+  @Post('me/ingress/reset-key')
+  @UseGuards(RolesGuard)
+  @Roles('CREATOR')
+  resetMyIngressKey(@CurrentUser('id') userId: string) {
+    return this.liveIngress.resetKey(userId);
+  }
+
+  /**
    * Create a new live stream (creators only)
    */
   @Post()
@@ -39,7 +75,10 @@ export class StreamingController {
     @CurrentUser('id') userId: string,
     @Body() dto: CreateStreamDto,
   ) {
-    return this.streamingService.createStream(userId, dto);
+    const stream = await this.streamingService.createStream(userId, dto);
+    // A live started right away: the creator's OBS overlays switch to it
+    this.streamingGateway.notifyStreamStarted(stream);
+    return stream;
   }
 
   /**
@@ -99,8 +138,11 @@ export class StreamingController {
   async startStream(
     @CurrentUser('id') userId: string,
     @Param('id') streamId: string,
+    @Body() dto: StartStreamDto,
   ) {
-    return this.streamingService.startStream(userId, streamId);
+    const stream = await this.streamingService.startStream(userId, streamId, dto?.source);
+    this.streamingGateway.notifyStreamStarted(stream);
+    return stream;
   }
 
   /**

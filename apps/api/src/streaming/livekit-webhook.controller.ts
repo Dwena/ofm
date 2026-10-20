@@ -4,6 +4,7 @@ import {
   Headers,
   HttpCode,
   Logger,
+  Optional,
   NotFoundException,
   Post,
   RawBodyRequest,
@@ -12,10 +13,12 @@ import {
 import type { Request } from 'express';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { LiveKitService } from './livekit.service';
+import { LiveIngressService } from './live-ingress.service';
 
 /**
  * LiveKit server webhooks (participant joined / left, room finished), used
- * for the number of viewers connected to the video. Configure LiveKit with
+ * for the number of viewers connected to the video, and the ingress events
+ * (OBS status). Configure LiveKit with
  * `webhook.urls: [<API>/api/v1/webhooks/livekit]` and `webhook.api_key`
  * set to LIVEKIT_API_KEY: the Authorization header (JWT signed with the API
  * secret, holding the sha256 of the body) is verified against the raw body.
@@ -24,7 +27,10 @@ import { LiveKitService } from './livekit.service';
 export class LiveKitWebhookController {
   private readonly logger = new Logger(LiveKitWebhookController.name);
 
-  constructor(private readonly liveKit: LiveKitService) {}
+  constructor(
+    private readonly liveKit: LiveKitService,
+    @Optional() private readonly liveIngress?: LiveIngressService,
+  ) {}
 
   @Post()
   @HttpCode(200)
@@ -51,6 +57,12 @@ export class LiveKitWebhookController {
     }
 
     this.liveKit.handleWebhookEvent(event);
+    // OBS status (ingress_started / ingress_ended / tracks of the ingress participant)
+    try {
+      await this.liveIngress?.handleWebhookEvent(event);
+    } catch (error) {
+      this.logger.warn(`Unable to handle the ingress webhook ${event.event}: ${error?.message ?? error}`);
+    }
     return { received: true, event: event.event };
   }
 }

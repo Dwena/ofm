@@ -28,6 +28,7 @@ import {
   Lock,
   Target,
   ChevronDown,
+  MonitorPlay,
 } from 'lucide-react'
 import { liveApi } from '@/lib/api'
 import {
@@ -79,6 +80,10 @@ import {
   type TipGoal,
 } from '@/lib/live-tips'
 import { formatGoalEuros, goalReachedText } from '@/lib/live-tip-goals'
+import { LiveSourceSwitch } from '@/components/live/obs/live-source-switch'
+import { ObsLivePanel } from '@/components/live/obs/obs-live-panel'
+import { useLiveIngress } from '@/hooks/use-live-ingress'
+import { ingressErrorMessage, isObsStatus, type LiveSource, type ObsStatus } from '@/lib/live-ingress'
 
 interface StreamStats {
   tipsCount: number
@@ -109,6 +114,10 @@ interface CreatorStream {
   tipTotal?: number
   /** Donation goal milestones, by amount */
   tipGoals?: TipGoal[]
+  /** Video source: browser camera or OBS (LiveKit Ingress) */
+  source?: LiveSource
+  /** OBS mode: whether OBS is sending (creator's stream data) */
+  obsStatus?: ObsStatus
 }
 
 interface ViewerPeer {
@@ -188,6 +197,10 @@ export default function CreatorLivePage() {
   const [tipState, dispatchTips] = useReducer(liveTipsReducer, initialLiveTipState)
   // Upcoming live whose donation goals editor is open
   const [goalsStreamId, setGoalsStreamId] = useState<string | null>(null)
+  // Video source of the live to create: browser camera or OBS
+  const [source, setSource] = useState<LiveSource>('BROWSER')
+  // OBS mode: is OBS sending (socket obs-status, ingress polling)
+  const [obsStatus, setObsStatus] = useState<ObsStatus>('offline')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -196,13 +209,15 @@ export default function CreatorLivePage() {
   const peersRef = useRef(new Map<string, ViewerPeer>())
   const chatErrorTimer = useRef<ReturnType<typeof setTimeout>>()
 
+  // OBS mode: no camera on this page, the video comes from the creator's LiveKit Ingress
+  const isObsLive = activeStream?.source === 'OBS'
   // Video quality: preset, capture devices, adaptive bitrate per viewer (P2P only)
   const isLiveKit = transport === 'livekit'
   const quality = useBroadcastQuality(peersRef, !!activeStream && !isLiveKit)
   // LiveKit: one upload to the SFU (simulcast), whatever the number of viewers
   const liveKit = useLiveKitBroadcast({
     streamId: activeStream?.id ?? null,
-    enabled: !!activeStream && isLiveKit,
+    enabled: !!activeStream && isLiveKit && !isObsLive,
     getMedia: () => localStreamRef.current,
     presetId: quality.presetId,
   })
@@ -213,6 +228,22 @@ export default function CreatorLivePage() {
   const [socketReconnecting, setSocketReconnecting] = useState(false)
 
   const isCreator = user?.role === 'CREATOR'
+  // OBS settings, loaded once OBS is chosen (400 INGRESS_UNAVAILABLE without LiveKit)
+  const ingressControls = useLiveIngress({
+    enabled: isCreator && (source === 'OBS' || isObsLive),
+    refetchInterval: isObsLive ? 5000 : false,
+  })
+  const obsUnavailable = ingressControls.unavailable
+  const polledObsStatus = ingressControls.ingress?.status
+  const polledObsStreamId = ingressControls.ingress?.streamId
+  const activeStreamId = activeStream?.id
+  useEffect(() => {
+    // The polled ingress state wins over a missed socket event
+    if (isObsLive && polledObsStatus && polledObsStreamId === activeStreamId) setObsStatus(polledObsStatus)
+  }, [isObsLive, polledObsStatus, polledObsStreamId, activeStreamId])
+  useEffect(() => {
+    if (obsUnavailable && source === 'OBS') setSource('BROWSER')
+  }, [obsUnavailable, source])
 
   const {
     data: streams = [],
@@ -549,8 +580,14 @@ export default function CreatorLivePage() {
         setViewerCount(ack.viewerCount ?? 0)
         setChatMessages(ack.messages ?? [])
         setMutedUserIds(new Set(ack.mutedUserIds ?? []))
+        if (isObsStatus(ack.obsStatus)) setObsStatus(ack.obsStatus)
         dispatchTips({ type: 'snapshot', snapshot: ack as LiveTipSnapshot })
       })
+    })
+
+    // OBS mode: OBS connected / sending / stopped
+    socket.on('obs-status', (data: { streamId?: string; status?: unknown }) => {
+      if (data?.streamId === streamId && isObsStatus(data.status)) setObsStatus(data.status)
     })
 
     socket.on('disconnect', () => {
@@ -672,6 +709,7 @@ export default function CreatorLivePage() {
   }
 
   const goLive = (stream: CreatorStream) => {
+    setObsStatus(stream.obsStatus ?? 'offline')
     setActiveStream(stream)
     setViewerCount(stream.viewerCount ?? 0)
     setChatMessages([])
@@ -701,6 +739,7 @@ export default function CreatorLivePage() {
         // Price in euros
         ppvPrice: isPpv ? Math.round(Number(ppvPrice.replace(',', '.')) * 100) / 100 : undefined,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
+        source,
       })
       return response.data as CreatorStream
     },
@@ -721,7 +760,7 @@ export default function CreatorLivePage() {
     onError: (error) => {
       toast({
         title: 'Impossible de créer le live',
-        description: liveErrorMessage(error, 'Une erreur est survenue. Réessayez.'),
+        description: ingressErrorMessage(error) ?? liveErrorMessage(error, 'Une erreur est survenue. Réessayez.'),
         variant: 'destructive',
       })
     },
@@ -739,7 +778,7 @@ export default function CreatorLivePage() {
     onError: (error) => {
       toast({
         title: 'Impossible de démarrer le live',
-        description: liveErrorMessage(error, 'Une erreur est survenue. Réessayez.'),
+        description: ingressErrorMessage(error) ?? liveErrorMessage(error, 'Une erreur est survenue. Réessayez.'),
         variant: 'destructive',
       })
     },
@@ -790,8 +829,9 @@ export default function CreatorLivePage() {
     setSubmitted(true)
     if (Object.keys(validate()).length > 0) return
 
-    // Going live now: the camera must work before the live is created
-    if (!scheduledFor) {
+    // Going live now from the browser: the camera must work before the live
+    // is created (OBS mode: no camera, OBS sends the video)
+    if (!scheduledFor && source === 'BROWSER') {
       const media = await startPreview()
       if (!media) return
     }
@@ -799,14 +839,18 @@ export default function CreatorLivePage() {
   }
 
   const handleStart = async (stream: CreatorStream) => {
-    const media = await startPreview()
-    if (!media) return
+    if (stream.source !== 'OBS') {
+      const media = await startPreview()
+      if (!media) return
+    }
     startMutation.mutate(stream)
   }
 
   const handleResume = async (stream: CreatorStream) => {
-    const media = await startPreview()
-    if (!media) return
+    if (stream.source !== 'OBS') {
+      const media = await startPreview()
+      if (!media) return
+    }
     goLive(stream)
   }
 
@@ -957,6 +1001,18 @@ export default function CreatorLivePage() {
   }
 
   const creating = createMutation.isPending || (startingPreview && !scheduledFor && !activeStream)
+  // "Quitter" / "Terminer le live", under the camera preview or the OBS panel
+  const broadcastActions = activeStream && (
+    <>
+      <Button variant="outline" onClick={leaveBroadcast} title="Le live reste en cours, vous pourrez le reprendre">
+        Quitter
+      </Button>
+      <Button variant="destructive" onClick={() => void handleEnd(activeStream)} disabled={endMutation.isPending}>
+        {endMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Square className="h-4 w-4 mr-2" />}
+        {endMutation.isPending ? 'Arrêt...' : 'Terminer le live'}
+      </Button>
+    </>
+  )
   const minSchedule = toLocalInputValue(new Date(Date.now() + 5 * 60_000))
 
   return (
@@ -968,6 +1024,18 @@ export default function CreatorLivePage() {
             Live
           </h1>
           <p className="text-muted-foreground">Diffusez en direct pour vos abonnés</p>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+            <Link
+              href="/creator/live/obs"
+              className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+              data-testid="obs-settings-link"
+            >
+              <MonitorPlay className="h-4 w-4" /> Diffuser avec OBS : réglages et tutoriel
+            </Link>
+            <Link href="/creator/overlays" className="text-sm text-primary hover:underline" data-testid="live-overlays-link">
+              Widgets OBS (alertes, objectifs, chat…) →
+            </Link>
+          </div>
         </div>
         {activeStream && (
           <div className="flex items-center gap-3 flex-wrap">
@@ -993,6 +1061,16 @@ export default function CreatorLivePage() {
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Preview */}
         <div className={`space-y-4 min-w-0 ${activeStream ? 'lg:col-span-2' : 'lg:col-span-3'}`}>
+          {activeStream && isObsLive ? (
+            <ObsLivePanel
+              streamId={activeStream.id}
+              status={obsStatus}
+              controls={ingressControls}
+              viewerCount={viewerCount}
+              reconnecting={socketReconnecting}
+              actions={broadcastActions}
+            />
+          ) : (
           <Card className="overflow-hidden">
             <div className="relative bg-black aspect-video">
               <video ref={videoRef} className="w-full h-full object-contain" autoPlay playsInline muted />
@@ -1051,25 +1129,7 @@ export default function CreatorLivePage() {
                   )}
                 </>
               )}
-              {activeStream && (
-                <div className="flex flex-wrap gap-2 sm:ml-auto">
-                  <Button variant="outline" onClick={leaveBroadcast} title="Le live reste en cours, vous pourrez le reprendre">
-                    Quitter
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    onClick={() => void handleEnd(activeStream)}
-                    disabled={endMutation.isPending}
-                  >
-                    {endMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <Square className="h-4 w-4 mr-2" />
-                    )}
-                    {endMutation.isPending ? 'Arrêt...' : 'Terminer le live'}
-                  </Button>
-                </div>
-              )}
+              {activeStream && <div className="flex flex-wrap gap-2 sm:ml-auto">{broadcastActions}</div>}
             </CardContent>
             <div className="px-6 pb-4">
               <BroadcastQualitySettings
@@ -1099,6 +1159,7 @@ export default function CreatorLivePage() {
               </div>
             )}
           </Card>
+          )}
 
           {activeStream && (
             <Card>
@@ -1112,7 +1173,7 @@ export default function CreatorLivePage() {
                   <p className="text-sm text-muted-foreground break-words">{activeStream.description}</p>
                 )}
                 <div className="pt-2">
-                  {isLiveKit ? (
+                  {isObsLive ? null : isLiveKit ? (
                     <LiveKitHealthPanel
                       health={liveKit.health}
                       state={liveKit.state}
@@ -1125,8 +1186,9 @@ export default function CreatorLivePage() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground pt-2">
-                  « Quitter » coupe votre caméra mais laisse le live ouvert : vous pourrez le reprendre depuis cette
-                  page. « Terminer le live » le clôture définitivement.
+                  {isObsLive
+                    ? '« Quitter » ferme ce pilotage mais laisse le live ouvert (OBS continue de diffuser). « Terminer le live » le clôture définitivement et coupe la vidéo d’OBS pour vos spectateurs.'
+                    : '« Quitter » coupe votre caméra mais laisse le live ouvert : vous pourrez le reprendre depuis cette page. « Terminer le live » le clôture définitivement.'}
                 </p>
               </CardContent>
             </Card>
@@ -1276,6 +1338,12 @@ export default function CreatorLivePage() {
                       </div>
                     )}
                   </div>
+                  <LiveSourceSwitch
+                    value={source}
+                    onChange={setSource}
+                    obsAvailable={!obsUnavailable}
+                    checking={source === 'OBS' && ingressControls.isLoading}
+                  />
                   <Button
                     type="submit"
                     disabled={creating || (!scheduledFor && !!otherLiveStream)}
@@ -1290,7 +1358,7 @@ export default function CreatorLivePage() {
                     )}
                     {scheduledFor ? 'Programmer le live' : 'Lancer le live'}
                   </Button>
-                  {!scheduledFor && !otherLiveStream && (
+                  {!scheduledFor && !otherLiveStream && source === 'BROWSER' && (
                     <p className="text-xs text-muted-foreground">
                       Votre navigateur vous demandera l&apos;accès à la caméra et au micro.
                     </p>
@@ -1347,6 +1415,7 @@ export default function CreatorLivePage() {
                             </Badge>
                             <Badge variant="outline">{VISIBILITY_LABELS[stream.visibility] ?? stream.visibility}</Badge>
                             {stream.isPpv && <Badge variant="secondary">PPV {formatEuros(stream.ppvPrice)}</Badge>}
+                            {stream.source === 'OBS' && <Badge variant="outline">OBS</Badge>}
                           </div>
                           {stream.scheduledFor && stream.status === 'SCHEDULED' && (
                             <p className={`text-sm ${late ? 'text-amber-600' : 'text-muted-foreground'}`}>
@@ -1356,7 +1425,9 @@ export default function CreatorLivePage() {
                           )}
                           {stream.status === 'LIVE' && (
                             <p className="text-sm text-muted-foreground">
-                              Aucune diffusion depuis cette page : reprenez le live pour réactiver votre caméra.
+                              {stream.source === 'OBS'
+                                ? 'Diffusé depuis OBS : reprenez le live pour suivre le statut, le chat et les pourboires.'
+                                : 'Aucune diffusion depuis cette page : reprenez le live pour réactiver votre caméra.'}
                             </p>
                           )}
                           <button

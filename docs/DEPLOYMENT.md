@@ -322,7 +322,74 @@ When a live ends (`POST /streaming/:id/end`) the API deletes the room
 without being ended close after `room.empty_timeout` (5 min).
 
 Scaling beyond one LiveKit node needs Redis (`redis:` section) for multi-node
-routing; a single node is enough for a few hundred viewers per live.
+routing; a single node is enough for a few hundred viewers per live. The
+example config already points LiveKit to the compose Redis, because the
+Ingress below requires it.
+
+### Diffuser avec OBS: LiveKit Ingress
+
+Creators can broadcast from OBS (scenes, overlays, capture cards) instead of
+their browser camera. A [LiveKit Ingress](https://docs.livekit.io/home/ingress/overview/)
+receives OBS's stream and publishes it in the live's room `live-<streamId>`
+with the creator's identity, so viewers play it exactly like a browser
+broadcast. Only available with the LiveKit transport (P2P mode: the API answers
+`400 INGRESS_UNAVAILABLE` and the web hides the OBS mode).
+
+Each creator has one persistent ingress (`LiveIngress` table): the server URL
+and stream key do not change from one live to the next. API (creator only, the
+key is never returned anywhere else and never logged):
+
+- `GET /streaming/me/ingress` → `{ inputType, serverUrl, streamKey, status, streamId, bypassTranscoding }`
+  (created as WHIP on first call; `status` = `offline` | `connecting` | `live`)
+- `POST /streaming/me/ingress` `{ inputType: 'WHIP' | 'RTMP' }` → new ingress (new key)
+- `POST /streaming/me/ingress/reset-key` → new key (ingress deleted and recreated)
+- `POST /streaming` / `POST /streaming/:id/start` accept `source: 'OBS'`: the
+  ingress is bound to the live's room; `POST /streaming/:id/end` moves it back
+  to an idle room nobody can join (a later OBS push shows nowhere), then
+  deletes the live's room.
+
+The OBS status comes from the LiveKit webhooks (`ingress_started`,
+`ingress_ended`, `track_published` of the ingress participant), so configure
+`webhook.urls` (see above); the creator's page also polls `GET /streaming/me/ingress`,
+which reads the ingress state from LiveKit. The creator's socket receives
+`obs-status { streamId, status }`.
+
+**WHIP or RTMP?**
+
+| | WHIP (recommended) | RTMP (compatible) |
+|---|---|---|
+| OBS | 30+ (service "WHIP") | any version / any software |
+| Server CPU | ~0 (`bypassTranscoding`: OBS's H.264/Opus forwarded as is) | decode + re-encode 3 simulcast layers: ~2 cores per 720p input, 3-4 in 1080p (`LIVEKIT_INGRESS_RTMP_PRESET=1080p`) |
+| Latency | sub-second (WebRTC end to end) | 2-4 s |
+| Viewers | one quality (OBS's), no simulcast | 3 layers (adaptive quality) |
+| Network | UDP 7885 (WebRTC media) + HTTPS | TCP 1935 |
+
+1. **Services.** `docker compose -f docker-compose.prod.yml --profile livekit up -d livekit livekit-ingress`
+   (`livekit/ingress:v1.4.3`, compatible with `livekit-server` v1.8.4, host
+   networking, config `infrastructure/livekit/ingress.prod.yaml`). LiveKit and
+   the Ingress must share the same Redis (`REDIS_HOST` / `REDIS_PASSWORD` for
+   LiveKit, `redis:` in `ingress.prod.yaml`): without it, creating a key fails
+   with `503 INGRESS_SERVICE_UNREACHABLE`.
+2. **Public URLs.** `ingress.rtmp_base_url` / `ingress.whip_base_url` in
+   `livekit.prod.yaml` (or `LIVEKIT_INGRESS_RTMP_URL` / `LIVEKIT_INGRESS_WHIP_URL`
+   on the API) are the URLs shown to the creators.
+3. **TLS for WHIP.** WHIP is plain HTTP on 8080: put it behind nginx
+   (`whip.yourdomain.com` → `proxy_pass http://127.0.0.1:8080;`, keep the
+   `Authorization` and `Location` headers, `client_max_body_size 1m`). OBS
+   accepts `https://`.
+4. **RTMP / RTMPS.** Open TCP 1935. RTMPS is optional: nginx `stream { server
+   { listen 1936 ssl; proxy_pass 127.0.0.1:1935; } }` with your certificate,
+   then `rtmps://live.yourdomain.com:1936/live` as `rtmp_base_url`.
+5. **Firewall.** UDP 7885 (WHIP media), TCP 1935 (RTMP), 443 (nginx).
+6. **Codec of the RTMP layers.** H.264 by default (cheap to encode, hardware
+   decoding everywhere). `LIVEKIT_INGRESS_RTMP_CODEC=vp8` on the API transcodes
+   into VP8 instead, for audiences on browsers without H.264 WebRTC decoding
+   (some Linux Chromium builds); it costs noticeably more CPU. The key must be
+   regenerated (or the protocol switched) for an existing ingress to pick it up.
+   WHIP inputs keep OBS's codec (H.264 with OBS).
+7. **CPU.** Size the Ingress host for the number of simultaneous RTMP lives
+   (`cpu_cost` reserves cores per input and refuses new inputs when the CPU is
+   busy). WHIP inputs cost almost nothing: recommend WHIP to the creators.
 
 ## Monitoring
 

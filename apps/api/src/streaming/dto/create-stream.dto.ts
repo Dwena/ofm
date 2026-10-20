@@ -5,11 +5,13 @@ import {
   IsBoolean,
   IsNumber,
   IsDateString,
+  IsIn,
   IsNotEmpty,
   MaxLength,
   Min,
   Max,
 } from 'class-validator';
+import { LIVE_SOURCES, type LiveSource } from './live-ingress.dto';
 
 export enum StreamVisibility {
   PUBLIC = 'PUBLIC',
@@ -50,6 +52,11 @@ export class CreateStreamDto {
   @IsOptional()
   @IsDateString()
   scheduledFor?: string;
+
+  /** BROWSER (camera, default) or OBS (LiveKit transport only) */
+  @IsOptional()
+  @IsIn(LIVE_SOURCES)
+  source?: LiveSource;
 }
 
 export class UpdateStreamDto {

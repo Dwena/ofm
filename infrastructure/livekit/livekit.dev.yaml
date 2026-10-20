@@ -42,7 +42,19 @@ room:
   empty_timeout: 300
   departure_timeout: 20
 
-# Spectateurs connectés à la vidéo, vus par l'API (POST /api/v1/webhooks/livekit)
+# Redis du docker-compose (service `redis`) : indispensable à LiveKit Ingress
+# ("Diffuser avec OBS", conteneur ofm-livekit-ingress) qui dialogue avec
+# LiveKit par Redis. Sans lui, créer une clé OBS échoue ("ingress not connected").
+redis:
+  address: redis:6379
+  password: redis_password_dev_only
+
+# URLs annoncées pour les entrées OBS (vues depuis la machine hôte)
+ingress:
+  rtmp_base_url: rtmp://localhost:1935/live
+  whip_base_url: http://localhost:8080/w
+
+# Spectateurs connectés à la vidéo et statut OBS, vus par l'API (POST /api/v1/webhooks/livekit)
 webhook:
   api_key: devkey
   urls:

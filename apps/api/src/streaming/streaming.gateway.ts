@@ -10,7 +10,7 @@ import {
 } from '@nestjs/websockets';
 import { Namespace, Server, Socket } from 'socket.io';
 import { Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { Subscription } from 'rxjs';
+import { Subject, Subscription } from 'rxjs';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
@@ -18,6 +18,7 @@ import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-p
 import { formatGoalAmount, LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
 import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 import { LiveKitService, LiveTransport } from './livekit.service';
+import { LiveIngressService } from './live-ingress.service';
 
 interface SocketUser {
   id: string;
@@ -84,6 +85,19 @@ const clampPercent = (value: unknown, fallback: number) => {
 export const streamRoom = (streamId: string) => `stream:${streamId}`;
 
 /**
+ * Public event of a creator's live, also relayed to the creator's OBS
+ * overlays (overlays gateway). `stream-started` and `tip-menu-updated` are
+ * only relayed (never emitted to a stream room).
+ */
+export interface StreamRelayEvent {
+  streamId: string | null;
+  /** Creator of the stream when known (the overlays gateway looks it up otherwise) */
+  creatorId?: string;
+  event: string;
+  payload: unknown;
+}
+
+/**
  * Live streaming gateway.
  *
  * Signaling model: one-to-many mesh where the creator (broadcaster) is the
@@ -121,6 +135,9 @@ export class StreamingGateway
   private mutedUsers = new Map<string, Set<string>>();
   private tipSubscription?: Subscription;
   private videoViewersSubscription?: Subscription;
+  /** Every public event emitted to a stream room (chat, tips, goals, requests...), for the overlays */
+  readonly streamEvents$ = new Subject<StreamRelayEvent>();
+  private obsStatusSubscription?: Subscription;
 
   constructor(
     private prisma: PrismaService,
@@ -129,6 +146,7 @@ export class StreamingGateway
     @Optional() private oneTimePayments?: OneTimePaymentService,
     @Optional() private liveTips?: LiveTipsService,
     @Optional() private liveKit?: LiveKitService,
+    @Optional() private liveIngress?: LiveIngressService,
   ) {}
 
   /** Video transport announced in the join / broadcast acknowledgements */
@@ -145,11 +163,20 @@ export class StreamingGateway
     this.videoViewersSubscription = this.liveKit?.videoViewers$.subscribe(({ streamId, count }) => {
       this.server?.to(streamRoom(streamId)).emit('video-viewer-count', { streamId, count });
     });
+    // OBS mode: whether OBS is sending, for the creator's broadcasting page only
+    this.obsStatusSubscription = this.liveIngress?.obsStatus$.subscribe(({ creatorId, streamId, status }) => {
+      if (!streamId) return;
+      const room = this.rooms.get(streamId);
+      if (!room?.broadcasterSocketId || room.creatorId !== creatorId) return;
+      this.server?.to(room.broadcasterSocketId).emit('obs-status', { streamId, status });
+    });
   }
 
   onModuleDestroy() {
     this.tipSubscription?.unsubscribe();
     this.videoViewersSubscription?.unsubscribe();
+    this.streamEvents$.complete();
+    this.obsStatusSubscription?.unsubscribe();
     this.viewerStats.forEach((stats) => clearTimeout(stats.timer));
     this.viewerStats.clear();
   }
@@ -333,6 +360,9 @@ export class StreamingGateway
         transport: this.transport,
         viewerCount,
         mutedUserIds: [...(this.mutedUsers.get(streamId) ?? [])],
+        ...(this.liveIngress?.available
+          ? { obsStatus: this.liveIngress.getStreamObsStatus(stream.creatorId, streamId) }
+          : {}),
         messages: await this.toChatHistory(messages, stream.creatorId),
         ...(await this.getTipState(streamId)),
       };
@@ -493,7 +523,7 @@ export class StreamingGateway
     try {
       const saved = await this.streamingService.createChatMessage(data.streamId, client.userId!, data.message);
       const chatMessage = this.toChatMessage(saved, room.creatorId);
-      this.server.to(streamRoom(data.streamId)).emit('chat-message', chatMessage);
+      this.emitToStream(data.streamId, 'chat-message', chatMessage, room.creatorId);
       return { success: true, messageId: saved.id };
     } catch (error) {
       this.logger.error('Chat message error:', error);
@@ -516,10 +546,12 @@ export class StreamingGateway
     try {
       const deleted = await this.streamingService.deleteChatMessage(data.streamId, data.messageId);
       if (!deleted) return { error: 'Message not found', reason: 'NOT_FOUND' };
-      this.server.to(streamRoom(data.streamId)).emit('chat-message-deleted', {
-        streamId: data.streamId,
-        messageId: data.messageId,
-      });
+      this.emitToStream(
+        data.streamId,
+        'chat-message-deleted',
+        { streamId: data.streamId, messageId: data.messageId },
+        room.creatorId,
+      );
       return { success: true };
     } catch (error) {
       this.logger.error('Delete chat message error:', error);
@@ -603,7 +635,8 @@ export class StreamingGateway
         data.actionId,
         data.status,
       );
-      this.server.to(streamRoom(data.streamId)).emit('tip-action-updated', { action });
+      // Only the stream's creator can update its requests
+      this.emitToStream(data.streamId, 'tip-action-updated', { action }, client.userId);
       return { success: true, action };
     } catch (error) {
       const status = error?.getStatus?.();
@@ -622,10 +655,10 @@ export class StreamingGateway
   notifyStreamEnded(streamId: string) {
     if (!this.server) return;
 
-    this.server.to(streamRoom(streamId)).emit('stream-ended', { streamId });
+    const room = this.rooms.get(streamId);
+    this.emitToStream(streamId, 'stream-ended', { streamId }, room?.creatorId);
     this.server.in(streamRoom(streamId)).socketsLeave(streamRoom(streamId));
 
-    const room = this.rooms.get(streamId);
     if (room) {
       const sockets = [...room.viewers.keys()];
       if (room.broadcasterSocketId) sockets.push(room.broadcasterSocketId);
@@ -645,7 +678,7 @@ export class StreamingGateway
    */
   async notifyTip(tip: TipCompletedEvent) {
     if (!this.server || !tip.streamId) return;
-    const room = streamRoom(tip.streamId);
+    const streamId = tip.streamId;
 
     let recorded: RecordedLiveTip | null = null;
     if (this.liveTips) {
@@ -675,9 +708,12 @@ export class StreamingGateway
           menuItemLabel,
         };
 
-    this.server.to(room).emit('chat-message', message);
-    this.server.to(room).emit('tip', {
-      streamId: tip.streamId,
+    const creatorId = recorded?.creatorId ?? tip.creatorId;
+    const emit = (event: string, payload: unknown) => this.emitToStream(streamId, event, payload, creatorId);
+
+    emit('chat-message', message);
+    emit('tip', {
+      streamId,
       transactionId: tip.transactionId,
       amount: tip.amount,
       message: tip.message,
@@ -688,16 +724,16 @@ export class StreamingGateway
     if (!recorded) return;
 
     const { total, goals } = recorded;
-    this.server.to(room).emit('tip-goal-progress', { streamId: tip.streamId, total, goals });
+    emit('tip-goal-progress', { streamId, total, goals });
     if (recorded.action) {
-      this.server.to(room).emit('tip-action-created', { action: recorded.action });
+      emit('tip-action-created', { action: recorded.action });
     }
     // Milestones this tip unlocked: their "Palier atteint" chat line, then the celebration
     recorded.systemMessages.forEach((systemMessage) => {
-      this.server.to(room).emit('chat-message', this.toChatMessage(systemMessage, recorded.creatorId));
+      emit('chat-message', this.toChatMessage(systemMessage, recorded.creatorId));
     });
     recorded.reachedGoals.forEach((goal) => {
-      this.server.to(room).emit('tip-goal-reached', { streamId: tip.streamId, goal, total });
+      emit('tip-goal-reached', { streamId, goal, total });
     });
   }
 
@@ -706,7 +742,7 @@ export class StreamingGateway
    */
   notifyTipGoalsUpdated(snapshot: TipGoalsSnapshot) {
     if (!this.server) return;
-    this.server.to(streamRoom(snapshot.streamId)).emit('tip-goals-updated', snapshot);
+    this.emitToStream(snapshot.streamId, 'tip-goals-updated', snapshot);
   }
 
   /**
@@ -714,7 +750,46 @@ export class StreamingGateway
    */
   notifyTipGoalUpdated(update: { streamId: string; goal: TipGoalView }) {
     if (!this.server) return;
-    this.server.to(streamRoom(update.streamId)).emit('tip-goal-updated', update);
+    this.emitToStream(update.streamId, 'tip-goal-updated', update);
+  }
+
+  /**
+   * A live of the creator started (REST create / start): only relayed to the
+   * creator's overlays, which switch to it
+   */
+  notifyStreamStarted(stream: { id: string; creatorId: string; status?: string | null }) {
+    if (stream.status && stream.status !== 'LIVE') return;
+    this.streamEvents$.next({ streamId: stream.id, creatorId: stream.creatorId, event: 'stream-started', payload: null });
+  }
+
+  /**
+   * The creator saved the tip menu (REST endpoint): only relayed to the
+   * creator's overlays (active items, in display order)
+   */
+  notifyTipMenuUpdated(creatorId: string, items: { isActive: boolean }[]) {
+    this.streamEvents$.next({
+      streamId: null,
+      creatorId,
+      event: 'tip-menu-updated',
+      payload: { items: items.filter((item) => item.isActive) },
+    });
+  }
+
+  /**
+   * Latest chat lines of a stream as sent to the room (tip lines with their
+   * menu request), oldest first
+   */
+  async getChatHistory(streamId: string, creatorId: string, limit = 30): Promise<LiveChatMessage[]> {
+    const messages = await this.streamingService.getRecentChatMessages(streamId, limit);
+    return this.toChatHistory(messages, creatorId);
+  }
+
+  /**
+   * Emit a public live event to the stream room and relay it to the overlays
+   */
+  private emitToStream(streamId: string, event: string, payload: unknown, creatorId?: string) {
+    this.server.to(streamRoom(streamId)).emit(event, payload);
+    this.streamEvents$.next({ streamId, creatorId: creatorId ?? this.rooms.get(streamId)?.creatorId, event, payload });
   }
 
   getViewerCount(streamId: string) {
@@ -780,7 +855,7 @@ export class StreamingGateway
   private async broadcastViewerCount(streamId: string) {
     const room = this.rooms.get(streamId);
     const count = room ? this.countViewers(room) : 0;
-    this.server.to(streamRoom(streamId)).emit('viewer-count', count);
+    this.emitToStream(streamId, 'viewer-count', count, room?.creatorId);
     this.scheduleViewerStats(streamId, count);
     return count;
   }
