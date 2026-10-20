@@ -494,7 +494,7 @@ export class StreamingService {
     const { creatorProfile, ...creator } = stream.creator;
     const tipState = this.liveTips
       ? await this.liveTips.getLiveTipState(stream.id)
-      : { tipGoal: null, tipMenu: [], pendingTipActions: [] };
+      : { tipGoal: null, tipTotal: Number(stream.tipTotal ?? 0), tipMenu: [], pendingTipActions: [] };
 
     return {
       ...publicStream,

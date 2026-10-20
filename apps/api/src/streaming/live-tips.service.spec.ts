@@ -63,6 +63,7 @@ describe('LiveTipsService', () => {
         }),
       },
       streamMessage: {
+        findUnique: jest.fn(async ({ where }: any) => messages.find((m) => m.transactionId === where.transactionId) ?? null),
         create: jest.fn(async ({ data }: any) => {
           if (data.transactionId && messages.some((m) => m.transactionId === data.transactionId)) {
             throw duplicate();
@@ -134,7 +135,7 @@ describe('LiveTipsService', () => {
         .mockResolvedValueOnce([{ id: 'kept' }, { id: 'removed' }])
         .mockResolvedValueOnce([]);
 
-      await service.replaceMenu('creator-1', {
+      const menu = await service.replaceMenu('creator-1', {
         items: [
           item({ label: ' Nouveau ', emoji: '🎵', description: '' }),
           item({ id: 'kept', label: 'Gardé', amount: 10 }),
@@ -153,6 +154,7 @@ describe('LiveTipsService', () => {
       expect(prisma.liveTipMenuItem.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ creatorId: 'creator-1', label: 'Nouveau', emoji: '🎵', description: null, position: 0 }),
       });
+      expect(menu).toEqual({ items: [], minimumAmount: 5, maximumAmount: 10000, maxItems: 20 });
       // An id that is not one of the creator's items is never updated
       expect(prisma.liveTipMenuItem.update).not.toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'not-mine' } }));
     });
@@ -214,6 +216,14 @@ describe('LiveTipsService', () => {
       expect(Number(stream.tipTotal)).toBe(20);
       expect(messages).toHaveLength(1);
       expect(actions).toHaveLength(1);
+    });
+
+    it('treats a concurrent duplicate (unique violation) as already recorded', async () => {
+      await service.recordTip(tip());
+      // The other call had not committed yet when this one checked
+      prisma.streamMessage.findUnique.mockResolvedValueOnce(null);
+      await expect(service.recordTip(tip())).resolves.toBeNull();
+      expect(messages).toHaveLength(1);
     });
 
     it('creates no action for a free tip', async () => {

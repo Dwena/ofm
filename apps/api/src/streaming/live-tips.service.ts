@@ -43,9 +43,19 @@ export interface TipActionView {
   fromUser: { id: string; username: string; displayName: string | null; avatar: string | null };
 }
 
+/** The creator's tip menu, with the bounds of an item amount (euros) */
+export interface OwnTipMenu {
+  items: TipMenuItemView[];
+  minimumAmount: number;
+  maximumAmount: number;
+  maxItems: number;
+}
+
 /** Live tip state sent with the stream detail and the join acknowledgement */
 export interface LiveTipState {
   tipGoal: TipGoalView | null;
+  /** Euros of completed tips sent from the live (with or without a goal) */
+  tipTotal: number;
   tipMenu: TipMenuItemView[];
   pendingTipActions: TipActionView[];
 }
@@ -93,12 +103,31 @@ export class LiveTipsService {
   /**
    * Whole tip menu of the creator (active and hidden items), for the editor
    */
-  async getOwnMenu(creatorId: string): Promise<TipMenuItemView[]> {
-    const items = await this.prisma.liveTipMenuItem.findMany({
-      where: { creatorId },
-      orderBy: { position: 'asc' },
+  async getOwnMenu(creatorId: string): Promise<OwnTipMenu> {
+    const [items, minimumAmount] = await Promise.all([
+      this.prisma.liveTipMenuItem.findMany({
+        where: { creatorId },
+        orderBy: { position: 'asc' },
+      }),
+      this.getMinimumItemAmount(creatorId),
+    ]);
+    return {
+      items: items.map((item) => this.toMenuItem(item)),
+      minimumAmount,
+      maximumAmount: MAX_TIP_MENU_AMOUNT,
+      maxItems: MAX_TIP_MENU_ITEMS,
+    };
+  }
+
+  /**
+   * An item never costs less than the creator's minimum tip (and 1 €)
+   */
+  private async getMinimumItemAmount(creatorId: string) {
+    const profile = await this.prisma.creatorProfile.findUnique({
+      where: { userId: creatorId },
+      select: { minimumTip: true },
     });
-    return items.map((item) => this.toMenuItem(item));
+    return Math.max(1, Number(profile?.minimumTip ?? 1));
   }
 
   /**
@@ -106,17 +135,13 @@ export class LiveTipsService {
    * creator's items are updated in place (past actions keep referencing
    * them), the others are created, and the missing ones are deleted.
    */
-  async replaceMenu(creatorId: string, dto: ReplaceTipMenuDto): Promise<TipMenuItemView[]> {
+  async replaceMenu(creatorId: string, dto: ReplaceTipMenuDto): Promise<OwnTipMenu> {
     const items = dto.items ?? [];
     if (items.length > MAX_TIP_MENU_ITEMS) {
       throw new BadRequestException(`A tip menu cannot have more than ${MAX_TIP_MENU_ITEMS} items`);
     }
 
-    const profile = await this.prisma.creatorProfile.findUnique({
-      where: { userId: creatorId },
-      select: { minimumTip: true },
-    });
-    const minimum = Math.max(1, Number(profile?.minimumTip ?? 1));
+    const minimum = await this.getMinimumItemAmount(creatorId);
 
     const seen = new Set<string>();
     for (const item of items) {
@@ -213,7 +238,7 @@ export class LiveTipsService {
       select: { creatorId: true, tipGoalAmount: true, tipGoalLabel: true, tipTotal: true },
     });
     if (!stream) {
-      return { tipGoal: null, tipMenu: [], pendingTipActions: [] };
+      return { tipGoal: null, tipTotal: 0, tipMenu: [], pendingTipActions: [] };
     }
 
     const [tipMenu, pendingTipActions] = await Promise.all([
@@ -221,7 +246,7 @@ export class LiveTipsService {
       this.getRecentActions(streamId),
     ]);
 
-    return { tipGoal: this.toGoal(stream), tipMenu, pendingTipActions };
+    return { tipGoal: this.toGoal(stream), tipTotal: Number(stream.tipTotal), tipMenu, pendingTipActions };
   }
 
   /**
@@ -268,7 +293,16 @@ export class LiveTipsService {
           return null;
         }
 
-        // Fails with P2002 when the tip was already recorded
+        const recorded = await tx.streamMessage.findUnique({
+          where: { transactionId: tip.transactionId },
+          select: { id: true },
+        });
+        if (recorded) {
+          this.logger.log(`Tip ${tip.transactionId} already recorded in stream ${streamId}`);
+          return null;
+        }
+
+        // Also fails with P2002 when a concurrent call recorded the tip meanwhile
         const message = await tx.streamMessage.create({
           data: {
             streamId,
