@@ -3,6 +3,8 @@ import { BullModule } from '@nestjs/bull';
 import { DatabaseModule } from '../common/database/database.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminModule } from '../admin/admin.module';
+import { ContentModule } from '../content/content.module';
+import { MediaModule } from '../media/media.module';
 import { ModerationService } from './moderation.service';
 import { ModerationController } from './moderation.controller';
 import { ModerationProcessor } from './moderation.processor';
@@ -17,6 +19,9 @@ import { SuspensionSchedulerService } from './suspension-scheduler.service';
     DatabaseModule,
     NotificationsModule,
     AdminModule,
+    // Pre-publication review queue (ContentService) and media rescans
+    ContentModule,
+    MediaModule,
   ],
   controllers: [ModerationController],
   providers: [

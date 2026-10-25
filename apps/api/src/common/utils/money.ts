@@ -3,12 +3,11 @@ import { Prisma } from '@prisma/client';
 /**
  * Money conventions
  *
- * - The database stores amounts in EUROS (`Decimal(10,2)` / `Decimal(12,2)`),
- *   except `Dispute.amount` which mirrors Stripe and is stored in cents.
- * - Stripe works in CENTS (smallest currency unit).
+ * - The database stores amounts in EUROS (`Decimal(10,2)` / `Decimal(12,2)`).
+ * - Payment providers receive and send euros (see payments/providers).
  * - The REST API always returns euros as plain numbers.
- *
- * Convert at the Stripe boundary only, with the helpers below.
+ * - Fan payments: `amount` excludes VAT, `totalAmount` is what the fan paid
+ *   (see common/utils/vat.ts).
  */
 
 /** Round a euro amount to the cent */
@@ -16,12 +15,12 @@ export function roundMoney(amount: number): number {
   return Math.round((amount + Number.EPSILON) * 100) / 100;
 }
 
-/** Euros -> Stripe cents */
+/** Euros -> cents */
 export function toCents(euros: number | Prisma.Decimal): number {
   return Math.round(Number(euros) * 100);
 }
 
-/** Stripe cents -> euros */
+/** Cents -> euros */
 export function fromCents(cents: number): number {
   return roundMoney(cents / 100);
 }
@@ -30,20 +29,6 @@ export function fromCents(cents: number): number {
 export function computeFees(amount: number, feePercentage: number) {
   const platformFee = roundMoney((amount * feePercentage) / 100);
   return { platformFee, netAmount: roundMoney(amount - platformFee) };
-}
-
-/**
- * Sum the entries of a Stripe balance (`available`, `pending`) in one currency, in euros
- */
-export function sumBalanceEntries(
-  entries: { amount: number; currency: string }[] | undefined | null,
-  currency = 'eur',
-): number {
-  if (!entries) return 0;
-  const cents = entries
-    .filter((entry) => entry.currency?.toLowerCase() === currency.toLowerCase())
-    .reduce((sum, entry) => sum + entry.amount, 0);
-  return fromCents(cents);
 }
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {

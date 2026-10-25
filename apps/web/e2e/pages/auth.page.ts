@@ -59,7 +59,17 @@ export class AuthPage {
     // Account type is chosen with two toggle buttons (Abonné / Créateur)
     await this.page.getByTestId(role === 'CREATOR' ? 'register-role-creator' : 'register-role-subscriber').click();
     await this.fillRegistration(email, username, password);
+    await this.acceptRegistrationConsents(role);
     await this.registerSubmitButton.click();
+  }
+
+  /** Required checkboxes: CGU + privacy policy, 18+ declaration, creator terms for creators */
+  async acceptRegistrationConsents(role: 'CREATOR' | 'SUBSCRIBER' = 'CREATOR') {
+    await this.page.getByTestId('register-acceptTerms').check();
+    await this.page.getByTestId('register-confirmAdult').check();
+    if (role === 'CREATOR') {
+      await this.page.getByTestId('register-acceptCreatorTerms').check();
+    }
   }
 
   async expectToBeOnDashboard() {

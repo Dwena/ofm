@@ -38,6 +38,9 @@ describe('AdminService', () => {
     notification: {
       create: jest.fn(),
     },
+    identityDocument: {
+      count: jest.fn(),
+    },
     auditLog: {
       create: jest.fn(),
       findMany: jest.fn(),
@@ -138,7 +141,13 @@ describe('AdminService', () => {
 
   describe('reviewKyc', () => {
     it('approves a pending verification, notifies and audits', async () => {
-      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'PENDING', deletedAt: null });
+      mockPrismaService.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        kycStatus: 'PENDING',
+        deletedAt: null,
+        dateOfBirth: new Date('1995-04-12'),
+      });
+      mockPrismaService.identityDocument.count.mockResolvedValue(3);
       mockPrismaService.user.update.mockResolvedValue({ id: 'u1', kycStatus: 'VERIFIED' });
 
       const result = await service.reviewKyc('admin-1', 'u1', { decision: KycDecision.APPROVE });
@@ -152,6 +161,32 @@ describe('AdminService', () => {
       expect(mockPrismaService.auditLog.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ action: 'KYC_APPROVED', resource: 'USER', resourceId: 'u1' }),
       });
+    });
+
+    it('never approves a minor or an account without documents', async () => {
+      const today = new Date();
+      const seventeen = new Date(Date.UTC(today.getUTCFullYear() - 17, today.getUTCMonth(), today.getUTCDate()));
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'PENDING', deletedAt: null, dateOfBirth: seventeen });
+      await expect(service.reviewKyc('admin-1', 'u1', { decision: KycDecision.APPROVE })).rejects.toThrow(
+        BadRequestException,
+      );
+
+      mockPrismaService.user.findUnique.mockResolvedValue({ id: 'u1', kycStatus: 'PENDING', deletedAt: null, dateOfBirth: null });
+      await expect(service.reviewKyc('admin-1', 'u1', { decision: KycDecision.APPROVE })).rejects.toThrow(
+        BadRequestException,
+      );
+
+      mockPrismaService.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        kycStatus: 'PENDING',
+        deletedAt: null,
+        dateOfBirth: new Date('1990-01-01'),
+      });
+      mockPrismaService.identityDocument.count.mockResolvedValue(0);
+      await expect(service.reviewKyc('admin-1', 'u1', { decision: KycDecision.APPROVE })).rejects.toThrow(
+        "Aucune pièce d'identité",
+      );
+      expect(mockPrismaService.user.update).not.toHaveBeenCalled();
     });
 
     it('rejects with a reason', async () => {

@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useReducer, useCallback } from 'react';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { liveApi } from '@/lib/api';
+import { AgeGatedMedia } from '@/components/age-verification/age-gated-media';
+import { AGE_VERIFICATION_REQUIRED } from '@/lib/age-verification';
 import {
   createLiveSocket,
   closeLiveSocket,
@@ -65,6 +67,7 @@ import {
   type LiveTipSnapshot,
   type TipMenuItem,
 } from '@/lib/live-tips';
+import { formatFanPrice } from '@/lib/vat'
 import { formatEuros } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
@@ -79,6 +82,8 @@ interface LiveStream extends LiveTipSnapshot {
   viewerCount: number;
   hasAccess?: boolean;
   accessDeniedReason?: string | null;
+  /** The viewer's age must be verified before watching (SREN law) */
+  ageVerificationRequired?: boolean;
   /** Video transport: LiveKit SFU, or the creator's peer-to-peer mesh */
   transport?: LiveTransport;
   /** Video source: the creator's browser, or OBS (LiveKit Ingress) */
@@ -232,7 +237,9 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
   const isLive = stream?.status === 'LIVE';
   if (isLive && stream?.hasAccess !== false) watchingRef.current = true;
   else if (!isLive) watchingRef.current = false;
-  const canWatch = isLive && (stream?.hasAccess !== false || watchingRef.current);
+  // No connection at all until the viewer's age is verified (the API refuses it anyway)
+  const canWatch =
+    isLive && !stream?.ageVerificationRequired && (stream?.hasAccess !== false || watchingRef.current);
   const userId = user?.id;
   // With LiveKit the video comes from the SFU: the socket only carries chat, tips, counts...
   const isLiveKit = stream?.transport === 'livekit';
@@ -868,8 +875,8 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
           kind="stream"
           amount={Number(stream.ppvPrice)}
           description={`${stream.title} - @${stream.creator.username}`}
-          start={async (paymentMethodId) => (await liveApi.purchase(streamId, paymentMethodId)).data}
-          confirm={async (paymentIntentId) => (await liveApi.confirmPurchase(streamId, paymentIntentId)).data}
+          start={async (options) => (await liveApi.purchase(streamId, options)).data}
+          confirm={async (transactionId) => (await liveApi.confirmPurchase(streamId, transactionId)).data}
           successDelay={1200}
           onSuccess={() => {
             setShowPurchase(false);
@@ -907,7 +914,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
               {canPurchase && (
                 <Button onClick={() => setShowPurchase(true)}>
                   <Euro className="h-4 w-4 mr-2" />
-                  Réserver l&apos;accès pour {formatEuros(stream.ppvPrice)}
+                  Réserver l&apos;accès pour {formatFanPrice(stream.ppvPrice)}
                 </Button>
               )}
               {isOwnStream && (
@@ -919,6 +926,26 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 <Link href={`/${stream.creator.username}`}>Voir le profil du créateur</Link>
               </Button>
             </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // 403 AGE_VERIFICATION_REQUIRED (stream detail, join ack or LiveKit token)
+  if (isLive && (stream.ageVerificationRequired || deniedReason === AGE_VERIFICATION_REQUIRED)) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh] px-4" data-testid="live-age-verification">
+        <Card className="max-w-md w-full overflow-hidden">
+          <AgeGatedMedia className="aspect-video rounded-none" label="Live réservé aux adultes" />
+          <CardContent className="pt-4 text-center">
+            <h2 className="text-xl font-bold mb-1 break-words">{stream.title}</h2>
+            <p className="text-sm text-muted-foreground mb-4">
+              Live de @{stream.creator.username}. Vérifiez votre âge pour le regarder.
+            </p>
+            <Button variant="outline" asChild>
+              <Link href={`/${stream.creator.username}`}>Voir le profil du créateur</Link>
+            </Button>
           </CardContent>
         </Card>
       </div>
@@ -940,7 +967,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
               {canPurchase && (
                 <Button onClick={() => setShowPurchase(true)}>
                   <Euro className="h-4 w-4 mr-2" />
-                  Acheter l&apos;accès pour {formatEuros(stream.ppvPrice)}
+                  Acheter l&apos;accès pour {formatFanPrice(stream.ppvPrice)}
                 </Button>
               )}
               {!known && (
@@ -1268,7 +1295,7 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
         </div>
       </div>
 
-      {/* Tip Modal: choose the amount, then pay (saved card or Stripe Elements) */}
+      {/* Tip Modal: choose the amount, then pay (saved card or the provider's page) */}
       <Dialog open={showTipModal} onOpenChange={(open) => !open && closeTipModal()}>
         <DialogContent
           className={
@@ -1287,19 +1314,18 @@ export default function LiveStreamPage({ params }: { params: { streamId: string 
                 compact
                 amount={tipValue}
                 description={`Pourboire pour @${stream.creator.username}${tipMenuItem ? ` · Demande : ${tipMenuItem.label}` : ''}`}
-                start={async (paymentMethodId) =>
+                start={async ({ paymentCardId, billingCountry }) =>
                   (
                     await liveApi.sendTip(stream.creator.id, tipValue, {
                       streamId,
                       menuItemId: tipMenuItem?.id,
                       message: tipMessage.trim() || undefined,
-                      paymentMethodId,
+                      paymentCardId,
+                      billingCountry,
                     })
                   ).data
                 }
-                confirm={async (paymentIntentId) =>
-                  (await liveApi.confirmTip(stream.creator.id, paymentIntentId)).data
-                }
+                confirm={async (transactionId) => (await liveApi.confirmTip(stream.creator.id, transactionId)).data}
                 successDelay={1500}
                 onSuccess={closeTipModal}
                 onCancel={() => setTipCheckout(false)}

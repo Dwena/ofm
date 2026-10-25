@@ -132,7 +132,7 @@ ofm/
 │       │   ├── auth/        # Authentification (JWT, 2FA)
 │       │   ├── users/       # Gestion utilisateurs
 │       │   ├── content/     # Gestion de contenu
-│       │   ├── payments/    # Paiements Stripe
+│       │   ├── payments/    # Paiements, TVA, virements (CCBill / simulateur)
 │       │   ├── subscriptions/ # Abonnements
 │       │   ├── messaging/   # Messagerie
 │       │   ├── notifications/ # Notifications
@@ -165,7 +165,7 @@ ofm/
 
 - [ ] Upload de médias sécurisé (S3/MinIO)
 - [ ] Processing vidéo (FFmpeg)
-- [ ] Système de paiement complet (Stripe Connect)
+- [ ] Système de paiement complet (CCBill / simulateur, TVA, virements SEPA)
 - [ ] Abonnements avec renouvellement automatique
 - [ ] Messagerie en temps réel (WebSocket)
 - [ ] Notifications push
@@ -198,10 +198,13 @@ npm run test:cov
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 JWT_REFRESH_SECRET=your-super-secret-refresh-jwt-key-change-this-in-production
 
-# Stripe (mode test)
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_PUBLISHABLE_KEY=pk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
+# Paiements (simulateur local en développement, voir docs/PAIEMENTS.md)
+PAYMENT_PROVIDER=fake
+PLATFORM_FEE_PERCENTAGE=15
+EARNINGS_HOLD_DAYS=7
+MINIMUM_PAYOUT_AMOUNT=50
+DATA_ENCRYPTION_KEY=dev-only-encryption-key-change-me
+# En production (PAYMENT_PROVIDER=ccbill) : CCBILL_*, PAYOUT_DEBTOR_*
 
 # Pour utiliser AWS S3 en production
 # AWS_ACCESS_KEY_ID=...
@@ -310,7 +313,7 @@ PORT=3002
 ## 🚀 Prochaines étapes
 
 1. **Implémenter l'upload de fichiers** - Voir `docs/MEDIA_UPLOAD.md` (à créer)
-2. **Configurer Stripe Connect** - Voir `docs/STRIPE_SETUP.md` (à créer)
+2. **Configurer CCBill** - Voir `docs/PAIEMENTS.md`
 3. **Déployer en staging** - Voir `docs/DEPLOYMENT.md` (à créer)
 
 ## 💡 Aide
@@ -332,7 +335,7 @@ Avant de déployer en production :
 5. ✅ Configurez Sentry pour le monitoring
 6. ✅ Mettez en place des backups automatiques
 7. ✅ Activez le WAF (Cloudflare)
-8. ✅ Passez Stripe en mode production
+8. ✅ Passez `PAYMENT_PROVIDER=ccbill` et testez le parcours sur le compte de test CCBill
 
 ---
 

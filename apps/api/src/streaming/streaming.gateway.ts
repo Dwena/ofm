@@ -14,11 +14,13 @@ import { Subject, Subscription } from 'rxjs';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/database/prisma.service';
 import { StreamingService } from './streaming.service';
-import { OneTimePaymentService, TipCompletedEvent } from '../payments/one-time-payment.service';
+import { PaymentFlowService, TipCompletedEvent } from '../payments/payment-flow.service';
 import { formatGoalAmount, LiveTipsService, LiveTipState, RecordedLiveTip, TipGoalsSnapshot, TipGoalView } from './live-tips.service';
 import { TIP_ACTION_UPDATE_STATUSES, TipActionUpdateStatus } from './dto/tip-menu.dto';
 import { LiveKitService, LiveTransport } from './livekit.service';
 import { LiveIngressService } from './live-ingress.service';
+import { AgeVerificationService } from '../age-verification/age-verification.service';
+import { AGE_VERIFICATION_HEADER, AGE_VERIFICATION_REQUIRED } from '../age-verification/age-verification.constants';
 
 interface SocketUser {
   id: string;
@@ -30,6 +32,8 @@ interface SocketUser {
 export interface AuthenticatedStreamSocket extends Socket {
   userId?: string;
   user?: SocketUser;
+  /** Anonymous age verification token sent with the handshake, if any */
+  ageVerificationToken?: string;
 }
 
 interface StreamRoomState {
@@ -143,10 +147,12 @@ export class StreamingGateway
     private prisma: PrismaService,
     private jwtService: JwtService,
     private streamingService: StreamingService,
-    @Optional() private oneTimePayments?: OneTimePaymentService,
+    @Optional() private paymentFlow?: PaymentFlowService,
     @Optional() private liveTips?: LiveTipsService,
     @Optional() private liveKit?: LiveKitService,
     @Optional() private liveIngress?: LiveIngressService,
+    // Always provided by the global AgeVerificationModule (optional for unit tests)
+    @Optional() private ageVerification?: AgeVerificationService,
   ) {}
 
   /** Video transport announced in the join / broadcast acknowledgements */
@@ -156,7 +162,7 @@ export class StreamingGateway
 
   onModuleInit() {
     // Paid tips sent from a live are announced in its chat
-    this.tipSubscription = this.oneTimePayments?.tipCompleted$.subscribe((tip) => {
+    this.tipSubscription = this.paymentFlow?.tipCompleted$.subscribe((tip) => {
       void this.notifyTip(tip);
     });
     // LiveKit mode: viewers connected to the video (LiveKit webhooks), for the creator's health panel
@@ -232,6 +238,8 @@ export class StreamingGateway
         return false;
       }
 
+      const ageToken = client.handshake.auth?.ageVerificationToken || client.handshake.headers?.[AGE_VERIFICATION_HEADER];
+      client.ageVerificationToken = typeof ageToken === 'string' && ageToken ? ageToken : undefined;
       client.userId = user.id;
       client.user = {
         id: user.id,
@@ -274,6 +282,15 @@ export class StreamingGateway
 
       const access = await this.streamingService.checkViewAccess(client.userId, stream);
       if (!access.allowed) return { error: 'Forbidden', reason: access.reason };
+
+      // Watching a live (P2P video, LiveKit token) needs a verified age
+      if (
+        !access.isCreator &&
+        this.ageVerification &&
+        !(await this.ageVerification.isAgeVerifiedFor({ userId: client.userId, token: client.ageVerificationToken }))
+      ) {
+        return { error: 'Forbidden', reason: AGE_VERIFICATION_REQUIRED };
+      }
 
       const room = this.getOrCreateRoom(streamId, stream.creatorId);
       const alreadyWatching = this.isUserWatching(room, client.userId);

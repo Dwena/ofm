@@ -7,6 +7,7 @@ import {
   Put,
   Delete,
   Headers,
+  Ip,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
@@ -26,8 +27,13 @@ export class AuthController {
 
   @Post('register')
   @UseGuards(ThrottlerGuard)
-  async register(@Body() registerDto: RegisterDto) {
-    return this.authService.register(registerDto);
+  async register(
+    @Body() registerDto: RegisterDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    // IP and user agent are kept with the legal acceptances (CGU, 18+ declaration...)
+    return this.authService.register(registerDto, { ipAddress: ip, userAgent });
   }
 
   @Post('login')

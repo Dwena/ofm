@@ -1,35 +1,24 @@
-import { IsString, IsUUID, IsOptional, IsNotEmpty } from 'class-validator';
+import { IsUUID } from 'class-validator';
+import { OneTimePaymentDto } from '../../payments/dto/payments.dto';
 
-export class SubscribeDto {
+/**
+ * Payment options (saved card, billing country, withdrawal waiver) are those
+ * of any purchase: see OneTimePaymentDto
+ */
+export class SubscribeDto extends OneTimePaymentDto {
   @IsUUID()
   tierId: string;
-
-  // Saved card to charge right away; otherwise the client confirms the payment with Stripe Elements
-  @IsString()
-  @IsOptional()
-  paymentMethodId?: string;
 }
 
 export class ConfirmSubscriptionDto {
-  @IsString()
-  @IsNotEmpty()
-  stripeSubscriptionId: string;
+  @IsUUID()
+  transactionId: string;
 }
 
-export class ChangeTierDto {
+export class ChangeTierDto extends OneTimePaymentDto {
   @IsUUID()
   tierId: string;
-
-  // Free → paid only (a new Stripe subscription is created): saved card to charge
-  // right away. Paid → paid changes charge the card attached to the subscription.
-  @IsString()
-  @IsOptional()
-  paymentMethodId?: string;
 }
 
-export class RetryPaymentDto {
-  // Saved card to pay with (it becomes the subscription's card); defaults to the current one
-  @IsString()
-  @IsOptional()
-  paymentMethodId?: string;
-}
+/** Paying a past-due subscription (or re-subscribing): saved card, or the provider's page */
+export class RetryPaymentDto extends OneTimePaymentDto {}

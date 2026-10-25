@@ -20,6 +20,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: any = 'Internal server error';
     let errors: any = null;
+    // Machine-readable reason, e.g. BadRequestException({ code: 'BILLING_COUNTRY_REQUIRED', message })
+    let code: string | null = null;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -28,14 +30,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       if (typeof exceptionResponse === 'object') {
         message = (exceptionResponse as any).message || exception.message;
         errors = (exceptionResponse as any).errors;
+        code = typeof (exceptionResponse as any).code === 'string' ? (exceptionResponse as any).code : null;
       } else {
         message = exceptionResponse;
       }
-    } else if ((exception as { type?: string })?.type === 'StripeAuthenticationError') {
-      // Missing or placeholder Stripe secret key (local stack)
-      status = HttpStatus.SERVICE_UNAVAILABLE;
-      message = 'Payments are not configured';
-      this.logger.error(`Stripe authentication failed: ${(exception as Error).message}`);
     } else if (exception instanceof Error) {
       // Keep internal details (Prisma queries, stack paths) in the logs only
       this.logger.error(
@@ -51,6 +49,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       path: request.url,
       method: request.method,
       message,
+      ...(code && { code }),
       ...(errors && { errors }),
     };
 

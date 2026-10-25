@@ -187,4 +187,31 @@ describe('MediaService', () => {
       await expect(service.getJobStatus('video-404', 'user-1')).rejects.toThrow(NotFoundException);
     });
   });
+
+  describe('getSignedUrl (age verification)', () => {
+    const contentFile = {
+      id: 'file-1',
+      storagePath: 'users/creator-1/content/a.jpg',
+      content: { id: 'content-1', creatorId: 'creator-1', creator: { id: 'creator-1' } },
+    };
+
+    beforeEach(() => {
+      mockPrismaService.contentFile.findUnique.mockResolvedValue(contentFile);
+      (mockStorageService as any).getSignedUrl = jest.fn().mockResolvedValue('https://signed/a.jpg');
+    });
+
+    it('refuses a viewer whose age is not verified with AGE_VERIFICATION_REQUIRED', async () => {
+      await expect(service.getSignedUrl('file-1', 'fan-1', { ageVerified: false })).rejects.toMatchObject({
+        status: 403,
+        message: 'AGE_VERIFICATION_REQUIRED',
+      });
+      expect((mockStorageService as any).getSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('lets the creator get their own media without age verification', async () => {
+      await expect(service.getSignedUrl('file-1', 'creator-1', { ageVerified: false })).resolves.toBe(
+        'https://signed/a.jpg',
+      );
+    });
+  });
 });

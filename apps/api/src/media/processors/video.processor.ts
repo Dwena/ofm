@@ -10,6 +10,7 @@ import { promisify } from 'util';
 
 import { StorageService } from '../../storage/storage.service';
 import { PrismaService } from '../../common/database/prisma.service';
+import { MediaScanService } from '../media-scan/media-scan.service';
 
 const writeFile = promisify(fs.writeFile);
 const unlink = promisify(fs.unlink);
@@ -18,6 +19,8 @@ interface VideoProcessingJob {
   key: string;
   userId: string;
   contentId?: string;
+  // ContentFile created by POST /media/upload
+  contentFileId?: string;
   originalName: string;
   mimeType: string;
   size: number;
@@ -42,6 +45,7 @@ export class VideoProcessor {
     private storageService: StorageService,
     private prisma: PrismaService,
     private configService: ConfigService,
+    private mediaScan: MediaScanService,
   ) {
     this.watermarkEnabled = this.configService.get('WATERMARK_ENABLED') === 'true';
     this.watermarkText = this.configService.get('WATERMARK_TEXT', 'FanVIP');
@@ -49,7 +53,7 @@ export class VideoProcessor {
 
   @Process('process-video')
   async processVideo(job: Job<VideoProcessingJob>) {
-    const { key, userId, contentId, originalName, mimeType, size } = job.data;
+    const { key, userId, contentId, contentFileId, originalName, mimeType, size } = job.data;
 
     this.logger.log(`Processing video: ${key}`);
 
@@ -62,6 +66,20 @@ export class VideoProcessor {
       // Download video from S3
       await this.reportProgress(job, 1);
       const videoBuffer = await this.storageService.getFile(key);
+
+      // Known-illegal-media scan before anything is derived from the file
+      const scanStatus = await this.mediaScan.scanAndRecord(videoBuffer, {
+        userId,
+        key,
+        mimeType,
+        contentFileId,
+        contentId,
+      });
+      if (scanStatus === 'FLAGGED') {
+        // Blocked and preserved as evidence: no transcode / thumbnail copies
+        return { success: false, key, flagged: true };
+      }
+
       await writeFile(inputPath, videoBuffer);
       await this.reportProgress(job, 5);
 
@@ -126,6 +144,8 @@ export class VideoProcessor {
             duration: metadata.duration,
             isEncrypted: false,
             hasWatermark: this.watermarkEnabled,
+            scanStatus,
+            scannedAt: scanStatus === 'PENDING' ? null : new Date(),
           },
         });
       }

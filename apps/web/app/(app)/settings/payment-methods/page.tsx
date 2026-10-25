@@ -1,23 +1,20 @@
 'use client'
 
-import { Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
+import BillingCountrySelect from '@/components/checkout/billing-country-select'
+import { getStoredBillingCountry, storeBillingCountry } from '@/lib/vat'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CreditCard, Plus, Trash2, AlertCircle, Shield, Loader2, ArrowLeft } from 'lucide-react'
+import { CreditCard, Trash2, Shield, Loader2, ArrowLeft } from 'lucide-react'
 import { paymentsApi } from '@/lib/api'
 import { getPaymentErrorMessage } from '@/lib/payment-errors'
 import { toast } from '@/hooks/use-toast'
 import { useConfirm } from '@/hooks/use-confirm'
-import StripePaymentElement, {
-  isStripeConfigured,
-  STRIPE_NOT_CONFIGURED_MESSAGE,
-  STRIPE_REDIRECT_PARAMS,
-} from '@/components/checkout/stripe-payment-element'
 import { usePaymentMethods, type SavedPaymentMethod } from '@/components/checkout/payment-method-picker'
 
 const BRAND_LABELS: Record<string, string> = {
@@ -31,7 +28,7 @@ const BRAND_LABELS: Record<string, string> = {
   cartes_bancaires: 'Carte Bancaire',
 }
 
-const getBrandLabel = (brand?: string) => (brand && BRAND_LABELS[brand.toLowerCase()]) || 'Carte bancaire'
+const getBrandLabel = (brand?: string | null) => (brand && BRAND_LABELS[brand.toLowerCase()]) || 'Carte bancaire'
 
 // Only same-site paths
 const safeReturnUrl = (value: string | null) =>
@@ -58,16 +55,17 @@ export default function PaymentMethodsPage() {
 }
 
 function PaymentMethods() {
-  const router = useRouter()
-  const pathname = usePathname()
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
   const { confirm } = useConfirm()
-  const stripeReady = isStripeConfigured()
-  // e.g. /subscriptions, to pay a past-due subscription with the new card
+  // e.g. /subscriptions
   const returnUrl = safeReturnUrl(searchParams.get('returnUrl'))
-  const [showAddForm, setShowAddForm] = useState(false)
-  const handledParams = useRef(false)
+  const [country, setCountry] = useState('FR')
+
+  useEffect(() => {
+    const stored = getStoredBillingCountry()
+    if (stored) setCountry(stored)
+  }, [])
 
   const { data: paymentMethods, isLoading, isError, refetch } = usePaymentMethods()
 
@@ -79,16 +77,8 @@ function PaymentMethods() {
     })
   }
 
-  // Setup intent backing the Stripe Elements form
-  const setupIntentMutation = useMutation({
-    mutationFn: async () => {
-      const response = await paymentsApi.createSetupIntent()
-      return response.data as { clientSecret: string }
-    },
-  })
-
   const setDefaultMutation = useMutation({
-    mutationFn: (paymentMethodId: string) => paymentsApi.setDefaultPaymentMethod(paymentMethodId),
+    mutationFn: (paymentCardId: string) => paymentsApi.setDefaultPaymentMethod(paymentCardId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['payment-methods'] })
       toast({ title: 'Carte par défaut mise à jour' })
@@ -97,7 +87,7 @@ function PaymentMethods() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (paymentMethodId: string) => paymentsApi.deletePaymentMethod(paymentMethodId),
+    mutationFn: (paymentCardId: string) => paymentsApi.deletePaymentMethod(paymentCardId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['payment-methods'] })
       toast({ title: 'Moyen de paiement supprimé' })
@@ -105,58 +95,17 @@ function PaymentMethods() {
     onError,
   })
 
-  const openAddForm = () => {
-    setShowAddForm(true)
-    if (stripeReady) setupIntentMutation.mutate()
+  const countryMutation = useMutation({
+    mutationFn: (value: string) => paymentsApi.setBillingCountry(value),
+    onSuccess: () => toast({ title: 'Pays de résidence enregistré' }),
+    onError,
+  })
+
+  const handleCountryChange = (value: string) => {
+    setCountry(value)
+    storeBillingCountry(value)
+    countryMutation.mutate(value)
   }
-
-  const closeAddForm = () => {
-    setShowAddForm(false)
-    setupIntentMutation.reset()
-  }
-
-  const cardSaved = () => {
-    queryClient.invalidateQueries({ queryKey: ['payment-methods'] })
-    toast({
-      title: 'Carte ajoutée',
-      description: returnUrl
-        ? 'Votre carte a été enregistrée. Vous pouvez maintenant l’utiliser pour régler votre paiement.'
-        : 'Votre carte a été enregistrée avec succès.',
-    })
-    if (returnUrl) router.push(returnUrl)
-  }
-
-  const handleCardSaved = () => {
-    closeAddForm()
-    cardSaved()
-  }
-
-  // ?add=1 opens the form; back from a Stripe redirect (3D Secure) after saving a card
-  useEffect(() => {
-    if (handledParams.current) return
-    handledParams.current = true
-
-    const redirectStatus = searchParams.get('redirect_status')
-    if (searchParams.get('setup_intent') && redirectStatus) {
-      const params = new URLSearchParams(searchParams.toString())
-      STRIPE_REDIRECT_PARAMS.forEach((param) => params.delete(param))
-      router.replace(params.toString() ? `${pathname}?${params.toString()}` : pathname)
-
-      if (redirectStatus === 'succeeded' || redirectStatus === 'processing') {
-        cardSaved()
-      } else {
-        toast({
-          title: 'Carte non enregistrée',
-          description: 'La vérification de la carte a échoué. Veuillez réessayer.',
-          variant: 'destructive',
-        })
-      }
-      return
-    }
-
-    if (searchParams.get('add') === '1') openAddForm()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   const handleDelete = async (method: SavedPaymentMethod) => {
     const label = `${getBrandLabel(method.brand)} •••• ${method.last4}`
@@ -187,23 +136,27 @@ function PaymentMethods() {
         <p className="text-muted-foreground">Gérez vos cartes bancaires et votre carte par défaut</p>
       </div>
 
-      {stripeReady ? (
-        <Alert>
-          <Shield className="h-4 w-4" />
-          <AlertDescription>
-            <p className="font-medium">Paiements sécurisés par Stripe</p>
-            <p className="text-sm mt-1">
-              Vos informations de paiement sont chiffrées et conservées par Stripe. Nous ne stockons jamais le
-              numéro complet de votre carte.
-            </p>
-          </AlertDescription>
-        </Alert>
-      ) : (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{STRIPE_NOT_CONFIGURED_MESSAGE}</AlertDescription>
-        </Alert>
-      )}
+      <Alert>
+        <Shield className="h-4 w-4" />
+        <AlertDescription>
+          <p className="font-medium">Paiements sécurisés par notre prestataire de paiement</p>
+          <p className="text-sm mt-1">
+            Votre carte est saisie sur la page sécurisée du prestataire lors d’un premier paiement, puis enregistrée
+            chez lui pour vos achats suivants et les renouvellements de vos abonnements. Nous ne voyons ni ne stockons
+            jamais le numéro de votre carte.
+          </p>
+        </AlertDescription>
+      </Alert>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Pays de résidence</CardTitle>
+          <CardDescription>Il détermine le taux de TVA ajouté à vos paiements.</CardDescription>
+        </CardHeader>
+        <CardContent className="max-w-sm">
+          <BillingCountrySelect value={country} onChange={handleCountryChange} />
+        </CardContent>
+      </Card>
 
       {/* Payment Methods List */}
       <div className="space-y-4">
@@ -284,76 +237,15 @@ function PaymentMethods() {
           <Card>
             <CardContent className="py-12 text-center">
               <CreditCard className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-              <p className="text-muted-foreground mb-4">Aucun moyen de paiement enregistré</p>
-              {!showAddForm && (
-                <Button onClick={openAddForm} disabled={!stripeReady}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Ajouter une carte
-                </Button>
-              )}
+              <p className="text-muted-foreground mb-1">Aucune carte enregistrée</p>
+              <p className="text-sm text-muted-foreground">
+                Votre carte sera enregistrée lors de votre prochain paiement.
+              </p>
             </CardContent>
           </Card>
         )}
 
-        {paymentMethods && paymentMethods.length > 0 && !showAddForm && (
-          <Button onClick={openAddForm} className="w-full" disabled={!stripeReady}>
-            <Plus className="h-4 w-4 mr-2" />
-            Ajouter une carte
-          </Button>
-        )}
       </div>
-
-      {/* Add Payment Method Form */}
-      {showAddForm && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Ajouter une carte</CardTitle>
-            <CardDescription>Votre carte est vérifiée et enregistrée par Stripe en toute sécurité</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!stripeReady ? (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{STRIPE_NOT_CONFIGURED_MESSAGE}</AlertDescription>
-              </Alert>
-            ) : setupIntentMutation.data?.clientSecret ? (
-              <StripePaymentElement
-                clientSecret={setupIntentMutation.data.clientSecret}
-                mode="setup"
-                submitLabel="Enregistrer la carte"
-                onSuccess={handleCardSaved}
-                onCancel={closeAddForm}
-              />
-            ) : setupIntentMutation.isError ? (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  {getPaymentErrorMessage(
-                    setupIntentMutation.error,
-                    'Impossible d’initialiser le formulaire de paiement. Veuillez réessayer.',
-                  )}
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <div className="flex justify-center py-6">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-            )}
-          </CardContent>
-          {(setupIntentMutation.isError || !stripeReady) && (
-            <CardFooter className="flex justify-end gap-2">
-              <Button variant="outline" onClick={closeAddForm}>
-                Annuler
-              </Button>
-              {stripeReady && (
-                <Button onClick={() => setupIntentMutation.mutate()} disabled={setupIntentMutation.isPending}>
-                  Réessayer
-                </Button>
-              )}
-            </CardFooter>
-          )}
-        </Card>
-      )}
 
       {/* Billing History Link */}
       <Card>

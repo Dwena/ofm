@@ -523,9 +523,10 @@ export default function CreatorProfilePage() {
                     <div className="flex items-start gap-3">
                       <Shield className="h-5 w-5 text-primary mt-0.5 shrink-0" />
                       <div>
-                        <h4 className="font-medium">Paiements sécurisés par Stripe</h4>
+                        <h4 className="font-medium">Paiements sécurisés</h4>
                         <p className="text-sm text-muted-foreground mt-1">
-                          Tous les paiements sont traités de manière sécurisée par Stripe.
+                          Les paiements des fans sont traités par notre prestataire de paiement ; vos gains vous sont
+                          versés par virement bancaire.
                         </p>
                       </div>
                     </div>

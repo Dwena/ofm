@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, InputProps } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { BRAND_NAME, Logo } from '@/components/brand/logo'
+import { SiteFooter } from '@/components/site-footer'
 
 export interface PublicSettings {
   registrationOpen: boolean
@@ -85,7 +86,7 @@ export function AuthShell({
   loading?: boolean
 }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800 p-4">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800 p-4">
       <Card className="w-full max-w-md shadow-2xl border-2">
         <CardHeader className="space-y-1 pb-6">
           <div className="flex items-center justify-center mb-2">
@@ -106,6 +107,9 @@ export function AuthShell({
           children
         )}
       </Card>
+      <footer className="mt-6 w-full max-w-md">
+        <SiteFooter compact />
+      </footer>
     </div>
   )
 }
@@ -232,6 +236,10 @@ const ERROR_TRANSLATIONS: Record<string, string> = {
   'Username can only contain letters, numbers, underscores and hyphens':
     "Le nom d'utilisateur ne peut contenir que des lettres, chiffres, tirets et underscores.",
   'Invalid role': 'Type de compte invalide.',
+  'You must accept the terms of use and the privacy policy':
+    'Vous devez accepter les CGU et la Politique de confidentialité.',
+  'You must certify that you are at least 18 years old': 'Vous devez certifier avoir 18 ans ou plus.',
+  'You must accept the creator terms': 'Vous devez accepter les Conditions créateurs.',
   'email must be an email': 'Adresse e-mail invalide.',
   'Invalid or expired verification token': 'Ce lien de vérification est invalide ou a expiré.',
   'Invalid or expired reset token': 'Ce lien de réinitialisation est invalide ou a expiré.',

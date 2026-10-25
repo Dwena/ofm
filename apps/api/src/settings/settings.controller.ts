@@ -53,6 +53,7 @@ export class PublicSettingsController {
       // Shown on the landing page (pricing explanation)
       platformFeePercentage: settings.platformFeePercentage,
       minimumPayoutAmount: settings.minimumPayoutAmount,
+      earningsHoldDays: settings.earningsHoldDays,
     };
   }
 }

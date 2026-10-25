@@ -9,9 +9,12 @@
  * list of accounts and what each one is meant to test.
  *
  * Media point to public demo URLs (picsum.photos, MDN CC0 samples), so the
- * feed works without MinIO/S3. Stripe IDs are left empty except when
- * SEED_STRIPE_ACCOUNT_ID is set (a Stripe *test* connected account id), which
- * is then assigned to the main creator so paid flows can be tried end to end.
+ * feed works without MinIO/S3. Payments go through the local payment
+ * simulator (PAYMENT_PROVIDER=fake): demo fans have a saved test card, demo
+ * creators are identity-verified and Alice / Claire have a complete tax profile
+ * (IBAN encrypted with DATA_ENCRYPTION_KEY, which must match the API's).
+ * Amounts follow the platform rules: prices excluding VAT, French VAT (20 %)
+ * on top, 15 % fee, creator share credited on the balance ledger.
  */
 import {
   ContentStatus,
@@ -33,6 +36,9 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 import { formatGoalAmount } from '../src/streaming/live-tips.service';
+import { encryptValue } from '../src/common/utils/crypto';
+import { LEGAL_VERSIONS, REQUIRED_FOR_ALL, REQUIRED_FOR_CREATORS } from '../src/legal/legal-versions';
+import { SELF_BILLING_DOCUMENT, SELF_BILLING_MANDATE_VERSION } from '../src/tax/tax.constants';
 import { DEFAULT_OVERLAY_SETTINGS, OVERLAY_WIDGET_SLUGS, OVERLAY_WIDGETS } from '../src/overlays/overlay-settings';
 
 const prisma = new PrismaClient();
@@ -77,10 +83,23 @@ const sample = <T>(items: T[], count: number): T[] => {
 };
 
 const money = (value: number) => Math.round(value * 100) / 100;
+/** Split of a payment of a fan living in France: price excl. VAT, 20 % VAT on top, fee and creator share */
 const fees = (amount: number) => {
   const platformFee = money((amount * PLATFORM_FEE_PERCENTAGE) / 100);
-  return { platformFee, netAmount: money(amount - platformFee) };
+  const vatAmount = money(amount * 0.2);
+  return {
+    platformFee,
+    netAmount: money(amount - platformFee),
+    vatRate: 20,
+    vatAmount,
+    totalAmount: money(amount + vatAmount),
+    taxCountry: 'FR',
+    provider: 'fake',
+  };
 };
+
+/** Days earnings stay on hold before payout (platform setting earningsHoldDays) */
+const EARNINGS_HOLD_DAYS = 7;
 
 const image = (seed: string, width = 1080, height = 1350) =>
   `https://picsum.photos/seed/ofm-${seed}/${width}/${height}`;
@@ -127,7 +146,7 @@ interface UserSeed {
   createdAt?: Date;
   lastLoginAt?: Date;
   twoFactorSecret?: string;
-  stripeAccountId?: string;
+  dateOfBirth?: Date;
   bannedAt?: Date;
   banReason?: string;
   suspendedUntil?: Date;
@@ -169,8 +188,9 @@ async function createUser(seed: UserSeed) {
       kycVerifiedAt: isCreator && (seed.kycStatus ?? KycStatus.VERIFIED) === KycStatus.VERIFIED ? createdAt : null,
       twoFactorEnabled: !!seed.twoFactorSecret,
       twoFactorSecret: seed.twoFactorSecret,
-      stripeAccountId: seed.stripeAccountId,
-      stripeOnboarded: !!seed.stripeAccountId,
+      // Creators are adults whose identity was checked (KYC); fans pay VAT of France
+      dateOfBirth: seed.dateOfBirth ?? (isCreator ? new Date('1994-06-15') : null),
+      billingCountry: isSubscriber ? 'FR' : null,
       bannedAt: seed.bannedAt,
       banReason: seed.banReason,
       suspendedUntil: seed.suspendedUntil,
@@ -250,7 +270,7 @@ async function main() {
     location: 'Paris, France',
     website: 'https://alice-martin.example.com',
     createdAt: daysAgo(240),
-    stripeAccountId: process.env.SEED_STRIPE_ACCOUNT_ID || undefined,
+    dateOfBirth: new Date('1995-04-12'),
     creatorProfile: {
       welcomeMessage: 'Merci de ton abonnement ! N’hésite pas à m’écrire 💌',
       minimumTip: 2,
@@ -793,10 +813,10 @@ async function main() {
       toUserId: fans[0].id,
       type: TransactionType.REFUND,
       status: TransactionStatus.COMPLETED,
+      // Refund of the whole payment: price, VAT, and the creator share taken back
       amount: 24.99,
-      platformFee: 0,
-      netAmount: 24.99,
-      metadata: { kind: 'REFUND', reason: 'Double prélèvement' },
+      ...fees(24.99),
+      metadata: { kind: 'REFUND', reason: 'Double prélèvement', refundType: 'full' },
       processedAt: daysAgo(38),
       createdAt: daysAgo(38),
     },
@@ -1067,12 +1087,12 @@ async function main() {
   });
   await prisma.dispute.create({
     data: {
-      stripeDisputeId: 'dp_seed_demo_0001',
+      providerDisputeId: 'chargeback_seed_demo_0001',
       transactionId: disputed.id,
-      amount: 5000, // cents, as sent by Stripe
-      currency: 'eur',
+      amount: Number(disputed.totalAmount), // euros, VAT included
+      currency: 'EUR',
       reason: 'fraudulent',
-      status: 'needs_response',
+      status: 'lost',
       evidenceDueBy: daysFromNow(10),
       createdAt: daysAgo(4),
     },
@@ -1095,6 +1115,138 @@ async function main() {
       { creatorId: bob.id, status: PayoutStatus.COMPLETED, amount: share(bob.id, 0.4), destinationType: 'bank_account', destination: '1881', requestedAt: daysAgo(30), processedAt: daysAgo(29), paidAt: daysAgo(27), createdAt: daysAgo(30) },
       { creatorId: bob.id, status: PayoutStatus.PENDING, amount: share(bob.id, 0.2), destinationType: 'bank_account', destination: '1881', requestedAt: daysAgo(0, 3), createdAt: daysAgo(0, 3) },
     ],
+  });
+
+  // ---------- Creator balance ledger ----------
+  console.log('📒 Soldes créateurs');
+  const sales = await prisma.transaction.findMany({
+    where: {
+      type: { in: [TransactionType.SUBSCRIPTION, TransactionType.TIP, TransactionType.PPV_UNLOCK] },
+      status: { in: [TransactionStatus.COMPLETED, TransactionStatus.REFUNDED, TransactionStatus.DISPUTED, TransactionStatus.PARTIALLY_REFUNDED] },
+      toUserId: { not: null },
+    },
+  });
+  const holdUntil = (date: Date) => new Date(date.getTime() + EARNINGS_HOLD_DAYS * 24 * 60 * 60 * 1000);
+  const ledger: Prisma.CreatorBalanceEntryCreateManyInput[] = [];
+  for (const sale of sales) {
+    const paidAt = sale.processedAt ?? sale.createdAt;
+    ledger.push({ creatorId: sale.toUserId!, type: 'EARNING', amount: sale.netAmount, transactionId: sale.id, availableAt: holdUntil(paidAt), createdAt: paidAt });
+    if (sale.status === TransactionStatus.REFUNDED || sale.status === TransactionStatus.DISPUTED) {
+      ledger.push({
+        creatorId: sale.toUserId!,
+        type: sale.status === TransactionStatus.REFUNDED ? 'REFUND' : 'CHARGEBACK',
+        amount: -Number(sale.netAmount),
+        transactionId: sale.id,
+        description: sale.status === TransactionStatus.REFUNDED ? 'Remboursement' : 'Contestation bancaire',
+        availableAt: holdUntil(paidAt),
+        createdAt: daysAgo(4),
+      });
+    }
+  }
+  for (const payout of await prisma.payout.findMany()) {
+    ledger.push({ creatorId: payout.creatorId, type: 'PAYOUT', amount: -Number(payout.amount), payoutId: payout.id, description: 'Virement', availableAt: payout.createdAt, createdAt: payout.createdAt });
+    if (payout.status === PayoutStatus.FAILED) {
+      ledger.push({ creatorId: payout.creatorId, type: 'PAYOUT_REVERSAL', amount: payout.amount, payoutId: payout.id, description: `Virement rejeté : ${payout.failureReason}`, availableAt: payout.failedAt ?? payout.createdAt, createdAt: payout.failedAt ?? payout.createdAt });
+    }
+  }
+  await prisma.creatorBalanceEntry.createMany({ data: ledger });
+
+  // ---------- Saved test cards (payment simulator) ----------
+  console.log('💳 Cartes de test');
+  const fanAccounts = [david, sophie, lucas, ...fans];
+  await prisma.paymentCard.createMany({
+    data: fanAccounts.map((fan, index) => ({
+      userId: fan.id,
+      provider: 'fake',
+      providerToken: `fake_card_seed_${index}_4242`,
+      brand: 'visa',
+      last4: '4242',
+      expMonth: 12,
+      expYear: new Date().getFullYear() + 3,
+      country: 'FR',
+      isDefault: true,
+    })),
+  });
+  // Sophie also has a card the simulator declines (failed renewals)
+  await prisma.paymentCard.create({
+    data: { userId: sophie.id, provider: 'fake', providerToken: 'fake_card_seed_sophie_0002', brand: 'mastercard', last4: '0002', expMonth: 6, expYear: new Date().getFullYear() + 1, country: 'FR' },
+  });
+
+  // ---------- Tax profiles (DAC7) and legal acceptances ----------
+  console.log('🧾 Profils fiscaux et consentements');
+  const iban = (value: string) =>
+    process.env.DATA_ENCRYPTION_KEY ? { ibanEncrypted: encryptValue(value), ibanLast4: value.slice(-4) } : {};
+  await prisma.creatorTaxProfile.create({
+    data: {
+      userId: alice.id,
+      entityType: 'individual',
+      firstName: 'Alice',
+      lastName: 'Martin',
+      dateOfBirth: new Date('1995-04-12'),
+      placeOfBirth: 'Paris',
+      vatRegime: 'franchise',
+      addressLine1: '12 rue de la Paix',
+      postalCode: '75002',
+      city: 'Paris',
+      country: 'FR',
+      taxIdentificationNumber: '1234567890123',
+      tinCountry: 'FR',
+      accountHolderName: 'Alice Martin',
+      ...iban('FR7630006000011234567890189'),
+      selfBillingAcceptedAt: daysAgo(200),
+      completedAt: process.env.DATA_ENCRYPTION_KEY ? daysAgo(200) : null,
+    },
+  });
+  await prisma.creatorTaxProfile.create({
+    data: {
+      userId: claire.id,
+      entityType: 'company',
+      companyName: 'Claire Rousseau Pâtisserie',
+      companyRegistrationNumber: '443061841',
+      vatNumber: 'FR64443061841',
+      vatRegime: 'subject',
+      addressLine1: '8 cours de l’Intendance',
+      postalCode: '33000',
+      city: 'Bordeaux',
+      country: 'FR',
+      taxIdentificationNumber: '2234567890123',
+      tinCountry: 'FR',
+      accountHolderName: 'Claire Rousseau Patisserie',
+      ...iban('FR7610107001011234567890129'),
+      selfBillingAcceptedAt: daysAgo(140),
+      completedAt: process.env.DATA_ENCRYPTION_KEY ? daysAgo(140) : null,
+    },
+  });
+  // Bob has sales but no bank details yet: payouts blocked, DAC7 reminders
+  await prisma.creatorTaxProfile.create({
+    data: {
+      userId: bob.id,
+      firstName: 'Bob',
+      lastName: 'Dupont',
+      country: 'FR',
+      reminderCount: 1,
+      lastReminderAt: daysAgo(10),
+    },
+  });
+
+  const allUsers = await prisma.user.findMany({ select: { id: true, role: true, createdAt: true } });
+  await prisma.legalAcceptance.createMany({
+    data: allUsers.flatMap((user) =>
+      [...REQUIRED_FOR_ALL, ...(user.role === UserRole.CREATOR ? REQUIRED_FOR_CREATORS : [])].map((document) => ({
+        userId: user.id,
+        document,
+        version: LEGAL_VERSIONS[document],
+        acceptedAt: user.createdAt,
+      })),
+    ),
+  });
+  await prisma.legalAcceptance.createMany({
+    data: [alice, claire].map((creator) => ({
+      userId: creator.id,
+      document: SELF_BILLING_DOCUMENT,
+      version: SELF_BILLING_MANDATE_VERSION,
+      acceptedAt: daysAgo(140),
+    })),
   });
 
   // ---------- Likes & comments ----------
@@ -1310,6 +1462,23 @@ async function main() {
     })),
   });
 
+  // ---------- Moderation state (identity checks, review before publication, media scan) ----------
+  // Demo creators passed a manual identity review; published and scheduled
+  // content went through the moderators' review; demo media were not scanned
+  await prisma.user.updateMany({ where: { role: UserRole.CREATOR, kycStatus: KycStatus.VERIFIED }, data: { kycProvider: 'manual' } });
+  for (const content of await prisma.content.findMany({
+    where: { OR: [{ status: ContentStatus.PUBLISHED }, { status: ContentStatus.DRAFT, scheduledFor: { not: null } }] },
+    select: { id: true, createdAt: true, isModerated: true },
+  })) {
+    await prisma.content.update({
+      where: { id: content.id },
+      data: { isModerated: true, moderatedAt: content.createdAt, submittedForReviewAt: content.createdAt, soloContent: true },
+    });
+  }
+  await prisma.content.updateMany({ where: { status: ContentStatus.UNDER_REVIEW }, data: { submittedForReviewAt: daysAgo(1) } });
+  await prisma.contentFile.updateMany({ data: { scanStatus: 'SKIPPED' } });
+  await prisma.story.updateMany({ data: { scanStatus: 'SKIPPED' } });
+
   // ---------- Derived counters ----------
   console.log('🧮 Compteurs');
   for (const content of await prisma.content.findMany({ select: { id: true } })) {
@@ -1324,25 +1493,25 @@ async function main() {
     const [totalSubscribers, totalContent, earnings] = await Promise.all([
       prisma.subscription.count({ where: { status: SubscriptionStatus.ACTIVE, tier: { creatorId: creator.id } } }),
       prisma.content.count({ where: { creatorId: creator.id, status: ContentStatus.PUBLISHED, deletedAt: null } }),
-      prisma.transaction.aggregate({
-        where: { toUserId: creator.id, status: TransactionStatus.COMPLETED, type: { in: [TransactionType.SUBSCRIPTION, TransactionType.TIP, TransactionType.PPV_UNLOCK] } },
-        _sum: { netAmount: true },
+      prisma.creatorBalanceEntry.aggregate({
+        where: { creatorId: creator.id, type: { in: ['EARNING', 'REFUND', 'CHARGEBACK', 'CHARGEBACK_REVERSAL'] } },
+        _sum: { amount: true },
       }),
     ]);
     await prisma.creatorProfile.update({
       where: { userId: creator.id },
-      data: { totalSubscribers, totalContent, totalEarnings: earnings._sum.netAmount ?? 0 },
+      data: { totalSubscribers, totalContent, totalEarnings: earnings._sum.amount ?? 0 },
     });
   }
 
   for (const profile of await prisma.subscriberProfile.findMany({ select: { userId: true } })) {
     const [spent, totalSubscriptions] = await Promise.all([
-      prisma.transaction.aggregate({ where: { fromUserId: profile.userId, status: TransactionStatus.COMPLETED, type: { not: TransactionType.REFUND } }, _sum: { amount: true } }),
+      prisma.transaction.aggregate({ where: { fromUserId: profile.userId, status: TransactionStatus.COMPLETED, type: { not: TransactionType.REFUND } }, _sum: { totalAmount: true } }),
       prisma.subscription.count({ where: { subscriberId: profile.userId, status: SubscriptionStatus.ACTIVE } }),
     ]);
     await prisma.subscriberProfile.update({
       where: { userId: profile.userId },
-      data: { totalSpent: spent._sum.amount ?? 0, totalSubscriptions },
+      data: { totalSpent: spent._sum.totalAmount ?? 0, totalSubscriptions },
     });
   }
 
@@ -1367,8 +1536,9 @@ async function main() {
   OVERLAY_WIDGETS.forEach((widget) =>
     console.log(`  ${webUrl}/overlay/${SEED_OVERLAY_TOKEN}/${OVERLAY_WIDGET_SLUGS[widget]}`),
   );
-  if (!process.env.SEED_STRIPE_ACCOUNT_ID) {
-    console.log('\nℹ️  SEED_STRIPE_ACCOUNT_ID non défini : les créateurs n’ont pas de compte Stripe Connect (paiements payants à configurer).');
+  console.log('\n💳 Paiements : simulateur local (PAYMENT_PROVIDER=fake). Cartes de test : 4242 acceptée, 0002 refusée.');
+  if (!process.env.DATA_ENCRYPTION_KEY) {
+    console.log('ℹ️  DATA_ENCRYPTION_KEY non défini : les profils fiscaux de démo n’ont pas d’IBAN (virements impossibles).');
   }
 }
 

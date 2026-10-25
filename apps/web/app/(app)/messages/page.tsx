@@ -23,6 +23,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import OneTimeCheckout from '@/components/checkout/one-time-checkout'
+import { AgeGatedMedia } from '@/components/age-verification/age-gated-media'
+import { getStoredAgeToken } from '@/lib/age-verification'
 import {
   ArrowLeft,
   Check,
@@ -42,6 +44,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import { useAuth } from '@/contexts/auth-context'
 import { toast } from '@/hooks/use-toast'
+import { formatFanPrice } from '@/lib/vat'
 import { formatEuros } from '@/lib/utils'
 
 interface Participant {
@@ -72,6 +75,8 @@ interface Conversation {
 
 interface Message extends SocketMessage {
   sender?: Participant
+  /** Attachment withheld until the viewer's age is verified */
+  ageVerificationRequired?: boolean
 }
 
 interface MessagesPage {
@@ -420,9 +425,13 @@ function MessagesView() {
       }))
     }
 
-    const offNew = onNewMessage((message) => {
+    const offNew = onNewMessage((message: Message) => {
       touchConversation(message.senderId, message, true)
       appendMessage(message.senderId, message)
+      // Real-time pushes only know the account's verification: reload with this browser's age token
+      if (message.ageVerificationRequired && getStoredAgeToken()) {
+        queryClient.invalidateQueries({ queryKey: ['messages', message.senderId] })
+      }
       // Received while typing: the indicator is over
       setTypingUsers((prev) => {
         if (!prev.has(message.senderId)) return prev
@@ -1050,21 +1059,19 @@ function MessagesView() {
           <DialogHeader>
             <DialogTitle>Débloquer ce message</DialogTitle>
             <DialogDescription>
-              Paiement unique de {formatEuros(unlockTarget?.ppvPrice ?? 0)} à{' '}
+              Paiement unique de {formatEuros(unlockTarget?.ppvPrice ?? 0)} HT à{' '}
               {selectedConversation ? nameOf(selectedConversation.participant) : 'ce créateur'}.
             </DialogDescription>
           </DialogHeader>
           {unlockTarget && (
             <OneTimeCheckout
-              kind="ppv"
+              kind="message"
               compact
               amount={Number(unlockTarget.ppvPrice ?? 0)}
               description={`Message privé de @${selectedConversation?.participant.username ?? ''}`}
-              start={async (paymentMethodId) =>
-                (await messagesApi.unlockMessage(unlockTarget.id, paymentMethodId)).data
-              }
-              confirm={async (paymentIntentId) =>
-                (await messagesApi.confirmUnlockMessage(unlockTarget.id, paymentIntentId)).data
+              start={async (options) => (await messagesApi.unlockMessage(unlockTarget.id, options)).data}
+              confirm={async (transactionId) =>
+                (await messagesApi.confirmUnlockMessage(unlockTarget.id, transactionId)).data
               }
               successDelay={1500}
               onSuccess={handleUnlocked}
@@ -1208,12 +1215,16 @@ function MessageBubble({
               </div>
             </div>
             <Button size="sm" className="w-full" onClick={onUnlock}>
-              Débloquer pour {formatEuros(message.ppvPrice ?? 0)}
+              Débloquer pour {formatFanPrice(message.ppvPrice ?? 0)}
             </Button>
           </div>
         ) : (
           <>
-            {message.hasAttachment && attachmentUrl && (
+            {message.ageVerificationRequired ? (
+              <div className="p-2">
+                <AgeGatedMedia compact className="min-w-[220px]" label="Média réservé aux adultes" />
+              </div>
+            ) : message.hasAttachment && attachmentUrl && (
               isVideo ? (
                 <video src={attachmentUrl} controls className="max-w-full max-h-80 bg-black" />
               ) : (

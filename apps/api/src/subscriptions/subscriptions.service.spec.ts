@@ -1,10 +1,6 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { SubscriptionsService } from './subscriptions.service';
-import { PrismaService } from '../common/database/prisma.service';
-import { PaymentsService } from '../payments/payments.service';
-import { StripeService } from '../payments/stripe.service';
-import { SubscriptionSyncService } from '../payments/subscription-sync.service';
+import { BillingService } from '../payments/billing.service';
 
 describe('SubscriptionsService', () => {
   let service: SubscriptionsService;
@@ -12,12 +8,14 @@ describe('SubscriptionsService', () => {
   const mockPrismaService = {
     subscriptionTier: {
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
     },
     transaction: {
       groupBy: jest.fn(),
+      findUnique: jest.fn(),
     },
     subscription: {
       count: jest.fn(),
@@ -25,7 +23,6 @@ describe('SubscriptionsService', () => {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
-      upsert: jest.fn(),
       update: jest.fn(),
     },
     user: {
@@ -33,28 +30,17 @@ describe('SubscriptionsService', () => {
     },
   };
 
-  const mockPaymentsService = {
-    getOrCreateCustomerId: jest.fn(),
-    assertPaymentMethodOwnership: jest.fn(),
+  const mockBilling = {
+    startSubscriptionPayment: jest.fn(),
+    getRenewalPrice: jest.fn(),
   };
 
-  const mockStripeService = {
-    createProduct: jest.fn(),
-    createPrice: jest.fn(),
-    createTierSubscription: jest.fn(),
-    retrieveSubscription: jest.fn(),
-    setCancelAtPeriodEnd: jest.fn(),
-    cancelSubscription: jest.fn(),
-    updateTierSubscription: jest.fn(),
-    listIncompleteSubscriptions: jest.fn(),
-    setSubscriptionPaymentMethod: jest.fn(),
-    payInvoice: jest.fn(),
+  const mockPaymentFlow = {
+    confirmPayment: jest.fn(),
   };
 
   const mockSubscriptionSync = {
-    syncFromStripe: jest.fn(),
     refreshCreatorSubscriberCount: jest.fn(),
-    notifyNewSubscriber: jest.fn(),
     activateFreeSubscription: jest.fn(),
   };
 
@@ -70,68 +56,88 @@ describe('SubscriptionsService', () => {
     currency: 'EUR',
     interval: 'month',
     isActive: true,
-    stripePriceId: null,
-    stripeProductId: null,
-    creator: {
-      id: creatorId,
-      username: 'creator',
-      stripeAccountId: 'acct_123',
-      stripeOnboarded: true,
-    },
+    creator: { id: creatorId, username: 'creator' },
   };
-
+  const premiumTier = { ...paidTier, id: 'tier-vip', name: 'VIP', price: 19.99 };
+  const basicTier = { ...paidTier, id: 'tier-basic', name: 'Basic', price: 4.99 };
   const freeTier = { ...paidTier, id: 'tier-free', name: 'Free', price: 0 };
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        SubscriptionsService,
-        { provide: PrismaService, useValue: mockPrismaService },
-        { provide: PaymentsService, useValue: mockPaymentsService },
-        { provide: StripeService, useValue: mockStripeService },
-        { provide: SubscriptionSyncService, useValue: mockSubscriptionSync },
-      ],
-    }).compile();
+  const payment = (overrides: Record<string, unknown> = {}): any => ({
+    status: 'requires_redirect',
+    completed: false,
+    transactionId: 'tx-1',
+    redirectUrl: 'https://provider/pay',
+    amount: 9.99,
+    vatRate: 20,
+    vatAmount: 2,
+    totalAmount: 11.99,
+    failureReason: null,
+    ...overrides,
+  });
+  const completed = () => payment({ status: 'completed', completed: true, redirectUrl: null });
 
-    service = module.get<SubscriptionsService>(SubscriptionsService);
+  const periodStart = new Date('2026-10-01T00:00:00Z');
+  const periodEnd = new Date('2026-10-31T00:00:00Z');
 
+  const ownSubscription = (overrides: Record<string, unknown> = {}): any => ({
+    id: 'sub-1',
+    subscriberId: userId,
+    tierId: paidTier.id,
+    tier: paidTier,
+    status: 'ACTIVE',
+    cancelAtPeriodEnd: false,
+    pendingTierId: null,
+    paymentCardId: 'card-sub',
+    currentPeriodStart: periodStart,
+    currentPeriodEnd: periodEnd,
+    ...overrides,
+  });
+
+  beforeEach(() => {
     jest.resetAllMocks();
-    mockStripeService.listIncompleteSubscriptions.mockResolvedValue([]);
+    jest.restoreAllMocks();
+    jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    mockPrismaService.subscription.update.mockImplementation(async ({ where, data }: any) => ({ id: where.id, ...data }));
+
+    service = new SubscriptionsService(
+      mockPrismaService as any,
+      mockBilling as any,
+      mockPaymentFlow as any,
+      mockSubscriptionSync as any,
+    );
   });
 
   describe('subscribe', () => {
-    it('should throw NotFoundException when tier does not exist', async () => {
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(null);
+    it('should throw NotFoundException when the tier does not exist or is inactive', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ ...paidTier, isActive: false });
 
-      await expect(service.subscribe(userId, { tierId: 'missing' })).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.subscribe(userId, { tierId: 'missing' })).rejects.toThrow(NotFoundException);
+      await expect(service.subscribe(userId, { tierId: paidTier.id })).rejects.toThrow(NotFoundException);
     });
 
     it('should reject subscribing to your own tier', async () => {
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(paidTier);
 
-      await expect(service.subscribe(creatorId, { tierId: paidTier.id })).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(service.subscribe(creatorId, { tierId: paidTier.id })).rejects.toThrow(BadRequestException);
     });
 
     it('should reject when already subscribed to this creator', async () => {
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(paidTier);
-      mockPrismaService.subscription.findFirst.mockResolvedValue({
-        id: 'sub-1',
-        tierId: paidTier.id,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: false,
-      });
+      mockPrismaService.subscription.findFirst
+        .mockResolvedValueOnce({ id: 'sub-1', tierId: paidTier.id, status: 'ACTIVE', cancelAtPeriodEnd: false })
+        .mockResolvedValueOnce({ id: 'sub-1', tierId: paidTier.id, status: 'ACTIVE', cancelAtPeriodEnd: true })
+        .mockResolvedValueOnce({ id: 'sub-2', tierId: 'tier-other', status: 'PAST_DUE', cancelAtPeriodEnd: false });
 
-      await expect(service.subscribe(userId, { tierId: paidTier.id })).rejects.toThrow(
-        'You are already subscribed to this tier',
-      );
-      expect(mockStripeService.createTierSubscription).not.toHaveBeenCalled();
+      await expect(service.subscribe(userId, { tierId: paidTier.id })).rejects.toThrow('You are already subscribed to this tier');
+      await expect(service.subscribe(userId, { tierId: paidTier.id })).rejects.toThrow('resume it instead');
+      await expect(service.subscribe(userId, { tierId: paidTier.id })).rejects.toThrow('another tier of this creator');
+      expect(mockPrismaService.subscription.findFirst).toHaveBeenCalledWith({
+        where: { subscriberId: userId, tier: { creatorId }, status: { in: ['ACTIVE', 'PAST_DUE'] } },
+      });
+      expect(mockBilling.startSubscriptionPayment).not.toHaveBeenCalled();
     });
 
-    it('should activate a free tier directly without Stripe', async () => {
+    it('should activate a free tier directly, without payment', async () => {
       const subscription = { id: 'sub-free', status: 'ACTIVE' };
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(freeTier);
       mockPrismaService.subscription.findFirst.mockResolvedValue(null);
@@ -141,618 +147,446 @@ describe('SubscriptionsService', () => {
 
       expect(result).toEqual({ requiresPayment: false, subscription });
       expect(mockSubscriptionSync.activateFreeSubscription).toHaveBeenCalledWith(userId, freeTier);
-      expect(mockStripeService.createTierSubscription).not.toHaveBeenCalled();
+      expect(mockBilling.startSubscriptionPayment).not.toHaveBeenCalled();
     });
 
-    it('should reject a paid tier when the creator is not onboarded', async () => {
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
-        ...paidTier,
-        creator: { ...paidTier.creator, stripeOnboarded: false },
-      });
-      mockPrismaService.subscription.findFirst.mockResolvedValue(null);
-
-      await expect(service.subscribe(userId, { tierId: paidTier.id })).rejects.toThrow(
-        'Creator payment account is not ready',
-      );
-    });
-
-    it('should create the Stripe price and return a client secret for a paid tier', async () => {
+    it('should start the payment of a paid tier and return the provider page to visit', async () => {
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(paidTier);
       mockPrismaService.subscription.findFirst.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue({ id: userId });
-      mockPaymentsService.getOrCreateCustomerId.mockResolvedValue('cus_123');
-      mockStripeService.createProduct.mockResolvedValue({ id: 'prod_123' });
-      mockStripeService.createPrice.mockResolvedValue({ id: 'price_123' });
-      mockStripeService.createTierSubscription.mockResolvedValue({
-        id: 'sub_stripe',
-        status: 'incomplete',
-        latest_invoice: { payment_intent: { client_secret: 'pi_secret' } },
-      });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(null);
+      const started = payment();
+      mockBilling.startSubscriptionPayment.mockResolvedValue(started);
 
-      const result = await service.subscribe(userId, { tierId: paidTier.id });
-
-      expect(mockStripeService.createPrice).toHaveBeenCalledWith('prod_123', 9.99, 'eur', 'month');
-      expect(mockPrismaService.subscriptionTier.update).toHaveBeenCalledWith({
-        where: { id: paidTier.id },
-        data: { stripeProductId: 'prod_123', stripePriceId: 'price_123' },
-      });
-      expect(mockStripeService.createTierSubscription).toHaveBeenCalledWith(
-        expect.objectContaining({
-          customerId: 'cus_123',
-          priceId: 'price_123',
-          connectedAccountId: 'acct_123',
-          metadata: { subscriberId: userId, tierId: paidTier.id, creatorId },
-        }),
+      const result = await service.subscribe(
+        userId,
+        { tierId: paidTier.id, billingCountry: 'FR', withdrawalWaiver: true },
+        { ipCountry: 'FR', clientIp: '1.2.3.4' },
       );
+
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith({
+        userId,
+        tier: paidTier,
+        action: 'new',
+        amount: 9.99,
+        paymentCardId: undefined,
+        billingCountry: 'FR',
+        withdrawalWaiver: true,
+        ipCountry: 'FR',
+        clientIp: '1.2.3.4',
+      });
       expect(result).toEqual({
         requiresPayment: true,
-        stripeSubscriptionId: 'sub_stripe',
-        clientSecret: 'pi_secret',
+        payment: started,
+        transactionId: 'tx-1',
+        redirectUrl: 'https://provider/pay',
+        paymentStatus: 'requires_redirect',
       });
     });
 
     it('should return the active subscription when a saved card was charged', async () => {
       const subscription = { id: 'sub-1', status: 'ACTIVE' };
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
-        ...paidTier,
-        stripePriceId: 'price_existing',
-      });
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(paidTier);
       mockPrismaService.subscription.findFirst.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue({ id: userId });
-      mockPaymentsService.getOrCreateCustomerId.mockResolvedValue('cus_123');
-      mockStripeService.createTierSubscription.mockResolvedValue({
-        id: 'sub_stripe',
-        status: 'active',
-      });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(subscription);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(completed());
+      mockPrismaService.subscription.findUnique.mockResolvedValue(subscription);
 
-      const result = await service.subscribe(userId, { tierId: paidTier.id, paymentMethodId: 'pm_1' });
+      const result = await service.subscribe(userId, { tierId: paidTier.id, paymentCardId: 'card-1', withdrawalWaiver: true });
 
-      expect(mockPaymentsService.assertPaymentMethodOwnership).toHaveBeenCalledWith(userId, 'pm_1');
-      expect(mockStripeService.createPrice).not.toHaveBeenCalled();
-      expect(result).toEqual({ requiresPayment: false, subscription });
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(expect.objectContaining({ paymentCardId: 'card-1' }));
+      expect(mockPrismaService.subscription.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { subscriberId_tierId: { subscriberId: userId, tierId: paidTier.id } } }),
+      );
+      expect(result).toEqual({ requiresPayment: false, subscription, payment: expect.objectContaining({ completed: true }) });
+    });
+
+    it('should report a declined payment', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(paidTier);
+      mockPrismaService.subscription.findFirst.mockResolvedValue(null);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment({ status: 'failed', redirectUrl: null, failureReason: 'Refusée' }));
+
+      const result = await service.subscribe(userId, { tierId: paidTier.id, paymentCardId: 'card-1' });
+
+      expect(result).toEqual(expect.objectContaining({ requiresPayment: true, paymentStatus: 'failed', redirectUrl: null }));
+      expect(mockPrismaService.subscription.findUnique).not.toHaveBeenCalled();
     });
   });
 
   describe('confirmSubscription', () => {
-    it('should refuse a Stripe subscription that belongs to someone else', async () => {
-      mockStripeService.retrieveSubscription.mockResolvedValue({
-        id: 'sub_stripe',
-        metadata: { subscriberId: 'someone-else' },
-      });
+    it('should check the payment belongs to the user and is a subscription', async () => {
+      mockPaymentFlow.confirmPayment.mockRejectedValue(new NotFoundException('Payment not found'));
 
-      await expect(service.confirmSubscription(userId, 'sub_stripe')).rejects.toThrow(
-        NotFoundException,
+      await expect(service.confirmSubscription(userId, 'tx-1')).rejects.toThrow(NotFoundException);
+      expect(mockPaymentFlow.confirmPayment).toHaveBeenCalledWith(userId, 'tx-1', { kind: 'subscription' });
+    });
+
+    it('should return the subscription once paid', async () => {
+      const subscription = { id: 'sub-1', status: 'ACTIVE' };
+      mockPaymentFlow.confirmPayment.mockResolvedValue(completed());
+      mockPrismaService.transaction.findUnique.mockResolvedValue({ metadata: { kind: 'subscription', tierId: paidTier.id } });
+      mockPrismaService.subscription.findUnique.mockResolvedValue(subscription);
+
+      const result = await service.confirmSubscription(userId, 'tx-1');
+
+      expect(result).toEqual(expect.objectContaining({ requiresPayment: false, subscription }));
+      expect(mockPrismaService.subscription.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { subscriberId_tierId: { subscriberId: userId, tierId: paidTier.id } } }),
       );
     });
 
-    it('should sync and return the subscription once paid', async () => {
-      const subscription = { id: 'sub-1', status: 'ACTIVE' };
-      mockStripeService.retrieveSubscription.mockResolvedValue({
-        id: 'sub_stripe',
-        status: 'active',
-        metadata: { subscriberId: userId },
-      });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(subscription);
+    it('should report a payment still processing', async () => {
+      mockPaymentFlow.confirmPayment.mockResolvedValue(payment({ status: 'processing', redirectUrl: null }));
+      mockPrismaService.transaction.findUnique.mockResolvedValue({ metadata: { tierId: paidTier.id } });
 
-      const result = await service.confirmSubscription(userId, 'sub_stripe');
-
-      expect(result).toEqual({ requiresPayment: false, subscription });
+      await expect(service.confirmSubscription(userId, 'tx-1')).resolves.toEqual(
+        expect.objectContaining({ requiresPayment: true, paymentStatus: 'processing', transactionId: 'tx-1' }),
+      );
     });
   });
 
-  describe('cancelSubscription', () => {
-    it('should throw NotFoundException for another user subscription', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: 'someone-else',
-      });
+  describe('changeTier', () => {
+    const targetTier = (tier: any) => mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(tier);
 
-      await expect(service.cancelSubscription(userId, 'sub-1')).rejects.toThrow(NotFoundException);
+    it('should throw for another user subscription', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ subscriberId: 'someone-else' }));
+
+      await expect(service.changeTier(userId, 'sub-1', { tierId: premiumTier.id })).rejects.toThrow(NotFoundException);
     });
 
-    it('should schedule cancellation at period end on Stripe', async () => {
-      const stripeSubscription = { id: 'sub_stripe', cancel_at_period_end: true };
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: false,
-        stripeSubscriptionId: 'sub_stripe',
-        tier: paidTier,
-      });
-      mockStripeService.setCancelAtPeriodEnd.mockResolvedValue(stripeSubscription);
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', cancelAtPeriodEnd: true });
+    it('should reject a subscription that is not active', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ status: 'PAST_DUE' }));
 
-      const result = await service.cancelSubscription(userId, 'sub-1');
-
-      expect(mockStripeService.setCancelAtPeriodEnd).toHaveBeenCalledWith('sub_stripe', true);
-      expect(mockSubscriptionSync.syncFromStripe).toHaveBeenCalledWith(stripeSubscription);
-      expect(result).toEqual({ id: 'sub-1', cancelAtPeriodEnd: true });
+      await expect(service.changeTier(userId, 'sub-1', { tierId: premiumTier.id })).rejects.toThrow(
+        'Only an active subscription can change tier',
+      );
     });
 
-    it('should end a free subscription immediately', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: false,
-        stripeSubscriptionId: null,
-        tier: freeTier,
-      });
-      mockPrismaService.subscription.update.mockResolvedValue({ id: 'sub-1', status: 'CANCELLED' });
+    it('should reject a tier of another creator or an inactive tier', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription());
+      mockPrismaService.subscriptionTier.findUnique
+        .mockResolvedValueOnce({ ...premiumTier, creatorId: 'other' })
+        .mockResolvedValueOnce({ ...premiumTier, isActive: false });
 
-      await service.cancelSubscription(userId, 'sub-1');
+      await expect(service.changeTier(userId, 'sub-1', { tierId: premiumTier.id })).rejects.toThrow('This tier belongs to another creator');
+      await expect(service.changeTier(userId, 'sub-1', { tierId: premiumTier.id })).rejects.toThrow(NotFoundException);
+    });
+
+    it('should reject switching to the current tier without a scheduled change', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription());
+      targetTier(paidTier);
+
+      await expect(service.changeTier(userId, 'sub-1', { tierId: paidTier.id })).rejects.toThrow('You are already subscribed to this tier');
+    });
+
+    it('should go through the paid subscription flow for free → paid, replacing the free subscription', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ tierId: freeTier.id, tier: freeTier, paymentCardId: null }));
+      targetTier(premiumTier);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment());
+
+      const result = await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id, withdrawalWaiver: true });
+
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ userId, tier: premiumTier, action: 'new', amount: 19.99, replacesSubscriptionId: 'sub-1', withdrawalWaiver: true }),
+      );
+      expect(result).toEqual(expect.objectContaining({ requiresPayment: true, redirectUrl: 'https://provider/pay' }));
+      // The free subscription ends only once the paid one is active (payment hook)
+      expect(mockPrismaService.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('should switch free → free immediately', async () => {
+      const otherFree = { ...freeTier, id: 'tier-free-2' };
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ tierId: freeTier.id, tier: freeTier }));
+      targetTier(otherFree);
+      mockSubscriptionSync.activateFreeSubscription.mockResolvedValue({ id: 'sub-2' });
+
+      const result = await service.changeTier(userId, 'sub-1', { tierId: otherFree.id });
 
       expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
         where: { id: 'sub-1' },
         data: expect.objectContaining({ status: 'CANCELLED', cancelAtPeriodEnd: false }),
       });
-      expect(mockSubscriptionSync.refreshCreatorSubscriberCount).toHaveBeenCalledWith(creatorId);
-      expect(mockStripeService.setCancelAtPeriodEnd).not.toHaveBeenCalled();
+      expect(mockSubscriptionSync.activateFreeSubscription).toHaveBeenCalledWith(userId, otherFree);
+      expect(result).toEqual({ requiresPayment: false, subscription: { id: 'sub-2' } });
     });
 
-    it('should reject cancelling twice', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: true,
-        tier: paidTier,
-      });
+    it('should schedule paid → free for the end of the period', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription());
+      targetTier(freeTier);
 
-      await expect(service.cancelSubscription(userId, 'sub-1')).rejects.toThrow(
-        BadRequestException,
+      const result = await service.changeTier(userId, 'sub-1', { tierId: freeTier.id });
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { pendingTierId: freeTier.id, cancelAtPeriodEnd: true },
+      });
+      expect(result.requiresPayment).toBe(false);
+      expect(mockBilling.startSubscriptionPayment).not.toHaveBeenCalled();
+      expect(mockSubscriptionSync.activateFreeSubscription).not.toHaveBeenCalled();
+    });
+
+    it('should schedule a paid → paid downgrade for the next renewal', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ cancelAtPeriodEnd: true, pendingTierId: freeTier.id }));
+      targetTier(basicTier);
+
+      const result = await service.changeTier(userId, 'sub-1', { tierId: basicTier.id });
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { pendingTierId: basicTier.id, cancelAtPeriodEnd: false, cancelledAt: null },
+      });
+      expect(result).toEqual({ requiresPayment: false, subscription: expect.objectContaining({ pendingTierId: basicTier.id }) });
+      expect(mockBilling.startSubscriptionPayment).not.toHaveBeenCalled();
+    });
+
+    it('should charge an upgrade now, prorated from the price paid for the current period', async () => {
+      const subscription = { id: 'sub-1', tierId: premiumTier.id, status: 'ACTIVE' };
+      mockPrismaService.subscription.findUnique.mockResolvedValueOnce(ownSubscription()).mockResolvedValueOnce(subscription);
+      targetTier(premiumTier);
+      mockBilling.getRenewalPrice.mockResolvedValue(7.99);
+      const upgradePrice = jest.spyOn(BillingService, 'upgradePrice').mockReturnValue(15.5);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(completed());
+
+      const result = await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id, withdrawalWaiver: true });
+
+      expect(mockBilling.getRenewalPrice).toHaveBeenCalledWith('sub-1', paidTier);
+      expect(upgradePrice).toHaveBeenCalledWith({ currentPrice: 7.99, newPrice: 19.99, periodStart, periodEnd });
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId,
+          tier: premiumTier,
+          action: 'upgrade',
+          amount: 15.5,
+          subscriptionId: 'sub-1',
+          // The card of the subscription by default
+          paymentCardId: 'card-sub',
+          withdrawalWaiver: true,
+        }),
       );
+      expect(mockPrismaService.subscription.findUnique).toHaveBeenLastCalledWith(
+        expect.objectContaining({ where: { subscriberId_tierId: { subscriberId: userId, tierId: premiumTier.id } } }),
+      );
+      expect(result).toEqual(expect.objectContaining({ requiresPayment: false, subscription }));
+    });
+
+    it('should never charge less than the provider minimum for an upgrade', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription());
+      targetTier(premiumTier);
+      mockBilling.getRenewalPrice.mockResolvedValue(9.99);
+      jest.spyOn(BillingService, 'upgradePrice').mockReturnValue(0.1);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment());
+
+      await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id, paymentCardId: 'card-2' });
+
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(expect.objectContaining({ amount: 0.5, paymentCardId: 'card-2' }));
+    });
+
+    it('should treat a change of billing interval as an upgrade, even at a lower price', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription());
+      targetTier({ ...basicTier, interval: 'year' });
+      mockBilling.getRenewalPrice.mockResolvedValue(9.99);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment());
+
+      await service.changeTier(userId, 'sub-1', { tierId: basicTier.id });
+
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(expect.objectContaining({ action: 'upgrade' }));
+      expect(mockPrismaService.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('should undo a scheduled change when choosing the current tier again', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ pendingTierId: basicTier.id }));
+      targetTier(paidTier);
+
+      const result = await service.changeTier(userId, 'sub-1', { tierId: paidTier.id });
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { pendingTierId: null, cancelAtPeriodEnd: false, cancelledAt: null },
+      });
+      expect(result.requiresPayment).toBe(false);
+      expect(mockBilling.startSubscriptionPayment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelSubscription', () => {
+    it('should throw NotFoundException for another user subscription', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ subscriberId: 'someone-else' }));
+
+      await expect(service.cancelSubscription(userId, 'sub-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('should keep a paid subscription until the end of the paid period', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription());
+
+      const result = await service.cancelSubscription(userId, 'sub-1');
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { cancelAtPeriodEnd: true, cancelledAt: expect.any(Date), pendingTierId: null },
+      });
+      expect(result).toEqual(expect.objectContaining({ cancelAtPeriodEnd: true }));
+      expect(mockSubscriptionSync.refreshCreatorSubscriberCount).not.toHaveBeenCalled();
+    });
+
+    it('should replace a scheduled switch to a free tier by a plain cancellation', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ cancelAtPeriodEnd: true, pendingTierId: freeTier.id }));
+
+      await service.cancelSubscription(userId, 'sub-1');
+
+      expect(mockPrismaService.subscription.update.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({ cancelAtPeriodEnd: true, pendingTierId: null }),
+      );
+    });
+
+    it('should end a free subscription immediately', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ tierId: freeTier.id, tier: freeTier }));
+
+      await service.cancelSubscription(userId, 'sub-1');
+
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { status: 'CANCELLED', cancelledAt: expect.any(Date), cancelAtPeriodEnd: false, nextRenewalAttemptAt: null },
+      });
+      expect(mockSubscriptionSync.refreshCreatorSubscriberCount).toHaveBeenCalledWith(creatorId);
+    });
+
+    it('should end a past-due subscription immediately (no paid period left)', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ status: 'PAST_DUE' }));
+
+      await service.cancelSubscription(userId, 'sub-1');
+
+      expect(mockPrismaService.subscription.update.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({ status: 'CANCELLED', nextRenewalAttemptAt: null }),
+      );
+    });
+
+    it('should reject cancelling twice or an ended subscription', async () => {
+      mockPrismaService.subscription.findUnique
+        .mockResolvedValueOnce(ownSubscription({ cancelAtPeriodEnd: true }))
+        .mockResolvedValueOnce(ownSubscription({ status: 'CANCELLED' }));
+
+      await expect(service.cancelSubscription(userId, 'sub-1')).rejects.toThrow('already scheduled for cancellation');
+      await expect(service.cancelSubscription(userId, 'sub-1')).rejects.toThrow('Subscription is not active');
+      expect(mockPrismaService.subscription.update).not.toHaveBeenCalled();
     });
   });
 
   describe('resumeSubscription', () => {
-    it('should undo a scheduled cancellation on Stripe', async () => {
-      const synced = { id: 'sub-1', cancelAtPeriodEnd: false };
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: true,
-        stripeSubscriptionId: 'sub_stripe',
-        tier: paidTier,
-      });
-      mockStripeService.setCancelAtPeriodEnd.mockResolvedValue({ id: 'sub_stripe' });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(synced);
+    it('should undo a scheduled cancellation (and a scheduled switch to a free tier)', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ cancelAtPeriodEnd: true, pendingTierId: freeTier.id }));
 
       const result = await service.resumeSubscription(userId, 'sub-1');
 
-      expect(mockStripeService.setCancelAtPeriodEnd).toHaveBeenCalledWith('sub_stripe', false);
-      expect(result).toEqual({ requiresPayment: false, subscription: synced });
+      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { cancelAtPeriodEnd: false, cancelledAt: null, pendingTierId: null },
+      });
+      expect(result).toEqual({ requiresPayment: false, subscription: expect.objectContaining({ cancelAtPeriodEnd: false }) });
     });
 
-    it('should reject resuming an active subscription that is not cancelled', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: false,
-        tier: paidTier,
-      });
+    it('should reject resuming an active subscription that is not cancelled, or a past-due one', async () => {
+      mockPrismaService.subscription.findUnique
+        .mockResolvedValueOnce(ownSubscription())
+        .mockResolvedValueOnce(ownSubscription({ status: 'PAST_DUE' }));
 
-      await expect(service.resumeSubscription(userId, 'sub-1')).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(service.resumeSubscription(userId, 'sub-1')).rejects.toThrow('not scheduled for cancellation');
+      await expect(service.resumeSubscription(userId, 'sub-1')).rejects.toThrow('update your payment method');
     });
 
-    it('should resubscribe to the same tier once the subscription has ended', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        tierId: freeTier.id,
-        status: 'CANCELLED',
-        cancelAtPeriodEnd: false,
-        tier: freeTier,
-      });
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(freeTier);
+    it('should subscribe again to the same tier once the subscription has ended', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ status: 'CANCELLED' }));
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(paidTier);
       mockPrismaService.subscription.findFirst.mockResolvedValue(null);
-      mockSubscriptionSync.activateFreeSubscription.mockResolvedValue({ id: 'sub-1', status: 'ACTIVE' });
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment());
 
-      const result = await service.resumeSubscription(userId, 'sub-1');
+      const result = await service.resumeSubscription(
+        userId,
+        'sub-1',
+        { paymentCardId: 'card-1', billingCountry: 'BE', withdrawalWaiver: true },
+        { ipCountry: 'BE' },
+      );
 
-      expect(result).toEqual({ requiresPayment: false, subscription: { id: 'sub-1', status: 'ACTIVE' } });
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'new', tier: paidTier, paymentCardId: 'card-1', billingCountry: 'BE', withdrawalWaiver: true, ipCountry: 'BE' }),
+      );
+      expect(result.requiresPayment).toBe(true);
+    });
+  });
+
+  describe('retryPayment', () => {
+    const pastDue = (overrides: Record<string, unknown> = {}) => ownSubscription({ status: 'PAST_DUE', ...overrides });
+
+    it('should reject a subscription that is not past due', async () => {
+      for (const status of ['ACTIVE', 'CANCELLED']) {
+        mockPrismaService.subscription.findUnique.mockResolvedValue(ownSubscription({ status }));
+        await expect(service.retryPayment(userId, 'sub-1')).rejects.toThrow('Only a past-due subscription can be paid again');
+      }
+      expect(mockBilling.startSubscriptionPayment).not.toHaveBeenCalled();
+    });
+
+    it('should pay the renewal price now with the subscription card', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValueOnce(pastDue()).mockResolvedValueOnce({ id: 'sub-1', status: 'ACTIVE' });
+      mockPrismaService.subscriptionTier.findUniqueOrThrow.mockResolvedValue(paidTier);
+      mockBilling.getRenewalPrice.mockResolvedValue(8.99);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(completed());
+
+      const result = await service.retryPayment(userId, 'sub-1', { withdrawalWaiver: true });
+
+      expect(mockBilling.getRenewalPrice).toHaveBeenCalledWith('sub-1', paidTier);
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ tier: paidTier, action: 'retry', amount: 8.99, subscriptionId: 'sub-1', paymentCardId: 'card-sub' }),
+      );
+      expect(result).toEqual(expect.objectContaining({ requiresPayment: false, subscription: { id: 'sub-1', status: 'ACTIVE' } }));
+    });
+
+    it('should pay with another saved card, or on the provider page', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(pastDue({ paymentCardId: null }));
+      mockPrismaService.subscriptionTier.findUniqueOrThrow.mockResolvedValue(paidTier);
+      mockBilling.getRenewalPrice.mockResolvedValue(9.99);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment());
+
+      await service.retryPayment(userId, 'sub-1', { paymentCardId: 'card-new' });
+      await service.retryPayment(userId, 'sub-1');
+
+      expect(mockBilling.startSubscriptionPayment.mock.calls[0][0].paymentCardId).toBe('card-new');
+      expect(mockBilling.startSubscriptionPayment.mock.calls[1][0].paymentCardId).toBeUndefined();
+    });
+
+    it('should bill the tier of a scheduled downgrade', async () => {
+      mockPrismaService.subscription.findUnique.mockResolvedValue(pastDue({ pendingTierId: basicTier.id }));
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(basicTier);
+      mockBilling.startSubscriptionPayment.mockResolvedValue(payment());
+
+      await service.retryPayment(userId, 'sub-1');
+
+      expect(mockBilling.startSubscriptionPayment).toHaveBeenCalledWith(expect.objectContaining({ tier: basicTier, amount: 4.99 }));
+      expect(mockBilling.getRenewalPrice).not.toHaveBeenCalled();
     });
   });
 
   describe('getSubscriptionStatus', () => {
     it('should prefer the live subscription over ended ones', async () => {
       const active = { id: 'sub-2', status: 'ACTIVE' };
-      mockPrismaService.subscription.findMany.mockResolvedValue([
-        { id: 'sub-1', status: 'CANCELLED' },
-        active,
-      ]);
+      mockPrismaService.subscription.findMany.mockResolvedValue([{ id: 'sub-1', status: 'CANCELLED' }, active]);
 
       const result = await service.getSubscriptionStatus(userId, creatorId);
 
       expect(result).toEqual({ isSubscribed: true, subscription: active });
       expect(mockPrismaService.subscription.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { subscriberId: userId, tier: { creatorId } },
-        }),
+        expect.objectContaining({ where: { subscriberId: userId, tier: { creatorId } } }),
       );
+    });
+
+    it('should report a past-due subscription as not subscribed', async () => {
+      mockPrismaService.subscription.findMany.mockResolvedValue([{ id: 'sub-1', status: 'PAST_DUE' }]);
+
+      await expect(service.getSubscriptionStatus(userId, creatorId)).resolves.toEqual({
+        isSubscribed: false,
+        subscription: { id: 'sub-1', status: 'PAST_DUE' },
+      });
     });
 
     it('should report not subscribed when there is no subscription', async () => {
       mockPrismaService.subscription.findMany.mockResolvedValue([]);
 
-      const result = await service.getSubscriptionStatus(userId, creatorId);
-
-      expect(result).toEqual({ isSubscribed: false, subscription: null });
-    });
-  });
-
-  describe('subscribe retry after an abandoned checkout', () => {
-    it('should cancel incomplete attempts for the same creator before creating a new one', async () => {
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
-        ...paidTier,
-        stripePriceId: 'price_existing',
-      });
-      mockPrismaService.subscription.findFirst.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue({ id: userId });
-      mockPaymentsService.getOrCreateCustomerId.mockResolvedValue('cus_123');
-      mockStripeService.listIncompleteSubscriptions.mockResolvedValue([
-        { id: 'sub_old', metadata: { creatorId } },
-        { id: 'sub_other_creator', metadata: { creatorId: 'creator-2' } },
-      ]);
-      mockStripeService.createTierSubscription.mockResolvedValue({
-        id: 'sub_new',
-        status: 'incomplete',
-        latest_invoice: { payment_intent: { client_secret: 'pi_secret', status: 'requires_payment_method' } },
-      });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(null);
-
-      const result = await service.subscribe(userId, { tierId: paidTier.id });
-
-      expect(mockStripeService.listIncompleteSubscriptions).toHaveBeenCalledWith({ customerId: 'cus_123' });
-      expect(mockStripeService.cancelSubscription).toHaveBeenCalledTimes(1);
-      expect(mockStripeService.cancelSubscription).toHaveBeenCalledWith('sub_old');
-      expect(result).toEqual(
-        expect.objectContaining({ requiresPayment: true, stripeSubscriptionId: 'sub_new' }),
-      );
-    });
-  });
-
-  describe('changeTier', () => {
-    const basicTier = {
-      ...paidTier,
-      id: 'tier-basic',
-      name: 'Basic',
-      price: 4.99,
-      stripePriceId: 'price_basic',
-      stripeProductId: 'prod_basic',
-    };
-    const premiumTier = {
-      ...paidTier,
-      id: 'tier-premium',
-      name: 'Premium',
-      price: 9.99,
-      stripePriceId: 'price_premium',
-      stripeProductId: 'prod_premium',
-    };
-    const periodEnd = 1702592000;
-
-    const paidSubscription = (overrides: any = {}) => ({
-      id: 'sub-1',
-      subscriberId: userId,
-      tierId: basicTier.id,
-      status: 'ACTIVE',
-      cancelAtPeriodEnd: false,
-      pendingTierId: null,
-      stripeSubscriptionId: 'sub_stripe',
-      tier: basicTier,
-      ...overrides,
-    });
-
-    const freeSubscription = (overrides: any = {}) => ({
-      id: 'sub-free',
-      subscriberId: userId,
-      tierId: freeTier.id,
-      status: 'ACTIVE',
-      cancelAtPeriodEnd: false,
-      pendingTierId: null,
-      stripeSubscriptionId: null,
-      tier: freeTier,
-      ...overrides,
-    });
-
-    const stripeSub = (overrides: any = {}) => ({
-      id: 'sub_stripe',
-      status: 'active',
-      cancel_at_period_end: false,
-      current_period_end: periodEnd,
-      pending_update: null,
-      metadata: { subscriberId: userId },
-      items: { data: [{ id: 'si_1', price: { id: 'price_basic' } }] },
-      ...overrides,
-    });
-
-    it('should reject a subscription that is not active', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(
-        paidSubscription({ status: 'PAST_DUE' }),
-      );
-
-      await expect(
-        service.changeTier(userId, 'sub-1', { tierId: premiumTier.id }),
-      ).rejects.toThrow('Only an active subscription can change tier');
-    });
-
-    it('should reject a tier of another creator', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(paidSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
-        ...premiumTier,
-        creatorId: 'creator-2',
-      });
-
-      await expect(
-        service.changeTier(userId, 'sub-1', { tierId: premiumTier.id }),
-      ).rejects.toThrow(BadRequestException);
-      expect(mockStripeService.updateTierSubscription).not.toHaveBeenCalled();
-    });
-
-    it('should reject switching to the current tier', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(paidSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(basicTier);
-
-      await expect(
-        service.changeTier(userId, 'sub-1', { tierId: basicTier.id }),
-      ).rejects.toThrow('You are already subscribed to this tier');
-    });
-
-    it('should upgrade paid → paid immediately with an invoiced proration', async () => {
-      const synced = { id: 'sub-1', tierId: premiumTier.id };
-      mockPrismaService.subscription.findUnique.mockResolvedValue(paidSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(premiumTier);
-      mockStripeService.retrieveSubscription.mockResolvedValue(stripeSub());
-      mockStripeService.updateTierSubscription.mockResolvedValue(
-        stripeSub({ items: { data: [{ id: 'si_1', price: { id: 'price_premium' } }] } }),
-      );
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(synced);
-
-      const result = await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id });
-
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledTimes(1);
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith('sub_stripe', {
-        items: [{ id: 'si_1', price: 'price_premium' }],
-        proration_behavior: 'always_invoice',
-        payment_behavior: 'pending_if_incomplete',
-      });
-      expect(result).toEqual({ requiresPayment: false, subscription: synced });
-    });
-
-    it('should return the client secret when the upgrade payment needs action', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(paidSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(premiumTier);
-      mockStripeService.retrieveSubscription.mockResolvedValue(stripeSub());
-      mockStripeService.updateTierSubscription.mockResolvedValue(
-        stripeSub({
-          pending_update: { subscription_items: [] },
-          latest_invoice: {
-            payment_intent: { client_secret: 'pi_upgrade_secret', status: 'requires_action' },
-          },
-        }),
-      );
-      // Pending update: Stripe still bills the current tier
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', tierId: basicTier.id });
-
-      const result = await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id });
-
-      expect(result).toEqual({
-        requiresPayment: true,
-        stripeSubscriptionId: 'sub_stripe',
-        clientSecret: 'pi_upgrade_secret',
-        paymentStatus: 'requires_action',
-      });
-    });
-
-    it('should create the Stripe price of the target tier lazily', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(paidSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
-        ...premiumTier,
-        stripePriceId: null,
-      });
-      mockStripeService.retrieveSubscription.mockResolvedValue(stripeSub());
-      mockStripeService.createPrice.mockResolvedValue({ id: 'price_new' });
-      mockStripeService.updateTierSubscription.mockResolvedValue(stripeSub());
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1' });
-
-      await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id });
-
-      expect(mockStripeService.createProduct).not.toHaveBeenCalled();
-      expect(mockStripeService.createPrice).toHaveBeenCalledWith('prod_premium', 9.99, 'eur', 'month');
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith(
-        'sub_stripe',
-        expect.objectContaining({ items: [{ id: 'si_1', price: 'price_new' }] }),
-      );
-    });
-
-    it('should schedule a paid → paid downgrade for the end of the period', async () => {
-      const synced = { id: 'sub-1', tierId: premiumTier.id, pendingTierId: basicTier.id };
-      mockPrismaService.subscription.findUnique.mockResolvedValue(
-        paidSubscription({ tierId: premiumTier.id, tier: premiumTier }),
-      );
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(basicTier);
-      mockStripeService.retrieveSubscription.mockResolvedValue(
-        stripeSub({ items: { data: [{ id: 'si_1', price: { id: 'price_premium' } }] } }),
-      );
-      mockStripeService.updateTierSubscription.mockResolvedValue(stripeSub());
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(synced);
-
-      const result = await service.changeTier(userId, 'sub-1', { tierId: basicTier.id });
-
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith('sub_stripe', {
-        items: [{ id: 'si_1', price: 'price_basic' }],
-        proration_behavior: 'none',
-        metadata: {
-          downgradeTierId: basicTier.id,
-          downgradeFromTierId: premiumTier.id,
-          downgradeFromPriceId: 'price_premium',
-          downgradeAt: String(periodEnd),
-        },
-      });
-      expect(result).toEqual({ requiresPayment: false, subscription: synced });
-    });
-
-    it('should treat a change of billing interval as an immediate change', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(
-        paidSubscription({ tierId: premiumTier.id, tier: { ...premiumTier, interval: 'year', price: 99 } }),
-      );
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(basicTier);
-      mockStripeService.retrieveSubscription.mockResolvedValue(stripeSub());
-      mockStripeService.updateTierSubscription.mockResolvedValue(stripeSub());
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1' });
-
-      await service.changeTier(userId, 'sub-1', { tierId: basicTier.id });
-
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith(
-        'sub_stripe',
-        expect.objectContaining({ proration_behavior: 'always_invoice' }),
-      );
-    });
-
-    it('should cancel at period end and schedule the free tier for paid → free', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(paidSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(freeTier);
-      mockStripeService.retrieveSubscription.mockResolvedValue(stripeSub());
-      mockStripeService.updateTierSubscription.mockResolvedValue(stripeSub({ cancel_at_period_end: true }));
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', pendingTierId: freeTier.id });
-
-      const result = await service.changeTier(userId, 'sub-1', { tierId: freeTier.id });
-
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith('sub_stripe', {
-        cancel_at_period_end: true,
-        metadata: expect.objectContaining({
-          downgradeTierId: freeTier.id,
-          downgradeFromTierId: basicTier.id,
-          downgradeAt: String(periodEnd),
-        }),
-      });
-      expect(mockStripeService.cancelSubscription).not.toHaveBeenCalled();
-      expect(result.subscription).toEqual({ id: 'sub-1', pendingTierId: freeTier.id });
-    });
-
-    it('should undo a scheduled downgrade when choosing the current tier again', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(
-        paidSubscription({ tierId: premiumTier.id, tier: premiumTier, pendingTierId: basicTier.id }),
-      );
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(premiumTier);
-      mockStripeService.retrieveSubscription.mockResolvedValue(
-        stripeSub({
-          metadata: {
-            subscriberId: userId,
-            downgradeTierId: basicTier.id,
-            downgradeFromTierId: premiumTier.id,
-            downgradeFromPriceId: 'price_premium',
-            downgradeAt: String(periodEnd),
-          },
-        }),
-      );
-      mockStripeService.updateTierSubscription.mockResolvedValue(stripeSub());
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', pendingTierId: null });
-
-      const result = await service.changeTier(userId, 'sub-1', { tierId: premiumTier.id });
-
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledTimes(1);
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith('sub_stripe', {
-        cancel_at_period_end: false,
-        metadata: {
-          downgradeTierId: '',
-          downgradeFromTierId: '',
-          downgradeFromPriceId: '',
-          downgradeAt: '',
-        },
-        items: [{ id: 'si_1', price: 'price_premium' }],
-        proration_behavior: 'none',
-      });
-      expect(result).toEqual({ requiresPayment: false, subscription: { id: 'sub-1', pendingTierId: null } });
-    });
-
-    it('should go through the paid subscription flow for free → paid', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(freeSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(premiumTier);
-      mockPrismaService.user.findUnique.mockResolvedValue({ id: userId });
-      mockPaymentsService.getOrCreateCustomerId.mockResolvedValue('cus_123');
-      mockStripeService.createTierSubscription.mockResolvedValue({
-        id: 'sub_new',
-        status: 'incomplete',
-        latest_invoice: { payment_intent: { client_secret: 'pi_secret' } },
-      });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue(null);
-
-      const result = await service.changeTier(userId, 'sub-free', { tierId: premiumTier.id });
-
-      expect(mockStripeService.createTierSubscription).toHaveBeenCalledWith(
-        expect.objectContaining({
-          priceId: 'price_premium',
-          metadata: {
-            subscriberId: userId,
-            tierId: premiumTier.id,
-            creatorId,
-            replacesSubscriptionId: 'sub-free',
-          },
-        }),
-      );
-      // The free subscription stays active until the paid one is
-      expect(mockPrismaService.subscription.update).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        requiresPayment: true,
-        stripeSubscriptionId: 'sub_new',
-        clientSecret: 'pi_secret',
-      });
-    });
-
-    it('should switch free → free immediately', async () => {
-      const otherFree = { ...freeTier, id: 'tier-free-2', name: 'Fans' };
-      mockPrismaService.subscription.findUnique.mockResolvedValue(freeSubscription());
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(otherFree);
-      mockSubscriptionSync.activateFreeSubscription.mockResolvedValue({ id: 'sub-free-2' });
-
-      const result = await service.changeTier(userId, 'sub-free', { tierId: otherFree.id });
-
-      expect(mockPrismaService.subscription.update).toHaveBeenCalledWith({
-        where: { id: 'sub-free' },
-        data: expect.objectContaining({ status: 'CANCELLED' }),
-      });
-      expect(mockSubscriptionSync.activateFreeSubscription).toHaveBeenCalledWith(userId, otherFree);
-      expect(result).toEqual({ requiresPayment: false, subscription: { id: 'sub-free-2' } });
-    });
-  });
-
-  describe('cancelSubscription with a scheduled downgrade', () => {
-    it('should restore the paid price and cancel at period end instead', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({
-        id: 'sub-1',
-        subscriberId: userId,
-        status: 'ACTIVE',
-        cancelAtPeriodEnd: true,
-        pendingTierId: freeTier.id,
-        stripeSubscriptionId: 'sub_stripe',
-        tier: paidTier,
-      });
-      mockStripeService.retrieveSubscription.mockResolvedValue({
-        id: 'sub_stripe',
-        metadata: { downgradeTierId: freeTier.id, downgradeFromPriceId: 'price_paid' },
-        items: { data: [{ id: 'si_1', price: { id: 'price_paid' } }] },
-      });
-      mockStripeService.updateTierSubscription.mockResolvedValue({ id: 'sub_stripe' });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', pendingTierId: null });
-
-      await service.cancelSubscription(userId, 'sub-1');
-
-      expect(mockStripeService.updateTierSubscription).toHaveBeenCalledWith(
-        'sub_stripe',
-        expect.objectContaining({
-          cancel_at_period_end: true,
-          metadata: expect.objectContaining({ downgradeTierId: '' }),
-        }),
-      );
-      expect(mockStripeService.setCancelAtPeriodEnd).not.toHaveBeenCalled();
+      await expect(service.getSubscriptionStatus(userId, creatorId)).resolves.toEqual({ isSubscribed: false, subscription: null });
     });
   });
 
@@ -817,15 +651,11 @@ describe('SubscriptionsService', () => {
         { id: 'sub-1', subscriberId: 'fan-1', status: 'ACTIVE' },
         { id: 'sub-2', subscriberId: 'fan-2', status: 'CANCELLED' },
       ]);
-      mockPrismaService.transaction.groupBy.mockResolvedValue([
-        { fromUserId: 'fan-1', _sum: { amount: 29.97 } },
-      ]);
+      mockPrismaService.transaction.groupBy.mockResolvedValue([{ fromUserId: 'fan-1', _sum: { amount: 29.97 } }]);
 
       const result = await service.getCreatorSubscribers(creatorId);
 
-      expect(mockPrismaService.subscription.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { tier: { creatorId } } }),
-      );
+      expect(mockPrismaService.subscription.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tier: { creatorId } } }));
       expect(mockPrismaService.transaction.groupBy).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { toUserId: creatorId, fromUserId: { in: ['fan-1', 'fan-2'] }, status: 'COMPLETED' },
@@ -845,74 +675,6 @@ describe('SubscriptionsService', () => {
         expect.objectContaining({ where: { tier: { creatorId }, status: 'ACTIVE' } }),
       );
       expect(mockPrismaService.transaction.groupBy).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('retryPayment', () => {
-    const pastDue = {
-      id: 'sub-1',
-      subscriberId: userId,
-      status: 'PAST_DUE',
-      cancelAtPeriodEnd: false,
-      stripeSubscriptionId: 'sub_stripe',
-      tier: paidTier,
-    };
-
-    it('should reject a subscription that is not past due', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({ ...pastDue, status: 'ACTIVE' });
-
-      await expect(service.retryPayment(userId, 'sub-1')).rejects.toThrow(BadRequestException);
-      expect(mockStripeService.payInvoice).not.toHaveBeenCalled();
-    });
-
-    it('should reject a past-due subscription without Stripe subscription', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue({ ...pastDue, stripeSubscriptionId: null });
-
-      await expect(service.retryPayment(userId, 'sub-1')).rejects.toThrow(BadRequestException);
-    });
-
-    it('should switch the subscription card and pay the open invoice', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(pastDue);
-      mockStripeService.retrieveSubscription
-        .mockResolvedValueOnce({ id: 'sub_stripe', status: 'past_due', latest_invoice: { id: 'in_1', status: 'open' } })
-        .mockResolvedValueOnce({ id: 'sub_stripe', status: 'active', latest_invoice: { id: 'in_1', status: 'paid' } });
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', status: 'ACTIVE' });
-
-      const result = await service.retryPayment(userId, 'sub-1', 'pm_new');
-
-      expect(mockPaymentsService.assertPaymentMethodOwnership).toHaveBeenCalledWith(userId, 'pm_new');
-      expect(mockStripeService.setSubscriptionPaymentMethod).toHaveBeenCalledWith('sub_stripe', 'pm_new');
-      expect(mockStripeService.payInvoice).toHaveBeenCalledWith('in_1', 'pm_new');
-      expect(result).toEqual({ requiresPayment: false, subscription: { id: 'sub-1', status: 'ACTIVE' } });
-    });
-
-    it('should return the client secret when the bank asks for 3D Secure', async () => {
-      mockPrismaService.subscription.findUnique.mockResolvedValue(pastDue);
-      const stillPastDue = {
-        id: 'sub_stripe',
-        status: 'past_due',
-        latest_invoice: {
-          id: 'in_1',
-          status: 'open',
-          payment_intent: { client_secret: 'pi_secret', status: 'requires_action' },
-        },
-      };
-      mockStripeService.retrieveSubscription.mockResolvedValue(stillPastDue);
-      mockStripeService.payInvoice.mockRejectedValue(new Error('invoice_payment_intent_requires_action'));
-      mockSubscriptionSync.syncFromStripe.mockResolvedValue({ id: 'sub-1', status: 'PAST_DUE' });
-
-      const result = await service.retryPayment(userId, 'sub-1');
-
-      expect(mockStripeService.setSubscriptionPaymentMethod).not.toHaveBeenCalled();
-      expect(mockStripeService.payInvoice).toHaveBeenCalledWith('in_1', undefined);
-      expect(result).toEqual(
-        expect.objectContaining({
-          requiresPayment: true,
-          stripeSubscriptionId: 'sub_stripe',
-          clientSecret: 'pi_secret',
-          paymentStatus: 'requires_action',
-        }),
-      );
     });
   });
 });

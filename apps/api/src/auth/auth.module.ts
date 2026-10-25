@@ -10,11 +10,13 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 import { UsersModule } from '../users/users.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { LegalModule } from '../legal/legal.module';
 
 @Module({
   imports: [
     UsersModule,
     PaymentsModule,
+    LegalModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

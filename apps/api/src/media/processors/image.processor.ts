@@ -7,11 +7,14 @@ import * as path from 'path';
 
 import { StorageService } from '../../storage/storage.service';
 import { PrismaService } from '../../common/database/prisma.service';
+import { MediaScanService } from '../media-scan/media-scan.service';
 
 interface ImageProcessingJob {
   key: string;
   userId: string;
   contentId?: string;
+  // ContentFile created by POST /media/upload
+  contentFileId?: string;
   originalName: string;
   mimeType: string;
   size: number;
@@ -27,6 +30,7 @@ export class ImageProcessor {
     private storageService: StorageService,
     private prisma: PrismaService,
     private configService: ConfigService,
+    private mediaScan: MediaScanService,
   ) {
     this.watermarkEnabled = this.configService.get('WATERMARK_ENABLED') === 'true';
     this.watermarkText = this.configService.get('WATERMARK_TEXT', 'FanVIP');
@@ -34,13 +38,26 @@ export class ImageProcessor {
 
   @Process('process-image')
   async processImage(job: Job<ImageProcessingJob>) {
-    const { key, userId, contentId, originalName, mimeType, size } = job.data;
+    const { key, userId, contentId, contentFileId, originalName, mimeType, size } = job.data;
 
     this.logger.log(`Processing image: ${key}`);
 
     try {
       // Download original image from S3
       const originalBuffer = await this.storageService.getFile(key);
+
+      // Known-illegal-media scan before anything is derived from the file
+      const scanStatus = await this.mediaScan.scanAndRecord(originalBuffer, {
+        userId,
+        key,
+        mimeType,
+        contentFileId,
+        contentId,
+      });
+      if (scanStatus === 'FLAGGED') {
+        // Blocked and preserved as evidence: no thumbnail / watermark copies
+        return { success: false, key, flagged: true };
+      }
 
       // Get image metadata
       const metadata = await sharp(originalBuffer).metadata();
@@ -100,6 +117,8 @@ export class ImageProcessor {
             height: metadata.height,
             isEncrypted: false,
             hasWatermark: this.watermarkEnabled,
+            scanStatus,
+            scannedAt: scanStatus === 'PENDING' ? null : new Date(),
           },
         });
       }

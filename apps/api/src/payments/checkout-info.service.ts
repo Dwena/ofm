@@ -1,12 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
-import { StripeService } from './stripe.service';
+import { computeCharge, normalizeCountry } from '../common/utils/vat';
+import { SettingsService } from '../settings/settings.service';
+import { PaymentFlowService } from './payment-flow.service';
 import { CheckoutItemType } from './dto/payments.dto';
 
 /** Why a checkout cannot go through, so the web app explains it instead of failing at payment time */
 export type CheckoutUnavailableReason =
-  | 'PAYMENTS_DISABLED' // no Stripe key on the platform
-  | 'CREATOR_NOT_READY' // creator without an onboarded Stripe account
+  | 'PAYMENTS_DISABLED' // payment provider not configured
+  | 'CREATOR_NOT_READY' // creator whose identity is not verified yet
   | 'TIPS_DISABLED'
   | 'OWN_ITEM'
   | 'NOT_PAID' // free tier / content or stream that is not pay-per-view
@@ -16,8 +18,17 @@ export interface CheckoutInfo {
   type: CheckoutItemType;
   itemId: string;
   title: string;
-  // Euros, as charged by the API; null for tips (the fan chooses)
+  // Euros excluding VAT, as charged by the API; null for tips (the fan chooses)
   amount: number | null;
+  // VAT of the fan's country added on top, and the total charged (null for tips:
+  // the client computes them with vatRate)
+  vatRate: number;
+  vatAmount: number | null;
+  totalAmount: number | null;
+  // Country the VAT is computed for (fan's billing country), null when unknown
+  billingCountry: string | null;
+  // Digital content supplied immediately: the fan must waive the withdrawal right
+  requiresWithdrawalWaiver: boolean;
   interval?: string;
   minimumTip?: number;
   maximumTip?: number;
@@ -31,14 +42,29 @@ export interface CheckoutInfo {
 // Same limit as SendTipDto
 export const MAXIMUM_TIP = 10000;
 
+type ItemInfo = Omit<CheckoutInfo, 'vatRate' | 'vatAmount' | 'totalAmount' | 'billingCountry'>;
+
 const creatorSelect = {
   id: true,
   username: true,
   displayName: true,
   avatar: true,
-  stripeAccountId: true,
-  stripeOnboarded: true,
+  role: true,
+  kycStatus: true,
+  status: true,
+  deletedAt: true,
 } as const;
+
+type CheckoutCreator = {
+  id: string;
+  username: string;
+  displayName: string | null;
+  avatar: string | null;
+  role: string;
+  kycStatus: string;
+  status: string;
+  deletedAt: Date | null;
+};
 
 /**
  * What the checkout page shows before paying: the price charged by the API
@@ -48,10 +74,31 @@ const creatorSelect = {
 export class CheckoutInfoService {
   constructor(
     private prisma: PrismaService,
-    private stripeService: StripeService,
+    private paymentFlow: PaymentFlowService,
+    private settingsService: SettingsService,
   ) {}
 
-  async getCheckoutInfo(userId: string, type: CheckoutItemType, itemId: string): Promise<CheckoutInfo> {
+  async getCheckoutInfo(userId: string, type: CheckoutItemType, itemId: string, country?: string): Promise<CheckoutInfo> {
+    const info = await this.getItemInfo(userId, type, itemId);
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { billingCountry: true } });
+    const billingCountry = normalizeCountry(country) ?? normalizeCountry(user?.billingCountry);
+    const charge = computeCharge(info.amount ?? 0, await this.settingsService.getPlatformFeePercentage(), billingCountry);
+
+    return {
+      ...info,
+      vatRate: charge.vatRate,
+      vatAmount: info.amount === null ? null : charge.vatAmount,
+      totalAmount: info.amount === null ? null : charge.totalAmount,
+      billingCountry,
+    };
+  }
+
+  private async getItemInfo(
+    userId: string,
+    type: CheckoutItemType,
+    itemId: string,
+  ): Promise<Omit<CheckoutInfo, 'vatRate' | 'vatAmount' | 'totalAmount' | 'billingCountry'>> {
     switch (type) {
       case CheckoutItemType.SUBSCRIPTION:
         return this.forSubscription(userId, itemId);
@@ -64,7 +111,7 @@ export class CheckoutInfoService {
     }
   }
 
-  private async forSubscription(userId: string, tierId: string): Promise<CheckoutInfo> {
+  private async forSubscription(userId: string, tierId: string): Promise<ItemInfo> {
     const tier = await this.prisma.subscriptionTier.findUnique({
       where: { id: tierId },
       include: { creator: { select: creatorSelect } },
@@ -93,7 +140,7 @@ export class CheckoutInfoService {
     });
   }
 
-  private async forContent(userId: string, contentId: string): Promise<CheckoutInfo> {
+  private async forContent(userId: string, contentId: string): Promise<ItemInfo> {
     const content = await this.prisma.content.findUnique({
       where: { id: contentId },
       include: { creator: { select: creatorSelect } },
@@ -121,7 +168,7 @@ export class CheckoutInfoService {
     });
   }
 
-  private async forStream(userId: string, streamId: string): Promise<CheckoutInfo> {
+  private async forStream(userId: string, streamId: string): Promise<ItemInfo> {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
       include: { creator: { select: creatorSelect } },
@@ -157,7 +204,7 @@ export class CheckoutInfoService {
     });
   }
 
-  private async forTip(userId: string, creatorId: string): Promise<CheckoutInfo> {
+  private async forTip(userId: string, creatorId: string): Promise<ItemInfo> {
     const creator = await this.prisma.user.findUnique({
       where: { id: creatorId },
       select: { ...creatorSelect, role: true, creatorProfile: { select: { allowTips: true, minimumTip: true } } },
@@ -189,20 +236,13 @@ export class CheckoutInfoService {
     interval?: string;
     minimumTip?: number;
     maximumTip?: number;
-    creator: {
-      id: string;
-      username: string;
-      displayName: string | null;
-      avatar: string | null;
-      stripeAccountId: string | null;
-      stripeOnboarded: boolean;
-    };
+    creator: CheckoutCreator;
     userId: string;
     alreadyOwned: boolean;
     notPaid?: boolean;
     ended?: boolean;
     tipsDisabled?: boolean;
-  }): CheckoutInfo {
+  }): ItemInfo {
     const { creator } = params;
 
     // Most specific first: owning the item or the item itself beats platform setup
@@ -211,14 +251,15 @@ export class CheckoutInfoService {
     else if (params.notPaid) unavailableReason = 'NOT_PAID';
     else if (params.ended) unavailableReason = 'ENDED';
     else if (params.tipsDisabled) unavailableReason = 'TIPS_DISABLED';
-    else if (!this.stripeService.isConfigured()) unavailableReason = 'PAYMENTS_DISABLED';
-    else if (!creator.stripeAccountId || !creator.stripeOnboarded) unavailableReason = 'CREATOR_NOT_READY';
+    else if (!this.paymentFlow.isConfigured()) unavailableReason = 'PAYMENTS_DISABLED';
+    else if (!PaymentFlowService.canSell(creator)) unavailableReason = 'CREATOR_NOT_READY';
 
     return {
       type: params.type,
       itemId: params.itemId,
       title: params.title,
       amount: params.amount,
+      requiresWithdrawalWaiver: params.type !== CheckoutItemType.TIP,
       ...(params.interval && { interval: params.interval }),
       ...(params.minimumTip !== undefined && { minimumTip: params.minimumTip }),
       ...(params.maximumTip !== undefined && { maximumTip: params.maximumTip }),

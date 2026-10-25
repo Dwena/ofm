@@ -15,7 +15,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: true,
-    // Keep req.rawBody: Stripe webhook signatures are computed on the exact payload
+    // Keep req.rawBody: webhook signatures are computed on the exact payload
     rawBody: true,
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
@@ -97,6 +97,8 @@ async function bootstrap() {
       'Authorization',
       'X-Requested-With',
       'X-CSRF-Token',
+      // Anonymous age verification token (age-verification module)
+      'X-Age-Verification',
       'Accept',
       'Origin',
     ],

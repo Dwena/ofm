@@ -295,8 +295,8 @@ export default function AdminSettingsPage() {
             <CardHeader>
               <CardTitle>Monétisation</CardTitle>
               <CardDescription>
-                Appliqué aux nouveaux paiements (abonnements, pourboires, contenus payants). Les abonnements Stripe
-                existants conservent la commission en vigueur à leur création.
+                Appliqué aux nouveaux paiements et aux renouvellements (abonnements, pourboires, contenus payants), sur
+                le prix hors taxes. Prévenez les créateurs avant toute hausse (conditions créateurs).
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-6 md:grid-cols-2">

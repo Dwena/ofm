@@ -156,12 +156,28 @@ JWT_SECRET=CHANGE_ME_MIN_32_CHARS
 JWT_REFRESH_SECRET=CHANGE_ME_MIN_32_CHARS
 ```
 
-#### Stripe
+#### Paiements (voir docs/PAIEMENTS.md)
 ```bash
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-NEXT_PUBLIC_STRIPE_PUBLIC_KEY=pk_live_...
+PAYMENT_PROVIDER=ccbill
+PLATFORM_FEE_PERCENTAGE=15
+EARNINGS_HOLD_DAYS=7
+MINIMUM_PAYOUT_AMOUNT=50
+CCBILL_ACCOUNT_NUMBER=...
+CCBILL_SUBACCOUNT=...
+CCBILL_FLEXFORM_ID=...
+CCBILL_SALT=...
+CCBILL_DATALINK_USERNAME=...
+CCBILL_DATALINK_PASSWORD=...
+CCBILL_WEBHOOK_TOKEN=...
+# CCBILL_WEBHOOK_ALLOWED_IPS=...  (optionnel)
+PAYOUT_DEBTOR_NAME=...
+PAYOUT_DEBTOR_IBAN=...
+PAYOUT_DEBTOR_BIC=...
+DATA_ENCRYPTION_KEY=...
 ```
+
+Webhook à déclarer chez CCBill : `POST https://<api>/api/v1/webhooks/payments/ccbill?token=<CCBILL_WEBHOOK_TOKEN>`.
+Voir aussi `AGE_VERIFICATION_*` et `COMPANY_*` dans `.env.production.example`.
 
 #### AWS/S3
 ```bash
@@ -173,7 +189,7 @@ AWS_S3_BUCKET=ofm-uploads-prod
 #### Monitoring
 ```bash
 SENTRY_DSN=https://...@sentry.io/...
-NEXT_PUBLIC_LOGROCKET_APP_ID=app-id
+NEXT_PUBLIC_SENTRY_DSN=https://...@sentry.io/...
 ```
 
 ### Gestion des Secrets
@@ -227,23 +243,20 @@ import * as Sentry from '@sentry/nextjs';
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1.0,
+  sendDefaultPii: false,
+  autoSessionTracking: false,
+  tracesSampleRate: 0,
+  // pas de Session Replay
 });
 ```
 
-### LogRocket (Session Recording)
+### Pas d'enregistrement de session (LogRocket, Sentry Replay, Hotjar...)
 
-```typescript
-import LogRocket from 'logrocket';
-
-LogRocket.init('app-id');
-
-// Integrate with Sentry
-LogRocket.getSessionURL(url => {
-  Sentry.setContext('LogRocket', { sessionURL: url });
-});
-```
+Interdit côté web : sur une plateforme adulte, l'enregistrement de session capte des données
+sensibles (vie sexuelle) et exigerait un consentement préalable (CNIL). Le front n'utilise que
+des traceurs strictement nécessaires (voir `apps/web/app/legal/cookies` et `docs/CONFORMITE_LEGALE.md`).
+Tout nouvel outil d'analytics / publicité / replay impose une bannière de consentement et la mise
+à jour de la politique cookies.
 
 ### Métriques Disponibles
 
@@ -252,12 +265,6 @@ LogRocket.getSessionURL(url => {
 - Performance (traces)
 - Release tracking
 - User feedback
-
-**LogRocket**:
-- Session replays
-- Console logs
-- Network requests
-- Redux/state changes
 
 ### Dashboards
 

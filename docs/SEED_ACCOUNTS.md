@@ -23,7 +23,7 @@ Depuis la racine : `npm run db:seed` / `npm run db:seed:fresh`.
 - Le seed refuse de tourner sur une base qui contient déjà des utilisateurs (utiliser `seed:fresh`), et refuse `NODE_ENV=production` sauf `SEED_ALLOW_PRODUCTION=true`.
 - Les médias pointent vers des images publiques (picsum.photos) et des échantillons CC0 (MDN) : le feed s'affiche sans MinIO. L'**upload** de nouveaux fichiers nécessite MinIO/S3 (`docker-compose up`).
 - Les dates sont relatives au jour du seed (abonnements en cours, stories de moins de 24 h, live programmé demain…) : relancer `seed:fresh` pour rafraîchir.
-- `SEED_STRIPE_ACCOUNT_ID=acct_...` (compte Connect **de test**) l'attribue à Alice pour tester les paiements de bout en bout avec les clés Stripe de test. Sans lui, aucun créateur n'a de compte Stripe : les paiements vers un créateur sont refusés car son compte de paiement n’est pas configuré (les paliers gratuits fonctionnent).
+- Paiements : avec le simulateur local (`PAYMENT_PROVIDER=fake`, voir [PAIEMENTS.md](PAIEMENTS.md)), chaque fan a une carte de test enregistrée **4242** (acceptée) ; Sophie a en plus une carte **0002** (refusée). Les achats en un clic fonctionnent donc sans configuration. Les créateurs sont tous vérifiés (KYC) sauf `nouveau_createur`. Alice et Claire ont un profil fiscal (DAC7) complet, Bob un profil incomplet (versements bloqués). `DATA_ENCRYPTION_KEY` est nécessaire pour enregistrer l'IBAN.
 
 ## Comptes
 
@@ -43,7 +43,7 @@ Mot de passe commun : **`SecurePass123!`**
 | `creator@demo.com` | **Alice Martin** (`demo_creator`) — voyage | Créatrice principale : 5 paliers (Fan gratuit, Essentiel 9,99 €, Premium 24,99 €, VIP annuel 199 €, 1 inactif), 14 contenus (photo, album, vidéo, audio, texte, PPV, premium, privé, brouillon, programmé, archivé), revenus/versements (effectués, en cours, échoué), analytics sur 6 mois, stories actives + 1 expirée, live programmé avec **objectifs de dons** en 3 paliers (100 € « Je réponds à toutes vos questions », 200 € « 30 minutes de live en plus », 500 € « Surprise exclusive pour mes abonnés »), live PPV, live terminé avec chat, pourboires, demandes du menu (réalisées, ignorée, en attente) et objectifs de dons (110 € récoltés : paliers 50 € atteint et marqué fait, 100 € atteint, 250 € non atteint, avec les lignes « 🎯 Palier atteint » dans le chat), **menu de pourboires** de 5 paliers (👋 prénom 5 €, 🎵 chanson 20 €, 💪 10 pompes 10 €, ❓ question 15 €, 🎁 surprise 50 €), messagerie |
 | `creator2@demo.com` | **Bob Dupont** (`creator_fitness`) — fitness | Live **en cours** (ouvrir `/creator/live` pour diffuser), contenu retiré par la modération, litige ouvert, versement en attente, live annulé |
 | `creator3@demo.com` | **Claire Rousseau** (`chef_claire`) — pâtisserie | **Messages privés désactivés**, contenu en cours de revue, contenu refusé, live terminé avec enregistrement |
-| `newcreator@demo.com` | **Hugo Leroy** (`nouveau_createur`) | Créateur tout neuf : KYC en attente, aucun palier ni contenu (états vides, onboarding Stripe) |
+| `newcreator@demo.com` | **Hugo Leroy** (`nouveau_createur`) | Créateur tout neuf : KYC en attente, aucun palier ni contenu (états vides, onboarding KYC et profil fiscal) |
 
 ### Abonnés
 

@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { formatGoalAmount, goalReachedMessage, LiveTipsService } from './live-tips.service';
-import type { TipCompletedEvent } from '../payments/one-time-payment.service';
+import type { TipCompletedEvent } from '../payments/payment-flow.service';
 
 const decimal = (value: number) => new Prisma.Decimal(value);
 const duplicate = () =>

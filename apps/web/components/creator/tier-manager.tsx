@@ -442,7 +442,7 @@ export function TierManager({ tiers }: TierManagerProps) {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="tier-price">
-                  Prix (€) <span className="text-destructive">*</span>
+                  Prix HT (€) <span className="text-destructive">*</span>
                 </Label>
                 <Input
                   id="tier-price"
@@ -456,7 +456,9 @@ export function TierManager({ tiers }: TierManagerProps) {
                 {errors.price ? (
                   <p className="text-sm text-destructive">{errors.price}</p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">0 pour une offre gratuite</p>
+                  <p className="text-xs text-muted-foreground">
+                    0 pour une offre gratuite. La TVA du pays du fan est ajoutée ; vous touchez ce prix moins la commission.
+                  </p>
                 )}
               </div>
 

@@ -1316,7 +1316,7 @@ export default function CreatorLivePage() {
                     </label>
                     {isPpv && (
                       <div className="space-y-1">
-                        <Label htmlFor="live-ppv-price">Prix d&apos;accès (€)</Label>
+                        <Label htmlFor="live-ppv-price">Prix d&apos;accès HT (€)</Label>
                         <Input
                           id="live-ppv-price"
                           type="number"
@@ -1333,7 +1333,7 @@ export default function CreatorLivePage() {
                         {formErrors.ppvPrice && <p className="text-sm text-destructive">{formErrors.ppvPrice}</p>}
                         <p className="text-xs text-muted-foreground">
                           Les spectateurs paient ce prix une fois pour regarder le live, en plus des conditions de
-                          visibilité. Un compte de paiement Stripe configuré est requis.
+                          visibilité (prix HT, TVA ajoutée au paiement). Votre identité doit être vérifiée.
                         </p>
                       </div>
                     )}

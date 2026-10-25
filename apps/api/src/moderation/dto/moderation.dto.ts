@@ -1,3 +1,4 @@
+import { RuleMatch } from '../content-rules';
 import { IsString, IsEnum, IsOptional, IsUUID, IsNotEmpty, MaxLength } from 'class-validator';
 
 export enum ReportType {
@@ -55,4 +56,22 @@ export class ContentAnalysisResult {
   confidenceScore: number;
   shouldAutoReject: boolean;
   shouldRequireReview: boolean;
+  /** Prohibited / to-review terms found (see content-rules.ts) */
+  ruleMatches?: RuleMatch[];
+}
+
+/** Approval of content waiting for review */
+export class ApproveContentDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
+}
+
+/** Rejection of content waiting for review: the reason is shown to the creator */
+export class RejectContentDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  reason: string;
 }

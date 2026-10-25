@@ -47,7 +47,8 @@ interface Subscription {
   cancelledAt?: string | null
   cancelAtPeriodEnd: boolean
   createdAt: string
-  stripeSubscriptionId?: string | null
+  // Saved card renewing a paid subscription
+  paymentCardId?: string | null
   // Downgrade scheduled for currentPeriodEnd
   pendingTierId?: string | null
   pendingTier?: TierSummary | null
@@ -227,7 +228,7 @@ export default function SubscriptionsPage() {
 
   const handleCancel = async (sub: Subscription) => {
     const creatorName = getCreatorName(sub.tier.creator)
-    const paidPeriod = !!sub.stripeSubscriptionId && sub.status === 'ACTIVE'
+    const paidPeriod = Number(sub.tier.price) > 0 && sub.status === 'ACTIVE'
     const description = paidPeriod
       ? `Vous ne serez plus débité. Votre abonnement ${sub.tier.name} reste actif jusqu'au ${formatDate(sub.currentPeriodEnd)}, puis vous perdrez l'accès au contenu réservé de ${creatorName}.` +
         (sub.pendingTierId ? ' Le changement d\'offre programmé sera annulé.' : '')

@@ -20,6 +20,7 @@ import {
   reportStatusValues,
   normalizeReportStatus,
 } from './report-status.util';
+import { isAdult } from '../verification/identity-documents';
 
 @Injectable()
 export class AdminService {
@@ -98,7 +99,6 @@ export class AdminService {
           status: true,
           avatar: true,
           emailVerified: true,
-          stripeOnboarded: true,
           kycStatus: true,
           kycSubmittedAt: true,
           createdAt: true,
@@ -327,7 +327,7 @@ export class AdminService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, kycStatus: true, deletedAt: true },
+      select: { id: true, kycStatus: true, deletedAt: true, dateOfBirth: true },
     });
 
     if (!user || user.deletedAt) {
@@ -344,6 +344,22 @@ export class AdminService {
 
     const now = new Date();
     const approved = decision === KycDecision.APPROVE;
+
+    if (approved) {
+      // Never verify a minor, nor an account without identity documents on file
+      // (documents sent through POST /creator/verification, see KycService)
+      if (!user.dateOfBirth || !isAdult(new Date(user.dateOfBirth), now)) {
+        throw new BadRequestException(
+          'Date de naissance absente ou personne mineure : la vérification ne peut pas être approuvée',
+        );
+      }
+      const documents = await this.prisma.identityDocument.count({
+        where: { userId, coPerformerId: null },
+      });
+      if (!documents) {
+        throw new BadRequestException("Aucune pièce d'identité au dossier : approbation impossible");
+      }
+    }
 
     const updated = await this.prisma.user.update({
       where: { id: userId },
@@ -367,8 +383,9 @@ export class AdminService {
           type: 'SYSTEM',
           title: approved ? 'Identité vérifiée' : "Vérification d'identité refusée",
           message: approved
-            ? 'Votre identité a été vérifiée. Vous pouvez désormais percevoir vos revenus.'
-            : `Votre vérification d'identité a été refusée. Motif : ${reason}`,
+            ? 'Votre identité a été vérifiée. Vous pouvez désormais publier et percevoir vos revenus.'
+            : `Votre vérification d'identité a été refusée. Motif : ${reason}. Vous pouvez envoyer de nouveaux documents.`,
+          linkUrl: '/creator/verification',
         },
       });
     } catch (error) {

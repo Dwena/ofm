@@ -77,7 +77,7 @@ const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
 #### Règles de Validation
 - Montant minimum de retrait: **50€**
 - Montant maximum: Solde disponible
-- Vérification Stripe Connect avant retrait
+- Vérification KYC et profil fiscal (DAC7) complet avant retrait (virement SEPA, voir docs/PAIEMENTS.md)
 
 #### Statuts de Retrait
 ```typescript
@@ -457,7 +457,6 @@ new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(10
 ### Variables d'Environnement Requises
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:3001
-NEXT_PUBLIC_STRIPE_PUBLIC_KEY=pk_test_...
 ```
 
 ### Build de Production
@@ -470,7 +469,7 @@ npm run start
 ### Vérifications Avant Déploiement
 - [ ] Toutes les variables d'environnement sont configurées
 - [ ] Les routes API pointent vers le bon backend
-- [ ] Les clés Stripe sont en mode production
+- [ ] L'API utilise `PAYMENT_PROVIDER=ccbill` (variables `CCBILL_*` renseignées, voir docs/PAIEMENTS.md)
 - [ ] Les images sont servies via CDN
 - [ ] Le build passe sans erreurs TypeScript
 

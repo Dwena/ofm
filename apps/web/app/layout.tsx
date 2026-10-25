@@ -4,6 +4,7 @@ import './globals.css'
 import { AuthProvider } from '@/contexts/auth-context'
 import { Providers } from './providers'
 import { I18nProvider } from '@/components/i18n-provider'
+import { AgeGateInterstitial } from '@/components/age-verification/age-gate-interstitial'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -48,6 +49,8 @@ export default function RootLayout({
           <I18nProvider>
             <AuthProvider>
               {children}
+              {/* Adult content warning until the visitor's age is verified (SREN law) */}
+              <AgeGateInterstitial />
             </AuthProvider>
           </I18nProvider>
         </Providers>

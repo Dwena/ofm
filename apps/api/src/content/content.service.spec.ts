@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ContentService } from './content.service';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/database/prisma.service';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService } from '../payments/payment-flow.service';
 import { StorageService } from '../storage/storage.service';
 import { SettingsService } from '../settings/settings.service';
 import { NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
@@ -23,6 +23,18 @@ describe('ContentService', () => {
     },
     contentFile: {
       updateMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    contentCoPerformer: {
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    },
+    coPerformer: {
+      findMany: jest.fn(),
+    },
+    auditLog: {
+      create: jest.fn(),
     },
     contentLike: {
       findUnique: jest.fn(),
@@ -77,7 +89,7 @@ describe('ContentService', () => {
           provide: PrismaService,
           useValue: mockPrismaService,
         },
-        { provide: OneTimePaymentService, useValue: mockOneTimePayments },
+        { provide: PaymentFlowService, useValue: mockOneTimePayments },
         { provide: StorageService, useValue: mockStorageService },
         { provide: ConfigService, useValue: mockConfigService },
         {
@@ -368,12 +380,15 @@ describe('ContentService', () => {
     };
 
     const pendingPayment = {
-      status: 'requires_payment_method',
+      status: 'requires_redirect',
       completed: false,
       transactionId: 'tx-1',
-      paymentIntentId: 'pi_123',
-      clientSecret: 'secret_123',
+      redirectUrl: 'https://pay.example/checkout',
       amount: 10,
+      vatRate: 20,
+      vatAmount: 2,
+      totalAmount: 12,
+      failureReason: null,
     };
 
     it('should start a pending payment without granting access', async () => {
@@ -390,10 +405,10 @@ describe('ContentService', () => {
           kind: 'content_unlock',
           amount: 10,
           contentId,
-          paymentMethodId: undefined,
+          returnPath: `/content/${contentId}`,
         }),
       );
-      // Nothing is granted before Stripe confirms the payment
+      // Nothing is granted before the provider confirms the payment
       expect(mockPrismaService.contentUnlock.create).not.toHaveBeenCalled();
       expect(mockPrismaService.transaction.create).not.toHaveBeenCalled();
       expect(mockPrismaService.creatorProfile.updateMany).not.toHaveBeenCalled();
@@ -412,13 +427,13 @@ describe('ContentService', () => {
         ...pendingPayment,
         status: 'completed',
         completed: true,
-        clientSecret: null,
+        redirectUrl: null,
       });
 
-      const result = await service.unlockContent(userId, contentId, 'pm_1');
+      const result = await service.unlockContent(userId, contentId, { paymentCardId: 'card-1', withdrawalWaiver: true });
 
       expect(mockOneTimePayments.startPayment).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentMethodId: 'pm_1' }),
+        expect.objectContaining({ paymentCardId: 'card-1', withdrawalWaiver: true }),
       );
       expect(result.unlocked).toBe(true);
     });
@@ -458,14 +473,13 @@ describe('ContentService', () => {
         status: 'completed',
         completed: true,
         transactionId: 'tx-1',
-        paymentIntentId: 'pi_123',
-        clientSecret: null,
+        redirectUrl: null,
         amount: 10,
       });
 
-      const result = await service.confirmUnlock('user-123', 'content-456', 'pi_123');
+      const result = await service.confirmUnlock('user-123', 'content-456', 'tx-1');
 
-      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('user-123', 'pi_123', {
+      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('user-123', 'tx-1', {
         kind: 'content_unlock',
         contentId: 'content-456',
       });
@@ -498,9 +512,11 @@ describe('ContentService', () => {
 
     describe('createContent', () => {
       beforeEach(() => {
-        mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR' });
+        mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' });
         mockPrismaService.content.create.mockResolvedValue({ id: 'new-1', files: [] });
+        mockPrismaService.content.update.mockImplementation(async ({ data }: any) => ({ ...ownContent, id: 'new-1', ...data }));
         mockPrismaService.contentFile.updateMany.mockResolvedValue({ count: 1 });
+        mockPrismaService.contentFile.findMany.mockResolvedValue([]);
       });
 
       it('should only link files uploaded by the creator and not yet attached', async () => {
@@ -513,18 +529,24 @@ describe('ContentService', () => {
         });
       });
 
-      it('should publish immediately when asked', async () => {
-        await service.createContent(creatorId, { type: 'PHOTO', publish: true } as any);
+      it('should send content to review when asked to publish (pre-moderation)', async () => {
+        const result = await service.createContent(creatorId, { type: 'PHOTO', publish: true } as any);
 
         expect(mockPrismaService.content.create).toHaveBeenCalledWith(
           expect.objectContaining({
-            data: expect.objectContaining({ status: 'PUBLISHED', publishedAt: expect.any(Date) }),
+            data: expect.objectContaining({ status: 'DRAFT', publishedAt: null }),
           }),
         );
-        expect(mockPrismaService.creatorProfile.updateMany).toHaveBeenCalled();
+        expect(mockPrismaService.content.update.mock.calls[0][0].data).toMatchObject({
+          status: 'UNDER_REVIEW',
+          submittedForReviewAt: expect.any(Date),
+          isModerated: false,
+        });
+        expect(result.status).toBe('UNDER_REVIEW');
+        expect(mockPrismaService.creatorProfile.updateMany).not.toHaveBeenCalled();
       });
 
-      it('should keep scheduled content as a draft even when publish is asked', async () => {
+      it('should keep the schedule of content sent to review', async () => {
         const scheduledFor = new Date(Date.now() + 3600_000);
         await service.createContent(creatorId, { type: 'PHOTO', publish: true, scheduledFor } as any);
 
@@ -533,6 +555,22 @@ describe('ContentService', () => {
             data: expect.objectContaining({ status: 'DRAFT', publishedAt: null, scheduledFor }),
           }),
         );
+        expect(mockPrismaService.content.update.mock.calls[0][0].data).toMatchObject({
+          status: 'UNDER_REVIEW',
+          scheduledFor,
+        });
+      });
+
+      it('should refuse publication without a verified identity, but allow drafts', async () => {
+        mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR', kycStatus: 'PENDING', status: 'ACTIVE' });
+
+        await expect(
+          service.createContent(creatorId, { type: 'PHOTO', publish: true } as any),
+        ).rejects.toThrow('Vérifiez votre identité pour publier');
+        expect(mockPrismaService.content.create).not.toHaveBeenCalled();
+
+        await service.createContent(creatorId, { type: 'PHOTO' } as any);
+        expect(mockPrismaService.content.create).toHaveBeenCalled();
       });
 
       it('should reject a schedule date in the past', async () => {
@@ -675,24 +713,22 @@ describe('ContentService', () => {
         mockPrismaService.content.update.mockImplementation(async ({ data }: any) => ({ ...ownContent, ...data }));
       });
 
-      it('should publish a draft and clear its schedule', async () => {
+      it('should send a draft to review and clear its schedule', async () => {
+        mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' });
+        mockPrismaService.contentFile.findMany.mockResolvedValue([{ scanStatus: 'CLEAN' }]);
         mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, scheduledFor: new Date() });
 
         const result = await service.publishContent(creatorId, 'content-1');
 
-        expect(result.status).toBe('PUBLISHED');
+        expect(result.status).toBe('UNDER_REVIEW');
         expect(mockPrismaService.content.update.mock.calls[0][0].data).toMatchObject({
-          status: 'PUBLISHED',
+          status: 'UNDER_REVIEW',
           scheduledFor: null,
-        });
-        expect(mockPrismaService.creatorProfile.updateMany).toHaveBeenCalledWith({
-          where: { userId: creatorId },
-          data: { totalContent: 0 },
         });
       });
 
-      it('should not let content under moderation be published', async () => {
-        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, status: 'REJECTED' });
+      it('should not let content under review be published again', async () => {
+        mockPrismaService.content.findUnique.mockResolvedValue({ ...ownContent, status: 'UNDER_REVIEW' });
 
         await expect(service.publishContent(creatorId, 'content-1')).rejects.toThrow(BadRequestException);
       });

@@ -1,13 +1,12 @@
 'use client'
 
-import { Suspense, useMemo, useState } from 'react'
+import { Suspense, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import SubscriptionCheckout, { PENDING_SUBSCRIPTION_PARAM } from '@/components/checkout/subscription-checkout'
+import SubscriptionCheckout from '@/components/checkout/subscription-checkout'
 import OneTimeCheckout, { type OneTimePaymentResult } from '@/components/checkout/one-time-checkout'
-import { isStripeConfigured, STRIPE_NOT_CONFIGURED_MESSAGE } from '@/components/checkout/stripe-payment-element'
-import { contentApi, liveApi, paymentsApi } from '@/lib/api'
+import { contentApi, liveApi, paymentsApi, type PurchaseOptions } from '@/lib/api'
 import { formatEuros } from '@/lib/utils'
 import { getPaymentErrorMessage } from '@/lib/payment-errors'
 import { Card, CardContent } from '@/components/ui/card'
@@ -27,7 +26,7 @@ interface CheckoutInfo {
   type: CheckoutType
   itemId: string
   title: string
-  amount: number | null // euros, null for tips
+  amount: number | null // euros excluding VAT, null for tips
   interval?: string
   minimumTip?: number
   maximumTip?: number
@@ -38,9 +37,9 @@ interface CheckoutInfo {
 }
 
 const UNAVAILABLE_MESSAGES: Record<NonNullable<CheckoutInfo['unavailableReason']>, string> = {
-  PAYMENTS_DISABLED: STRIPE_NOT_CONFIGURED_MESSAGE,
+  PAYMENTS_DISABLED: 'Les paiements ne sont pas encore configurés sur la plateforme.',
   CREATOR_NOT_READY:
-    'Ce créateur n’a pas encore activé les paiements : il n’est pas possible de le payer pour le moment.',
+    'Ce créateur n’a pas encore fait vérifier son identité : il n’est pas possible de le payer pour le moment.',
   TIPS_DISABLED: 'Ce créateur n’accepte pas les pourboires.',
   OWN_ITEM: 'Vous ne pouvez pas payer pour votre propre contenu.',
   NOT_PAID: 'Cet élément est gratuit : aucun paiement n’est nécessaire.',
@@ -98,26 +97,6 @@ function Checkout() {
   const returnUrl = safeReturnUrl(searchParams.get('returnUrl'))
   const changeFrom = searchParams.get('changeFrom') || undefined
   const suggestedTip = parseEuros(searchParams.get('amount') || '')
-
-  // Back from a Stripe redirect (3D Secure page)
-  const redirectStatus = searchParams.get('redirect_status')
-  const paymentIntentParam = searchParams.get('payment_intent')
-  const pendingSubscription = searchParams.get(PENDING_SUBSCRIPTION_PARAM)
-  const subscriptionResume = useMemo(
-    () =>
-      redirectStatus && pendingSubscription
-        ? { stripeSubscriptionId: pendingSubscription, status: redirectStatus }
-        : undefined,
-    [redirectStatus, pendingSubscription],
-  )
-  const oneTimeResume = useMemo(
-    () =>
-      redirectStatus && paymentIntentParam && !pendingSubscription
-        ? { paymentIntentId: paymentIntentParam, status: redirectStatus }
-        : undefined,
-    [redirectStatus, paymentIntentParam, pendingSubscription],
-  )
-  const resuming = !!(subscriptionResume || oneTimeResume)
 
   const [tipInput, setTipInput] = useState<string | null>(null)
   const [tipMessage, setTipMessage] = useState(searchParams.get('message') || '')
@@ -189,7 +168,7 @@ function Checkout() {
 
   const creatorName = info.creator.displayName || info.creator.username
 
-  if (!resuming && info.alreadyOwned) {
+  if (info.alreadyOwned) {
     return (
       <StatusCard
         icon="success"
@@ -201,10 +180,9 @@ function Checkout() {
     )
   }
 
-  const unavailableReason =
-    info.unavailableReason ?? (!isStripeConfigured() ? 'PAYMENTS_DISABLED' : undefined)
+  const unavailableReason = info.unavailableReason
 
-  if (!resuming && unavailableReason) {
+  if (unavailableReason) {
     return (
       <StatusCard
         icon="error"
@@ -252,29 +230,30 @@ function Checkout() {
   const handlers: Record<
     Exclude<CheckoutType, 'subscription'>,
     {
-      start: (paymentMethodId?: string) => Promise<OneTimePaymentResult>
-      confirm: (paymentIntentId: string) => Promise<OneTimePaymentResult>
+      start: (options: PurchaseOptions) => Promise<OneTimePaymentResult>
+      confirm: (transactionId: string) => Promise<OneTimePaymentResult>
     }
   > = {
     ppv: {
-      start: async (paymentMethodId) => (await contentApi.unlockPPV(itemId, paymentMethodId)).data,
-      confirm: async (paymentIntentId) => (await contentApi.confirmUnlock(itemId, paymentIntentId)).data,
+      start: async (options) => (await contentApi.unlockPPV(itemId, options)).data,
+      confirm: async (transactionId) => (await contentApi.confirmUnlock(itemId, transactionId)).data,
     },
     stream: {
-      start: async (paymentMethodId) => (await liveApi.purchase(itemId, paymentMethodId)).data,
-      confirm: async (paymentIntentId) => (await liveApi.confirmPurchase(itemId, paymentIntentId)).data,
+      start: async (options) => (await liveApi.purchase(itemId, options)).data,
+      confirm: async (transactionId) => (await liveApi.confirmPurchase(itemId, transactionId)).data,
     },
     tip: {
-      start: async (paymentMethodId) =>
+      start: async ({ paymentCardId, billingCountry }) =>
         (
           await paymentsApi.sendTip(itemId, {
             amount: tipAmount,
             message: tipMessage.trim() || undefined,
             streamId,
-            paymentMethodId,
+            paymentCardId,
+            billingCountry,
           })
         ).data,
-      confirm: async (paymentIntentId) => (await paymentsApi.confirmTip(itemId, paymentIntentId)).data,
+      confirm: async (transactionId) => (await paymentsApi.confirmTip(itemId, transactionId)).data,
     },
   }
 
@@ -287,7 +266,7 @@ function Checkout() {
 
       <div className="text-center">
         <h1 className="text-2xl sm:text-3xl font-bold mb-2">Paiement sécurisé</h1>
-        <p className="text-muted-foreground">Complétez votre achat en toute sécurité avec Stripe</p>
+        <p className="text-muted-foreground">Prix affichés hors taxes, TVA de votre pays ajoutée au total</p>
       </div>
 
       <Link
@@ -311,7 +290,6 @@ function Checkout() {
           interval={info.interval}
           description={itemDescription}
           changeFromSubscriptionId={changeFrom}
-          resume={subscriptionResume}
           onSuccess={done}
           onCancel={goBack}
         />
@@ -322,13 +300,12 @@ function Checkout() {
           description={itemDescription}
           start={handlers[type].start}
           confirm={handlers[type].confirm}
-          resume={oneTimeResume}
           disabled={!!tipError}
           summaryExtra={
             type === 'tip' ? (
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="tip-amount">Montant (€)</Label>
+                  <Label htmlFor="tip-amount">Montant HT (€)</Label>
                   <Input
                     id="tip-amount"
                     type="number"

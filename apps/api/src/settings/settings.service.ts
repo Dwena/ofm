@@ -12,6 +12,8 @@ export interface PlatformSettings {
   platformFeePercentage: number;
   /** Minimum available balance (EUR) before an automated payout is created */
   minimumPayoutAmount: number;
+  /** Days a creator earning stays on hold before it can be paid out (absorbs refunds and chargebacks) */
+  earningsHoldDays: number;
   /** When false, POST /auth/register is refused */
   registrationOpen: boolean;
   /** When true, non-admin API requests are answered with 503 (see MaintenanceGuard) */
@@ -32,8 +34,9 @@ interface SettingDefinition<K extends PlatformSettingKey = PlatformSettingKey> {
 }
 
 export const SETTING_DEFINITIONS: { [K in PlatformSettingKey]: SettingDefinition<K> } = {
-  platformFeePercentage: { env: 'STRIPE_PLATFORM_FEE_PERCENTAGE', type: 'number', default: 15, min: 0, max: 50 },
+  platformFeePercentage: { env: 'PLATFORM_FEE_PERCENTAGE', type: 'number', default: 15, min: 0, max: 50 },
   minimumPayoutAmount: { env: 'MINIMUM_PAYOUT_AMOUNT', type: 'number', default: 50, min: 0, max: 10000 },
+  earningsHoldDays: { env: 'EARNINGS_HOLD_DAYS', type: 'number', default: 7, min: 0, max: 90 },
   registrationOpen: { env: 'REGISTRATION_OPEN', type: 'boolean', default: true },
   maintenanceMode: { env: 'MAINTENANCE_MODE', type: 'boolean', default: false },
   maintenanceMessage: {
@@ -76,6 +79,10 @@ export class SettingsService {
   /** Minimum payout, in euros */
   async getMinimumPayoutAmount(): Promise<number> {
     return this.get('minimumPayoutAmount');
+  }
+
+  async getEarningsHoldDays(): Promise<number> {
+    return this.get('earningsHoldDays');
   }
 
   async isRegistrationOpen(): Promise<boolean> {

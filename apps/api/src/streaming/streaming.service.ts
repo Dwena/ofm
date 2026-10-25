@@ -11,11 +11,17 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { nanoid } from 'nanoid';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService, PurchaseOptions } from '../payments/payment-flow.service';
 import { LiveTipsService, toTipGoalView } from './live-tips.service';
 import { LiveKitRole, LiveKitService, LiveKitTokenResponse, LiveTransport } from './livekit.service';
 import { INGRESS_UNAVAILABLE, LiveIngressService } from './live-ingress.service';
 import type { LiveSource } from './dto/live-ingress.dto';
+import {
+  PUBLISHING_USER_SELECT,
+  assertCanPublish,
+  validateCoPerformerIds,
+} from '../verification/publication-gate';
+import { assertTextAllowed } from '../moderation/content-rules';
 
 export type StreamAccessDeniedReason =
   | 'PRIVATE'
@@ -89,11 +95,22 @@ export class StreamingService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
-    private oneTimePayments: OneTimePaymentService,
+    private paymentFlow: PaymentFlowService,
     @Optional() private liveTips?: LiveTipsService,
     @Optional() private liveKit?: LiveKitService,
     @Optional() private liveIngress?: LiveIngressService,
   ) {}
+
+  /**
+   * Publishing gate of lives: verified identity (KYC), account not suspended
+   */
+  private async assertCanGoLive(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: PUBLISHING_USER_SELECT,
+    });
+    assertCanPublish(user);
+  }
 
   /**
    * Video transport of the lives: the LiveKit SFU when it is configured
@@ -110,17 +127,22 @@ export class StreamingService {
     // Verify user is a creator
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { role: true, stripeAccountId: true, stripeOnboarded: true },
+      select: { role: true, kycStatus: true, status: true, deletedAt: true },
     });
 
     if (user?.role !== 'CREATOR') {
       throw new ForbiddenException('Only creators can create live streams');
     }
 
+    // Verified identity (KYC) required to announce or start a live
+    await this.assertCanGoLive(userId);
+
     const title = dto.title?.trim();
     if (!title) {
       throw new BadRequestException('Title is required');
     }
+    assertTextAllowed(title, dto.description);
+    const coPerformerIds = await validateCoPerformerIds(this.prisma, userId, dto.coPerformerIds);
 
     const scheduledFor = dto.scheduledFor ? new Date(dto.scheduledFor) : null;
     if (scheduledFor && scheduledFor.getTime() <= Date.now()) {
@@ -133,8 +155,8 @@ export class StreamingService {
         throw new BadRequestException('PPV streams must have a valid price');
       }
 
-      if (!user.stripeAccountId || !user.stripeOnboarded) {
-        throw new BadRequestException('Payment account must be set up for PPV streams');
+      if (!PaymentFlowService.canSell(user)) {
+        throw new BadRequestException('Vérifiez votre identité pour proposer des lives payants');
       }
     }
 
@@ -169,6 +191,7 @@ export class StreamingService {
         streamKey,
         streamUrl,
         source,
+        coPerformerIds,
         status: scheduledFor ? 'SCHEDULED' : 'LIVE',
         startedAt: scheduledFor ? null : new Date(),
       },
@@ -222,6 +245,13 @@ export class StreamingService {
     if (dto.title !== undefined && !dto.title.trim()) {
       throw new BadRequestException('Title is required');
     }
+    if (dto.title !== undefined || dto.description !== undefined) {
+      assertTextAllowed(dto.title, dto.description);
+    }
+    const coPerformerIds =
+      dto.coPerformerIds !== undefined
+        ? await validateCoPerformerIds(this.prisma, userId, dto.coPerformerIds)
+        : undefined;
 
     if (dto.scheduledFor && new Date(dto.scheduledFor).getTime() <= Date.now()) {
       throw new BadRequestException('Scheduled date must be in the future');
@@ -241,6 +271,7 @@ export class StreamingService {
         isPpv: dto.isPpv,
         ppvPrice: dto.ppvPrice,
         scheduledFor: dto.scheduledFor ? new Date(dto.scheduledFor) : undefined,
+        coPerformerIds,
         updatedAt: new Date(),
       },
       include: {
@@ -282,6 +313,7 @@ export class StreamingService {
       throw new BadRequestException('Cannot restart ended streams');
     }
 
+    await this.assertCanGoLive(userId);
     await this.assertNoOtherLiveStream(userId, streamId);
 
     // The source can still be changed when the live starts
@@ -324,6 +356,74 @@ export class StreamingService {
     if (stream.status === 'ENDED') {
       throw new BadRequestException('Stream is already ended');
     }
+
+    return this.finishStream(streamId, stream);
+  }
+
+  /**
+   * Moderators cut a live (or cancel an announced one) that breaks the rules.
+   * Lives cannot be reviewed before they happen: they must be monitored in
+   * real time by the moderation team (moderators can watch any live, see
+   * checkViewAccess) and cut here; reports on lives go to the same team.
+   */
+  async moderatorEndStream(moderatorId: string, streamId: string, reason?: string) {
+    const stream = await this.prisma.liveStream.findUnique({
+      where: { id: streamId },
+      select: { creatorId: true, status: true, startedAt: true, source: true, title: true },
+    });
+
+    if (!stream) {
+      throw new NotFoundException('Stream not found');
+    }
+
+    if (stream.status !== 'LIVE' && stream.status !== 'SCHEDULED') {
+      throw new BadRequestException('Stream is already ended');
+    }
+
+    const cleanReason = reason?.trim() || null;
+    let result: any;
+    if (stream.status === 'SCHEDULED') {
+      result = withoutStreamKey(
+        await this.prisma.liveStream.update({
+          where: { id: streamId },
+          data: { status: 'CANCELLED', endedAt: new Date() },
+        }),
+      );
+    } else {
+      result = await this.finishStream(streamId, stream);
+    }
+
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          userId: moderatorId,
+          action: 'LIVE_ENDED_BY_MODERATOR',
+          resource: 'LIVE_STREAM',
+          resourceId: streamId,
+          metadata: { reason: cleanReason, creatorId: stream.creatorId, previousStatus: stream.status },
+        },
+      });
+      await this.prisma.notification.create({
+        data: {
+          userId: stream.creatorId,
+          type: 'SYSTEM',
+          title: stream.status === 'LIVE' ? 'Live interrompu par la modération' : 'Live annulé par la modération',
+          message: `Votre live "${stream.title}" a été ${stream.status === 'LIVE' ? 'interrompu' : 'annulé'} par l'équipe de modération.${cleanReason ? ` Motif : ${cleanReason}` : ''}`,
+          linkUrl: '/creator/live',
+        },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to record moderator end of stream ${streamId}: ${error.message}`);
+    }
+
+    return result;
+  }
+
+  private async finishStream(
+    streamId: string,
+    stream: { creatorId: string; startedAt: Date | null; source: LiveSource },
+  ) {
+    const userId = stream.creatorId;
 
     // Calculate duration
     const duration = stream.startedAt
@@ -981,12 +1081,12 @@ export class StreamingService {
   }
 
   /**
-   * Buy access to a PPV stream. Returns a pending payment to confirm
-   * client-side; access is granted once Stripe confirms it (webhook or
-   * confirmStreamPurchase), through a COMPLETED PPV_UNLOCK transaction whose
-   * contentId is the stream id.
+   * Buy access to a PPV stream. Completes right away with a saved card, or
+   * returns the provider's payment page; access is granted once the payment
+   * completes, through a COMPLETED PPV_UNLOCK transaction whose contentId is
+   * the stream id.
    */
-  async purchaseStream(userId: string, streamId: string, paymentMethodId?: string) {
+  async purchaseStream(userId: string, streamId: string, options: PurchaseOptions = {}) {
     const stream = await this.prisma.liveStream.findUnique({
       where: { id: streamId },
       select: {
@@ -1027,15 +1127,16 @@ export class StreamingService {
       throw new ForbiddenException(access.reason ?? 'Access denied');
     }
 
-    const payment = await this.oneTimePayments.startPayment({
+    const payment = await this.paymentFlow.startPayment({
+      ...options,
       payerId: userId,
       creatorId: stream.creatorId,
       kind: 'stream_access',
       amount: Number(stream.ppvPrice),
       contentId: stream.id,
-      paymentMethodId,
       description: `Live PPV de @${stream.creator.username} : ${stream.title}`,
       metadata: { streamId: stream.id },
+      returnPath: `/live/${stream.id}`,
     });
 
     this.logger.log(`Stream purchase started: ${streamId} by user ${userId} (${payment.status})`);
@@ -1044,10 +1145,10 @@ export class StreamingService {
   }
 
   /**
-   * Re-check a PPV stream payment with Stripe after client-side confirmation (idempotent)
+   * State of a PPV stream payment (after the provider's payment page, idempotent)
    */
-  async confirmStreamPurchase(userId: string, streamId: string, paymentIntentId: string) {
-    const payment = await this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+  async confirmStreamPurchase(userId: string, streamId: string, transactionId: string) {
+    const payment = await this.paymentFlow.confirmPayment(userId, transactionId, {
       kind: 'stream_access',
       contentId: streamId,
     });

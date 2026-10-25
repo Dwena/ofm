@@ -12,9 +12,9 @@ const benefits = [
 ]
 
 const reassurance = [
-  'Chaque créateur fixe son prix : vous voyez le montant exact avant de payer.',
+  'Chaque créateur fixe son prix : vous voyez le montant exact TTC avant de payer.',
   'Sans engagement : vous résiliez en un clic, l’accès reste ouvert jusqu’à la fin du mois payé.',
-  'Paiement par carte via Stripe : vos coordonnées bancaires ne passent jamais par nous.',
+  'Paiement par carte sur la page sécurisée de notre prestataire : vos coordonnées bancaires ne passent jamais par nous.',
   'Envie d’un seul post ? Certains sont vendus à l’unité, sans abonnement.',
 ]
 
@@ -37,7 +37,7 @@ const faq: FaqItem[] = [
   },
   {
     question: 'Mes coordonnées bancaires sont-elles en sécurité ?',
-    answer: `Les paiements passent par Stripe, qui gère aussi ceux de milliers de sites. ${BRAND_NAME} ne voit ni ne stocke jamais votre numéro de carte.`,
+    answer: `Les paiements passent par un prestataire de paiement agréé. ${BRAND_NAME} ne voit ni ne stocke jamais votre numéro de carte.`,
   },
   {
     question: 'Je peux écrire à un créateur ?',
@@ -93,7 +93,7 @@ export default function Home() {
           </p>
           <LandingHeroActions audience="fans" />
           <p className="mt-6 text-sm text-muted-foreground">
-            Compte gratuit · Sans engagement · Paiement sécurisé par Stripe
+            Compte gratuit · Sans engagement · Paiement sécurisé
           </p>
         </div>
         <div className="pb-28">

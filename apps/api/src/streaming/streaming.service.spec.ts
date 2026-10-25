@@ -4,7 +4,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Prisma } from '@prisma/client';
 import { StreamingService } from './streaming.service';
 import { PrismaService } from '../common/database/prisma.service';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService } from '../payments/payment-flow.service';
 
 describe('StreamingService', () => {
   let service: StreamingService;
@@ -63,7 +63,7 @@ describe('StreamingService', () => {
         StreamingService,
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: ConfigService, useValue: { get: jest.fn((_key: string, fallback?: string) => fallback) } },
-        { provide: OneTimePaymentService, useValue: mockOneTimePayments },
+        { provide: PaymentFlowService, useValue: mockOneTimePayments },
       ],
     }).compile();
 
@@ -300,8 +300,9 @@ describe('StreamingService', () => {
     beforeEach(() => {
       mockPrismaService.user.findUnique.mockResolvedValue({
         role: 'CREATOR',
-        stripeAccountId: 'acct_1',
-        stripeOnboarded: true,
+        kycStatus: 'VERIFIED',
+        status: 'ACTIVE',
+        deletedAt: null,
       });
       mockPrismaService.liveStream.findFirst.mockResolvedValue(null);
       mockPrismaService.liveStream.create.mockImplementation(async ({ data }) => ({ id: 'stream-1', ...data }));
@@ -343,6 +344,7 @@ describe('StreamingService', () => {
 
   describe('startStream', () => {
     it('refuses to start while another live is in progress', async () => {
+      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' });
       mockPrismaService.liveStream.findUnique.mockResolvedValue({ creatorId: 'creator-1', status: 'SCHEDULED' });
       mockPrismaService.liveStream.findFirst.mockResolvedValue({ id: 'other' });
       await expect(service.startStream('creator-1', 'stream-1')).rejects.toThrow(BadRequestException);
@@ -522,12 +524,15 @@ describe('StreamingService', () => {
     };
 
     const pendingPayment = {
-      status: 'requires_payment_method',
+      status: 'requires_redirect',
       completed: false,
       transactionId: 'tx-1',
-      paymentIntentId: 'pi_1',
-      clientSecret: 'secret',
+      redirectUrl: 'https://pay.example/checkout',
       amount: 12.5,
+      vatRate: 20,
+      vatAmount: 2.5,
+      totalAmount: 15,
+      failureReason: null,
     };
 
     it('starts a pending PPV_UNLOCK payment keyed by the stream id', async () => {
@@ -547,7 +552,7 @@ describe('StreamingService', () => {
         }),
       );
       expect(result).toEqual(
-        expect.objectContaining({ purchased: false, alreadyPurchased: false, clientSecret: 'secret' }),
+        expect.objectContaining({ purchased: false, alreadyPurchased: false, redirectUrl: 'https://pay.example/checkout' }),
       );
     });
 
@@ -580,9 +585,9 @@ describe('StreamingService', () => {
     it('confirms through the one-time payment flow', async () => {
       mockOneTimePayments.confirmPayment.mockResolvedValue({ ...pendingPayment, status: 'completed', completed: true });
 
-      const result = await service.confirmStreamPurchase('user-1', 'stream-1', 'pi_1');
+      const result = await service.confirmStreamPurchase('user-1', 'stream-1', 'tx-1');
 
-      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('user-1', 'pi_1', {
+      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('user-1', 'tx-1', {
         kind: 'stream_access',
         contentId: 'stream-1',
       });

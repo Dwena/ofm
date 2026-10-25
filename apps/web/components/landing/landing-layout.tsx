@@ -9,6 +9,7 @@ import {
   LandingMaintenanceBanner,
 } from '@/components/landing-actions'
 import { cn } from '@/lib/utils'
+import { SiteFooter } from '@/components/site-footer'
 
 const AUDIENCES: { audience: Audience; href: string; label: string }[] = [
   { audience: 'fans', href: '/', label: 'Fans' },
@@ -145,7 +146,9 @@ export function LandingLayout({
               Connexion
             </Link>
           </div>
-          <p>&copy; {new Date().getFullYear()} {BRAND_NAME}</p>
+        </div>
+        <div className="container mx-auto border-t px-4">
+          <SiteFooter />
         </div>
       </footer>
     </div>

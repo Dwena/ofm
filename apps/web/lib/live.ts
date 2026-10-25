@@ -31,7 +31,12 @@ export function getIceServers(): RTCIceServer[] {
 export function createLiveSocket(options: { onAuthError?: () => void } = {}): Socket {
   const socket = io(`${SOCKET_URL}/streaming`, {
     // Read at every (re)connection, so a refreshed access token is used
-    auth: (cb) => cb({ token: typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null }),
+    // ageVerificationToken: anonymous age verification token (lib/age-verification.ts), needed to watch
+    auth: (cb) =>
+      cb({
+        token: typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null,
+        ageVerificationToken: typeof window !== 'undefined' ? localStorage.getItem('ageVerificationToken') : null,
+      }),
     transports: ['websocket', 'polling'],
   })
 
@@ -121,7 +126,7 @@ const API_ERROR_MESSAGES: Record<string, string> = {
   'Scheduled date must be in the future': 'La date de programmation doit être dans le futur.',
   'PPV streams must have a valid price': "Le prix d'accès doit être d'au moins 1 €.",
   'Payment account must be set up for PPV streams':
-    'Configurez votre compte de paiement (Stripe) avant de proposer un live payant.',
+    'Vérifiez votre identité avant de proposer un live payant.',
   'You already have a live stream in progress':
     'Vous avez déjà un live en cours. Reprenez-le ou terminez-le avant d’en lancer un autre.',
   'Stream is already live': 'Ce live est déjà en cours.',

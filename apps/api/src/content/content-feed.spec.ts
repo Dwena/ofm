@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { ContentService } from './content.service';
 import { PrismaService } from '../common/database/prisma.service';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService } from '../payments/payment-flow.service';
 import { StorageService } from '../storage/storage.service';
 
 describe('ContentService feed', () => {
@@ -20,7 +20,7 @@ describe('ContentService feed', () => {
       providers: [
         ContentService,
         { provide: PrismaService, useValue: mockPrismaService },
-        { provide: OneTimePaymentService, useValue: {} },
+        { provide: PaymentFlowService, useValue: {} },
         { provide: StorageService, useValue: { getSignedUrl: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
       ],

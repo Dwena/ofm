@@ -1,23 +1,16 @@
 import { Injectable, Logger, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
-import Stripe from 'stripe';
 import { PrismaService } from '../common/database/prisma.service';
-import { PaymentsService } from '../payments/payments.service';
-import { StripeService } from '../payments/stripe.service';
-import {
-  SubscriptionSyncService,
-  CLEARED_DOWNGRADE_METADATA,
-  REPLACES_SUBSCRIPTION_METADATA_KEY,
-  buildDowngradeMetadata,
-} from '../payments/subscription-sync.service';
+import { BillingService } from '../payments/billing.service';
+import { PaymentFlowResult, PaymentFlowService } from '../payments/payment-flow.service';
+import { SubscriptionSyncService } from '../payments/subscription-sync.service';
+import type { PaymentRequestContext } from '../payments/payments.service';
 import { CreateTierDto, UpdateTierDto } from './dto/subscription-tier.dto';
-import { SubscribeDto, ChangeTierDto } from './dto/subscribe.dto';
+import { SubscribeDto, ChangeTierDto, RetryPaymentDto } from './dto/subscribe.dto';
 
 const tierCreatorSelect = {
   select: {
     id: true,
     username: true,
-    stripeAccountId: true,
-    stripeOnboarded: true,
   },
 } as const;
 
@@ -34,8 +27,8 @@ export class SubscriptionsService {
 
   constructor(
     private prisma: PrismaService,
-    private paymentsService: PaymentsService,
-    private stripeService: StripeService,
+    private billing: BillingService,
+    private paymentFlow: PaymentFlowService,
     private subscriptionSync: SubscriptionSyncService,
   ) {}
 
@@ -225,13 +218,8 @@ export class SubscriptionsService {
       throw new ForbiddenException('Vous ne pouvez modifier que vos propres offres');
     }
 
-    // A Stripe price is immutable: drop it when pricing changes so the next
-    // subscription creates a new one (existing subscribers keep their price)
-    const pricingChanged =
-      (dto.price !== undefined && Number(dto.price) !== Number(tier.price)) ||
-      (dto.currency !== undefined && dto.currency !== tier.currency) ||
-      (dto.interval !== undefined && dto.interval !== tier.interval);
-
+    // Existing subscribers keep renewing at the price they subscribed at
+    // (BillingService.getRenewalPrice): a new price applies to new subscribers
     // Update tier
     const updatedTier = await this.prisma.subscriptionTier.update({
       where: { id: tierId },
@@ -243,7 +231,6 @@ export class SubscriptionsService {
         interval: dto.interval,
         benefits: dto.benefits,
         isActive: dto.isActive,
-        ...(pricingChanged && { stripePriceId: null }),
       },
     });
 
@@ -302,13 +289,11 @@ export class SubscriptionsService {
   // Subscription lifecycle
 
   /**
-   * Subscribe the user to a tier.
-   * Free tiers are activated directly. Paid tiers create a Stripe subscription
-   * transferred to the creator's connected account; unless a saved card was
-   * charged successfully, the client must confirm the first payment with the
-   * returned clientSecret and then call confirmSubscription.
+   * Subscribe the user to a tier. Free tiers are activated directly; paid
+   * tiers are paid first (saved card, or the provider's payment page) and the
+   * subscription starts once the payment completes.
    */
-  async subscribe(userId: string, dto: SubscribeDto): Promise<SubscribeResult> {
+  async subscribe(userId: string, dto: SubscribeDto, context: PaymentRequestContext = {}): Promise<SubscribeResult> {
     const tier = await this.prisma.subscriptionTier.findUnique({
       where: { id: dto.tierId },
       include: { creator: tierCreatorSelect },
@@ -345,31 +330,41 @@ export class SubscriptionsService {
       return this.activateFreeSubscription(userId, tier);
     }
 
-    return this.createPaidSubscription(userId, tier, dto.paymentMethodId);
+    const payment = await this.billing.startSubscriptionPayment({
+      userId,
+      tier,
+      action: 'new',
+      amount: Number(tier.price),
+      paymentCardId: dto.paymentCardId,
+      billingCountry: dto.billingCountry,
+      withdrawalWaiver: dto.withdrawalWaiver,
+      ...context,
+    });
+
+    return this.toSubscribeResult(payment, userId, tier.id);
   }
 
   /**
    * Switch an active subscription to another tier of the same creator.
    *
-   * - paid → paid upgrade (higher price, or another billing interval): the
-   *   Stripe item price is swapped right away and the prorated difference is
-   *   invoiced immediately (`always_invoice`). With `pending_if_incomplete` the
-   *   change only applies once that invoice is paid; when it needs 3D Secure
-   *   the clientSecret is returned and the client calls confirmSubscription.
-   * - paid → paid downgrade (lower price, same interval): applied at the end of
-   *   the paid period. The item price is swapped with `proration_behavior:
-   *   none` (nothing charged or credited, next invoice bills the lower price)
-   *   and the downgrade is recorded in the subscription metadata, so the sync
-   *   keeps the current tier and exposes `pendingTierId` until the rollover.
-   *   No subscription schedule is needed.
-   * - paid → free: the paid subscription is cancelled at period end, then the
-   *   free tier is activated when Stripe reports it ended.
+   * - paid → paid upgrade (higher price, or another billing interval): paid
+   *   now, prorated (new price minus the unused part of the current period),
+   *   and a new period starts at the new tier once paid.
+   * - paid → paid downgrade (lower price, same interval): applied at the next
+   *   renewal (pendingTierId), which bills the lower price.
+   * - paid → free: the paid subscription ends at period end, then the free
+   *   tier is activated.
    * - free → paid: goes through the regular paid subscription flow; the free
    *   subscription ends once the paid one is active.
    * - free → free: immediate.
-   * Choosing the current tier again undoes a scheduled downgrade.
+   * Choosing the current tier again undoes a scheduled change.
    */
-  async changeTier(userId: string, subscriptionId: string, dto: ChangeTierDto): Promise<SubscribeResult> {
+  async changeTier(
+    userId: string,
+    subscriptionId: string,
+    dto: ChangeTierDto,
+    context: PaymentRequestContext = {},
+  ): Promise<SubscribeResult> {
     const subscription = await this.getOwnSubscription(userId, subscriptionId);
 
     if (subscription.status !== 'ACTIVE') {
@@ -389,18 +384,36 @@ export class SubscriptionsService {
       throw new BadRequestException('This tier belongs to another creator');
     }
 
-    const currentIsPaid = !!subscription.stripeSubscriptionId;
+    const currentIsPaid = Number(subscription.tier.price) > 0;
     const targetIsPaid = Number(target.price) > 0;
+    const hasScheduledChange = !!subscription.pendingTierId || subscription.cancelAtPeriodEnd;
 
-    if (target.id === subscription.tierId && !(currentIsPaid && subscription.pendingTierId)) {
-      throw new BadRequestException('You are already subscribed to this tier');
+    if (target.id === subscription.tierId) {
+      if (!(currentIsPaid && hasScheduledChange)) {
+        throw new BadRequestException('You are already subscribed to this tier');
+      }
+      const restored = await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { pendingTierId: null, cancelAtPeriodEnd: false, cancelledAt: null },
+      });
+      this.logger.log(`Scheduled tier change of subscription ${subscription.id} undone`);
+      return { requiresPayment: false, subscription: restored };
     }
 
     if (!currentIsPaid) {
       if (targetIsPaid) {
-        return this.createPaidSubscription(userId, target, dto.paymentMethodId, {
-          [REPLACES_SUBSCRIPTION_METADATA_KEY]: subscription.id,
+        const payment = await this.billing.startSubscriptionPayment({
+          userId,
+          tier: target,
+          action: 'new',
+          amount: Number(target.price),
+          replacesSubscriptionId: subscription.id,
+          paymentCardId: dto.paymentCardId,
+          billingCountry: dto.billingCountry,
+          withdrawalWaiver: dto.withdrawalWaiver,
+          ...context,
         });
+        return this.toSubscribeResult(payment, userId, target.id);
       }
 
       await this.prisma.subscription.update({
@@ -412,100 +425,65 @@ export class SubscriptionsService {
       return this.activateFreeSubscription(userId, target);
     }
 
-    const stripeSubscriptionId = subscription.stripeSubscriptionId as string;
-    let stripeSubscription = await this.stripeService.retrieveSubscription(stripeSubscriptionId);
-
-    // Drop a scheduled downgrade or cancellation first, so the change starts
-    // from the tier the fan currently has and paid for
-    if (
-      subscription.pendingTierId ||
-      subscription.cancelAtPeriodEnd ||
-      stripeSubscription.cancel_at_period_end
-    ) {
-      stripeSubscription = await this.stripeService.updateTierSubscription(
-        stripeSubscriptionId,
-        this.undoScheduledChangesParams(stripeSubscription),
-      );
-
-      if (target.id === subscription.tierId) {
-        this.logger.log(`Scheduled tier change of subscription ${subscription.id} undone`);
-        return {
-          requiresPayment: false,
-          subscription: await this.subscriptionSync.syncFromStripe(stripeSubscription),
-        };
-      }
-    }
-
-    const item = stripeSubscription.items.data[0];
-    const downgradeMetadata = buildDowngradeMetadata({
-      toTierId: target.id,
-      fromTierId: subscription.tierId,
-      fromPriceId: item.price.id,
-      at: stripeSubscription.current_period_end,
-    });
-
     if (!targetIsPaid) {
-      const updated = await this.stripeService.updateTierSubscription(stripeSubscriptionId, {
-        cancel_at_period_end: true,
-        metadata: downgradeMetadata,
+      const updated = await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { pendingTierId: target.id, cancelAtPeriodEnd: true },
       });
-
-      this.logger.log(
-        `Subscription ${subscription.id} will switch to free tier ${target.id} at period end`,
-      );
-      return { requiresPayment: false, subscription: await this.subscriptionSync.syncFromStripe(updated) };
+      this.logger.log(`Subscription ${subscription.id} will switch to free tier ${target.id} at period end`);
+      return { requiresPayment: false, subscription: updated };
     }
 
-    const priceId = await this.ensureStripePrice(target);
     const isDowngrade =
-      target.interval === subscription.tier.interval &&
-      Number(target.price) < Number(subscription.tier.price);
+      target.interval === subscription.tier.interval && Number(target.price) < Number(subscription.tier.price);
 
     if (isDowngrade) {
-      const updated = await this.stripeService.updateTierSubscription(stripeSubscriptionId, {
-        items: [{ id: item.id, price: priceId }],
-        proration_behavior: 'none',
-        metadata: downgradeMetadata,
+      const updated = await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { pendingTierId: target.id, cancelAtPeriodEnd: false, cancelledAt: null },
       });
-
-      this.logger.log(
-        `Subscription ${subscription.id} will downgrade to tier ${target.id} at period end`,
-      );
-      return { requiresPayment: false, subscription: await this.subscriptionSync.syncFromStripe(updated) };
+      this.logger.log(`Subscription ${subscription.id} will downgrade to tier ${target.id} at period end`);
+      return { requiresPayment: false, subscription: updated };
     }
 
-    const updated = await this.stripeService.updateTierSubscription(stripeSubscriptionId, {
-      items: [{ id: item.id, price: priceId }],
-      proration_behavior: 'always_invoice',
-      payment_behavior: 'pending_if_incomplete',
+    const currentPrice = await this.billing.getRenewalPrice(subscription.id, subscription.tier);
+    const amount = BillingService.upgradePrice({
+      currentPrice,
+      newPrice: Number(target.price),
+      periodStart: subscription.currentPeriodStart,
+      periodEnd: subscription.currentPeriodEnd,
     });
 
-    this.logger.log(
-      `Subscription ${subscription.id} upgrade to tier ${target.id} requested` +
-        (updated.pending_update ? ' (awaiting payment)' : ''),
-    );
-    return this.toSubscribeResult(updated);
+    const payment = await this.billing.startSubscriptionPayment({
+      userId,
+      tier: target,
+      action: 'upgrade',
+      // Payment providers refuse tiny amounts
+      amount: Math.max(amount, 0.5),
+      subscriptionId: subscription.id,
+      paymentCardId: dto.paymentCardId ?? subscription.paymentCardId ?? undefined,
+      billingCountry: dto.billingCountry,
+      withdrawalWaiver: dto.withdrawalWaiver,
+      ...context,
+    });
+
+    this.logger.log(`Subscription ${subscription.id} upgrade to tier ${target.id} requested (${payment.status})`);
+    return this.toSubscribeResult(payment, userId, target.id);
   }
 
   /**
-   * Sync a Stripe subscription right after the client confirmed its payment,
-   * so access does not depend on webhook latency
+   * State of a subscription payment after the provider's payment page
    */
-  async confirmSubscription(userId: string, stripeSubscriptionId: string): Promise<SubscribeResult> {
-    const stripeSubscription = await this.stripeService
-      .retrieveSubscription(stripeSubscriptionId)
-      .catch(() => null);
-
-    if (!stripeSubscription || stripeSubscription.metadata?.subscriberId !== userId) {
-      throw new NotFoundException('Subscription not found');
-    }
-
-    return this.toSubscribeResult(stripeSubscription);
+  async confirmSubscription(userId: string, transactionId: string): Promise<SubscribeResult> {
+    const payment = await this.paymentFlow.confirmPayment(userId, transactionId, { kind: 'subscription' });
+    const transaction = await this.prisma.transaction.findUnique({ where: { id: transactionId }, select: { metadata: true } });
+    const tierId = (transaction?.metadata as Record<string, unknown> | null)?.tierId;
+    return this.toSubscribeResult(payment, userId, typeof tierId === 'string' ? tierId : null);
   }
 
   /**
    * Cancel a subscription. Paid subscriptions stay active until the end of the
-   * paid period; free and past-due ones end immediately.
+   * paid period (no further renewal); free and past-due ones end immediately.
    */
   async cancelSubscription(userId: string, subscriptionId: string) {
     const subscription = await this.getOwnSubscription(userId, subscriptionId);
@@ -514,32 +492,21 @@ export class SubscriptionsService {
       throw new BadRequestException('Subscription is not active');
     }
 
+    const isPaid = Number(subscription.tier.price) > 0;
+
     // A scheduled switch to a free tier is also a cancellation at period end:
     // cancelling replaces it with a plain cancellation
     if (subscription.cancelAtPeriodEnd && !subscription.pendingTierId) {
       throw new BadRequestException('Subscription is already scheduled for cancellation');
     }
 
-    if (subscription.stripeSubscriptionId) {
-      let stripeSubscription: Stripe.Subscription;
-      if (subscription.status === 'PAST_DUE') {
-        stripeSubscription = await this.stripeService.cancelSubscription(subscription.stripeSubscriptionId);
-      } else if (subscription.pendingTierId) {
-        // Drop the scheduled downgrade (restoring the paid price) and cancel instead
-        const current = await this.stripeService.retrieveSubscription(subscription.stripeSubscriptionId);
-        stripeSubscription = await this.stripeService.updateTierSubscription(
-          subscription.stripeSubscriptionId,
-          { ...this.undoScheduledChangesParams(current), cancel_at_period_end: true },
-        );
-      } else {
-        stripeSubscription = await this.stripeService.setCancelAtPeriodEnd(
-          subscription.stripeSubscriptionId,
-          true,
-        );
-      }
-
-      this.logger.log(`Subscription ${subscriptionId} cancelled by user ${userId}`);
-      return this.subscriptionSync.syncFromStripe(stripeSubscription);
+    if (isPaid && subscription.status === 'ACTIVE') {
+      const updated = await this.prisma.subscription.update({
+        where: { id: subscriptionId },
+        data: { cancelAtPeriodEnd: true, cancelledAt: new Date(), pendingTierId: null },
+      });
+      this.logger.log(`Subscription ${subscriptionId} cancelled at period end by user ${userId}`);
+      return updated;
     }
 
     const cancelled = await this.prisma.subscription.update({
@@ -548,6 +515,7 @@ export class SubscriptionsService {
         status: 'CANCELLED',
         cancelledAt: new Date(),
         cancelAtPeriodEnd: false,
+        nextRenewalAttemptAt: null,
       },
     });
 
@@ -561,7 +529,12 @@ export class SubscriptionsService {
    * Resume a subscription: undo a scheduled cancellation, or subscribe again
    * to the same tier once it has ended
    */
-  async resumeSubscription(userId: string, subscriptionId: string): Promise<SubscribeResult> {
+  async resumeSubscription(
+    userId: string,
+    subscriptionId: string,
+    dto: RetryPaymentDto = {},
+    context: PaymentRequestContext = {},
+  ): Promise<SubscribeResult> {
     const subscription = await this.getOwnSubscription(userId, subscriptionId);
 
     if (subscription.status === 'ACTIVE') {
@@ -569,29 +542,13 @@ export class SubscriptionsService {
         throw new BadRequestException('Subscription is not scheduled for cancellation');
       }
 
-      if (subscription.stripeSubscriptionId) {
-        // Also drops a scheduled switch to a free tier
-        const stripeSubscription = subscription.pendingTierId
-          ? await this.stripeService.updateTierSubscription(
-              subscription.stripeSubscriptionId,
-              this.undoScheduledChangesParams(
-                await this.stripeService.retrieveSubscription(subscription.stripeSubscriptionId),
-              ),
-            )
-          : await this.stripeService.setCancelAtPeriodEnd(subscription.stripeSubscriptionId, false);
-
-        this.logger.log(`Subscription ${subscriptionId} resumed by user ${userId}`);
-        return {
-          requiresPayment: false,
-          subscription: await this.subscriptionSync.syncFromStripe(stripeSubscription),
-        };
-      }
-
+      // Also drops a scheduled switch to a free tier
       const resumed = await this.prisma.subscription.update({
         where: { id: subscriptionId },
-        data: { cancelAtPeriodEnd: false, cancelledAt: null },
+        data: { cancelAtPeriodEnd: false, cancelledAt: null, pendingTierId: null },
       });
 
+      this.logger.log(`Subscription ${subscriptionId} resumed by user ${userId}`);
       return { requiresPayment: false, subscription: resumed };
     }
 
@@ -600,66 +557,60 @@ export class SubscriptionsService {
     }
 
     // Ended subscription: start a new one on the same tier
-    return this.subscribe(userId, { tierId: subscription.tierId });
+    return this.subscribe(
+      userId,
+      {
+        tierId: subscription.tierId,
+        paymentCardId: dto.paymentCardId,
+        billingCountry: dto.billingCountry,
+        withdrawalWaiver: dto.withdrawalWaiver,
+      },
+      context,
+    );
   }
 
   /**
-   * Pay the overdue invoice of a past-due subscription again, optionally with
-   * another saved card (which then becomes the subscription's card for the
-   * next renewals). Paid subscriptions save their card on the subscription, so
-   * changing the customer's default card alone would not fix a failed renewal.
-   * When the bank asks for 3D Secure, the clientSecret is returned and the
-   * client confirms it, then calls confirmSubscription.
+   * Pay a past-due subscription now, with a saved card (which becomes the
+   * subscription's card for the next renewals) or a new one on the provider's
+   * page. A new period starts once paid.
    */
-  async retryPayment(userId: string, subscriptionId: string, paymentMethodId?: string): Promise<SubscribeResult> {
+  async retryPayment(
+    userId: string,
+    subscriptionId: string,
+    dto: RetryPaymentDto = {},
+    context: PaymentRequestContext = {},
+  ): Promise<SubscribeResult> {
     const subscription = await this.getOwnSubscription(userId, subscriptionId);
 
     if (subscription.status !== 'PAST_DUE') {
       throw new BadRequestException('Only a past-due subscription can be paid again');
     }
 
-    if (!subscription.stripeSubscriptionId) {
-      throw new BadRequestException('This subscription has no payment to retry');
-    }
+    const target = subscription.pendingTierId
+      ? await this.prisma.subscriptionTier.findUnique({ where: { id: subscription.pendingTierId }, include: { creator: tierCreatorSelect } })
+      : null;
+    const tier = target ?? (await this.prisma.subscriptionTier.findUniqueOrThrow({
+      where: { id: subscription.tierId },
+      include: { creator: tierCreatorSelect },
+    }));
+    const amount = target ? Number(target.price) : await this.billing.getRenewalPrice(subscription.id, tier);
 
-    const stripeSubscriptionId = subscription.stripeSubscriptionId;
+    const payment = await this.billing.startSubscriptionPayment({
+      userId,
+      tier,
+      action: 'retry',
+      amount,
+      subscriptionId: subscription.id,
+      paymentCardId: dto.paymentCardId ?? subscription.paymentCardId ?? undefined,
+      billingCountry: dto.billingCountry,
+      withdrawalWaiver: dto.withdrawalWaiver,
+      ...context,
+    });
 
-    if (paymentMethodId) {
-      await this.paymentsService.assertPaymentMethodOwnership(userId, paymentMethodId);
-      await this.stripeService.setSubscriptionPaymentMethod(stripeSubscriptionId, paymentMethodId);
-    }
-
-    const current = await this.stripeService.retrieveSubscription(stripeSubscriptionId);
-    const invoice = current.latest_invoice as Stripe.Invoice | null;
-
-    if (invoice?.id && invoice.status === 'open') {
-      try {
-        await this.stripeService.payInvoice(invoice.id, paymentMethodId);
-      } catch (error) {
-        // Declined, or 3D Secure needed: reported through the payment intent below
-        this.logger.warn(`Retry payment of subscription ${subscriptionId} failed: ${(error as Error).message}`);
-      }
-    }
-
-    const refreshed = await this.stripeService.retrieveSubscription(stripeSubscriptionId);
-    const synced = await this.subscriptionSync.syncFromStripe(refreshed);
-
-    if (refreshed.status === 'active' || refreshed.status === 'trialing') {
+    if (payment.completed) {
       this.logger.log(`Past-due subscription ${subscriptionId} paid by user ${userId}`);
-      return { requiresPayment: false, subscription: synced };
     }
-
-    const paymentIntent = (refreshed.latest_invoice as Stripe.Invoice | null)?.payment_intent as
-      | Stripe.PaymentIntent
-      | null;
-
-    return {
-      requiresPayment: true,
-      subscription: synced,
-      stripeSubscriptionId,
-      clientSecret: paymentIntent?.client_secret ?? null,
-      ...(paymentIntent?.status && { paymentStatus: paymentIntent.status }),
-    };
+    return this.toSubscribeResult(payment, userId, tier.id);
   }
 
   /**
@@ -691,152 +642,22 @@ export class SubscriptionsService {
     return { requiresPayment: false, subscription };
   }
 
-  /**
-   * Create the Stripe subscription for a paid tier. Earlier attempts left
-   * `incomplete` for the same creator (checkout abandoned) are cancelled first,
-   * so retrying does not pile up unpaid Stripe subscriptions.
-   */
-  private async createPaidSubscription(
-    userId: string,
-    tier: any,
-    paymentMethodId?: string,
-    extraMetadata: Record<string, string> = {},
-  ): Promise<SubscribeResult> {
-    if (!tier.creator.stripeAccountId || !tier.creator.stripeOnboarded) {
-      throw new BadRequestException('Creator payment account is not ready');
-    }
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const customerId = await this.paymentsService.getOrCreateCustomerId(user);
-
-    if (paymentMethodId) {
-      await this.paymentsService.assertPaymentMethodOwnership(userId, paymentMethodId);
-    }
-
-    await this.cancelIncompleteAttempts(customerId, tier.creatorId);
-
-    const priceId = await this.ensureStripePrice(tier);
-
-    const stripeSubscription = await this.stripeService.createTierSubscription({
-      customerId,
-      priceId,
-      connectedAccountId: tier.creator.stripeAccountId,
-      paymentMethodId,
-      metadata: {
-        subscriberId: userId,
-        tierId: tier.id,
-        creatorId: tier.creatorId,
-        ...extraMetadata,
-      },
-    });
-
-    this.logger.log(
-      `Stripe subscription ${stripeSubscription.id} created for user ${userId} on tier ${tier.id}`,
-    );
-
-    return this.toSubscribeResult(stripeSubscription);
-  }
-
-  private async cancelIncompleteAttempts(customerId: string, creatorId: string) {
-    const attempts = await this.stripeService.listIncompleteSubscriptions({ customerId });
-
-    for (const attempt of attempts) {
-      if (attempt.metadata?.creatorId !== creatorId) continue;
-
-      try {
-        await this.stripeService.cancelSubscription(attempt.id);
-        this.logger.log(`Abandoned incomplete subscription ${attempt.id} cancelled before retry`);
-      } catch (error) {
-        this.logger.warn(`Failed to cancel incomplete subscription ${attempt.id}: ${error.message}`);
-      }
-    }
-  }
-
-  /**
-   * Update params dropping a scheduled downgrade or cancellation: restores the
-   * price paid for the current period (without proration) and clears the
-   * downgrade metadata
-   */
-  private undoScheduledChangesParams(
-    stripeSubscription: Stripe.Subscription,
-  ): Stripe.SubscriptionUpdateParams {
-    const item = stripeSubscription.items.data[0];
-    const paidPriceId = stripeSubscription.metadata?.downgradeFromPriceId;
-    const restorePrice = !!paidPriceId && !!item && item.price.id !== paidPriceId;
-
-    return {
-      cancel_at_period_end: false,
-      metadata: CLEARED_DOWNGRADE_METADATA,
-      ...(restorePrice && {
-        items: [{ id: item.id, price: paidPriceId }],
-        proration_behavior: 'none' as const,
-      }),
-    };
-  }
-
-  /**
-   * Lazily create the Stripe product and price backing a tier
-   */
-  private async ensureStripePrice(tier: any): Promise<string> {
-    if (tier.stripePriceId) {
-      return tier.stripePriceId;
-    }
-
-    const productId =
-      tier.stripeProductId ||
-      (
-        await this.stripeService.createProduct(
-          `${tier.creator.username} - ${tier.name}`,
-          tier.description || tier.name,
-          { tierId: tier.id, creatorId: tier.creatorId },
-        )
-      ).id;
-
-    const price = await this.stripeService.createPrice(
-      productId,
-      Number(tier.price),
-      (tier.currency || 'EUR').toLowerCase(),
-      tier.interval === 'year' ? 'year' : 'month',
-    );
-
-    await this.prisma.subscriptionTier.update({
-      where: { id: tier.id },
-      data: {
-        stripeProductId: productId,
-        stripePriceId: price.id,
-      },
-    });
-
-    return price.id;
-  }
-
-  private async toSubscribeResult(stripeSubscription: Stripe.Subscription): Promise<SubscribeResult> {
-    const subscription = await this.subscriptionSync.syncFromStripe(stripeSubscription);
-
-    const invoice = stripeSubscription.latest_invoice as Stripe.Invoice | null;
-    const paymentIntent = invoice?.payment_intent as Stripe.PaymentIntent | null;
-
-    // An upgrade with `pending_if_incomplete` waits for its proration invoice
-    const awaitingPayment =
-      stripeSubscription.status === 'incomplete' || !!stripeSubscription.pending_update;
-
-    if (subscription && !awaitingPayment) {
-      return { requiresPayment: false, subscription };
+  /** Subscription result of a payment: the subscription once paid, the payment to finish otherwise */
+  private async toSubscribeResult(payment: PaymentFlowResult, userId: string, tierId: string | null): Promise<SubscribeResult> {
+    if (payment.completed && tierId) {
+      const subscription = await this.prisma.subscription.findUnique({
+        where: { subscriberId_tierId: { subscriberId: userId, tierId } },
+        include: { tier: true, pendingTier: pendingTierSelect },
+      });
+      return { requiresPayment: false, subscription, payment };
     }
 
     return {
       requiresPayment: true,
-      stripeSubscriptionId: stripeSubscription.id,
-      clientSecret: paymentIntent?.client_secret ?? null,
-      // e.g. requires_action (3D Secure) or requires_payment_method (declined)
-      ...(paymentIntent?.status && { paymentStatus: paymentIntent.status }),
+      payment,
+      transactionId: payment.transactionId,
+      redirectUrl: payment.redirectUrl,
+      paymentStatus: payment.status,
     };
   }
 
@@ -855,9 +676,12 @@ export class SubscriptionsService {
 }
 
 export interface SubscribeResult {
+  /** The payment is not completed yet (provider page to visit, still processing or failed) */
   requiresPayment: boolean;
   subscription?: any;
-  stripeSubscriptionId?: string;
-  clientSecret?: string | null;
-  paymentStatus?: Stripe.PaymentIntent.Status;
+  payment?: PaymentFlowResult;
+  transactionId?: string;
+  /** Provider page to send the fan to */
+  redirectUrl?: string | null;
+  paymentStatus?: PaymentFlowResult['status'];
 }

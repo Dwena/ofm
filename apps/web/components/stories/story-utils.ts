@@ -28,6 +28,8 @@ export interface ApiStory {
   isLiked: boolean
   isViewed: boolean
   isLocked: boolean
+  /** Media URLs withheld until the visitor's age is verified */
+  ageVerificationRequired?: boolean
 }
 
 export interface StoryFeedGroup {

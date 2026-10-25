@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Put, Delete, Query, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Query, Param, Body, Req, UseGuards } from '@nestjs/common';
+import { Request } from 'express';
 import { ContentService } from './content.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -9,6 +10,9 @@ import { UpdateContentDto } from './dto/update-content.dto';
 import { SearchContentDto } from './dto/search-content.dto';
 import { MyContentQueryDto } from './dto/my-content.dto';
 import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
+import { paymentContext } from '../payments/payment-context';
+import { AgeVerified } from '../age-verification/decorators/age-verified.decorator';
+import { gateContentItem, gateContentItems, gateContentPage } from '../age-verification/age-gate';
 
 @Controller('content')
 @UseGuards(JwtAuthGuard)
@@ -18,27 +22,31 @@ export class ContentController {
   @Get('feed')
   async getFeed(
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.contentService.getFeed(
+    const items = await this.contentService.getFeed(
       userId,
       page ? parseInt(page) : 1,
       limit ? parseInt(limit) : 20,
     );
+    return gateContentItems(items, { viewerId: userId, ageVerified });
   }
 
   @Get('feed/subscriptions')
   async getSubscriptionsFeed(
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.contentService.getSubscriptionsFeed(
+    const items = await this.contentService.getSubscriptionsFeed(
       userId,
       page ? parseInt(page) : 1,
       limit ? parseInt(limit) : 20,
     );
+    return gateContentItems(items, { viewerId: userId, ageVerified });
   }
 
   /**
@@ -58,16 +66,20 @@ export class ContentController {
   async searchContent(
     @CurrentUser('id') userId: string,
     @Query() dto: SearchContentDto,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.contentService.searchContent(userId, dto);
+    const page = await this.contentService.searchContent(userId, dto);
+    return gateContentPage(page, { viewerId: userId, ageVerified });
   }
 
   @Get('creator/:creatorId')
   async getCreatorContent(
     @Param('creatorId') creatorId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.contentService.getCreatorContent(creatorId, userId);
+    const items = await this.contentService.getCreatorContent(creatorId, userId);
+    return gateContentItems(items, { viewerId: userId, ageVerified });
   }
 
   @Post()
@@ -84,8 +96,10 @@ export class ContentController {
   async getContentById(
     @Param('id') contentId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.contentService.getContentById(contentId, userId);
+    const content = await this.contentService.getContentById(contentId, userId);
+    return gateContentItem(content, { viewerId: userId, ageVerified });
   }
 
   @Put(':id')
@@ -129,10 +143,10 @@ export class ContentController {
     return this.contentService.deleteContent(userId, contentId);
   }
 
-  // Admin routes
+  // Moderation routes (pre-publication review; same as GET/POST /moderation/content/...)
   @Get('moderation/queue')
   @UseGuards(RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'MODERATOR')
   async getModerationQueue(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -145,7 +159,7 @@ export class ContentController {
 
   @Post('moderation/:id')
   @UseGuards(RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'MODERATOR')
   async moderateContent(
     @CurrentUser('id') adminId: string,
     @Param('id') contentId: string,
@@ -170,20 +184,21 @@ export class ContentController {
 
   // PPV endpoints
   /**
-   * Start a PPV purchase: returns a pending payment (clientSecret) to confirm
-   * client-side, or completes right away with a saved card
+   * Start a PPV purchase: completes right away with a saved card, or returns
+   * the provider's payment page to redirect to (redirectUrl)
    */
   @Post(':id/unlock')
   async unlockContent(
     @CurrentUser('id') userId: string,
     @Param('id') contentId: string,
     @Body() dto: OneTimePaymentDto,
+    @Req() request: Request,
   ) {
-    return this.contentService.unlockContent(userId, contentId, dto?.paymentMethodId);
+    return this.contentService.unlockContent(userId, contentId, { ...dto, ...paymentContext(request) });
   }
 
   /**
-   * Re-check the PPV payment with Stripe and grant access once paid (idempotent)
+   * State of the PPV payment once back from the provider's page (idempotent)
    */
   @Post(':id/unlock/confirm')
   async confirmUnlock(
@@ -191,7 +206,7 @@ export class ContentController {
     @Param('id') contentId: string,
     @Body() dto: ConfirmPaymentDto,
   ) {
-    return this.contentService.confirmUnlock(userId, contentId, dto.paymentIntentId);
+    return this.contentService.confirmUnlock(userId, contentId, dto.transactionId);
   }
 
   @Get(':id/likes')

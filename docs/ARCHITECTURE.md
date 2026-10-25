@@ -26,9 +26,12 @@ FanVIP est une plateforme de monétisation pour créateurs de contenu construite
 - **Rate Limiting**: 100 requêtes/minute par défaut
 
 ### Paiements
-- **Stripe Connect**: Marketplace payments
+- **Prestataire de paiement**: CCBill en production, simulateur local (`PAYMENT_PROVIDER=fake`) en dev, derrière une interface unique
+- **TVA**: ajoutée au prix HT du créateur
+- **Solde créateur**: registre interne avec blocage de 7 jours, virements SEPA hebdomadaires
 - **Webhook handling**: Event-driven
 - **PCI Compliance**: Jamais de stockage de cartes
+- Détails: [PAIEMENTS.md](PAIEMENTS.md)
 
 ### Stockage
 - **MinIO** (dev): S3-compatible local storage
@@ -118,15 +121,17 @@ FanVIP est une plateforme de monétisation pour créateurs de contenu construite
 
 ### 3. Payments Module
 **Responsabilités**:
-- Intégration Stripe
-- Payment intents
-- Stripe Connect (creators)
-- Webhooks Stripe
+- Intégration du prestataire de paiement (CCBill / simulateur)
+- Paiements, cartes enregistrées, TVA
+- Solde créateur et remboursements
+- Webhooks du prestataire (`POST /webhooks/payments/ccbill`)
 - Transaction history
-- Payouts
+- Payouts (virements SEPA exportés par les admins)
 
 **Services**:
-- `StripeService`: Wrapper Stripe
+- `PaymentProvider` (`providers/`): interface unique, implémentée par `CcbillProvider` et `FakeProvider`
+- `PaymentFlowService`: parcours de paiement
+- `CreatorBalanceService`, `RefundsService`, `PayoutsService`, `BillingService`: solde, remboursements, virements, renouvellements
 - `PaymentsService`: Business logic
 
 ### 4. Subscriptions Module
@@ -208,13 +213,13 @@ Client
   │
   ├─> Subscriptions Service
   │     ├─ Get tier info
-  │     ├─ Stripe: Create subscription
+  │     ├─ Payment provider: charge saved card or redirect to hosted page
   │     ├─ Create Transaction (DB)
   │     └─ Create Subscription (DB)
   │
-  ├─> Stripe Webhook (async)
-  │     ├─ subscription.created
-  │     ├─ Update subscription status
+  ├─> Payment webhook (async)
+  │     ├─ payment succeeded
+  │     ├─ Update subscription status, credit creator balance
   │     └─ Send notification
   │
   └─> Response

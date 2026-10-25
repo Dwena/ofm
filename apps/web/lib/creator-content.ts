@@ -25,6 +25,10 @@ export interface CreatorContentItem {
   publishedAt: string | null
   createdAt: string
   moderationNotes?: string | null
+  submittedForReviewAt?: string | null
+  /** false: other people appear in the content (verified co-performers) */
+  soloContent?: boolean
+  coPerformers?: { coPerformer: { id: string; stageName: string | null; legalFirstName: string; status: string } }[]
   mediaCount: number
   files: { id: string; type: string; url: string; thumbnailUrl?: string | null }[]
   stats: CreatorContentStats
@@ -63,7 +67,7 @@ export const STATUS_LABELS: Record<DisplayStatus, string> = {
   DRAFT: 'Brouillon',
   SCHEDULED: 'Programmé',
   ARCHIVED: 'Archivé',
-  UNDER_REVIEW: 'En vérification',
+  UNDER_REVIEW: 'En cours de validation',
   REJECTED: 'Refusé',
 }
 

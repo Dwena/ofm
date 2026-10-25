@@ -8,6 +8,7 @@ import { fr } from 'date-fns/locale'
 import { Radio, Users, CalendarClock, Lock, Ticket, RefreshCw, Loader2 } from 'lucide-react'
 import { liveApi } from '@/lib/api'
 import { VISIBILITY_LABELS } from '@/lib/live'
+import { formatFanPrice } from '@/lib/vat'
 import { formatEuros } from '@/lib/utils'
 import { formatGoalEuros } from '@/lib/live-tip-goals'
 import { useAuth } from '@/contexts/auth-context'
@@ -72,7 +73,7 @@ function AccessBadge({ stream }: { stream: StreamSummary }) {
       <Badge variant="outline" className="gap-1">
         <Ticket className="h-3 w-3" />
         {stream.ppvPrice != null && Number(stream.ppvPrice) > 0
-          ? `Pay-per-view · ${formatEuros(stream.ppvPrice)}`
+          ? `Pay-per-view · ${formatFanPrice(stream.ppvPrice)}`
           : 'Pay-per-view'}
       </Badge>
     )

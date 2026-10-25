@@ -6,6 +6,7 @@ import { useEffect } from 'react'
 import { Lock, Loader2 } from 'lucide-react'
 import { Navigation } from '@/components/navigation'
 import { AppBanners } from '@/components/app-banners'
+import { SiteFooter } from '@/components/site-footer'
 import { useTranslation } from '@/components/i18n-provider'
 import { buildLoginUrl, getHomeRoute, getPathAccess } from '@/lib/navigation'
 
@@ -67,6 +68,11 @@ export default function AppLayout({
           </div>
         )}
       </main>
+      <footer className="border-t">
+        <div className="container mx-auto px-4">
+          <SiteFooter />
+        </div>
+      </footer>
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue, Job } from 'bull';
 import { ConfigService } from '@nestjs/config';
@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { StorageService } from '../storage/storage.service';
 import { PrismaService } from '../common/database/prisma.service';
 import { MediaValidator } from './validators/media.validator';
+import { AGE_VERIFICATION_REQUIRED } from '../age-verification/age-verification.constants';
 
 @Injectable()
 export class MediaService {
@@ -66,6 +67,9 @@ export class MediaService {
         originalName: file.originalname,
         mimeType: file.mimetype,
         size: BigInt(file.size),
+        // Images / videos are scanned against known illegal media by the
+        // processors (MediaScanService); other files are not hash-matched
+        scanStatus: queue ? 'PENDING' : 'SKIPPED',
       },
     });
 
@@ -243,9 +247,15 @@ export class MediaService {
   }
 
   /**
-   * Get signed URL for private content
+   * Get signed URL for private content. `ageVerified: false` (requester's age
+   * not verified, see AgeVerificationService) refuses anyone but the creator
+   * with 403 AGE_VERIFICATION_REQUIRED.
    */
-  async getSignedUrl(contentFileId: string, userId: string): Promise<string> {
+  async getSignedUrl(
+    contentFileId: string,
+    userId: string,
+    options: { ageVerified?: boolean } = {},
+  ): Promise<string> {
     // Get content file
     const contentFile = await this.prisma.contentFile.findUnique({
       where: { id: contentFileId },
@@ -264,6 +274,15 @@ export class MediaService {
 
     if (!contentFile.content) {
       throw new BadRequestException('Content file is not linked to content');
+    }
+
+    // Media matching known illegal content is never served (evidence only)
+    if (contentFile.scanStatus === 'FLAGGED') {
+      throw new BadRequestException('Content file not found');
+    }
+
+    if (options.ageVerified === false && contentFile.content.creatorId !== userId) {
+      throw new ForbiddenException({ message: AGE_VERIFICATION_REQUIRED, code: AGE_VERIFICATION_REQUIRED });
     }
 
     // Check access permissions
@@ -360,6 +379,12 @@ export class MediaService {
     // Check ownership
     if (contentFile.content.creatorId !== userId) {
       throw new BadRequestException('You do not own this content');
+    }
+
+    // Media matching known illegal content is evidence: never deleted
+    // (see MediaScanService)
+    if (contentFile.scanStatus === 'FLAGGED') {
+      throw new BadRequestException('Ce média ne peut pas être supprimé');
     }
 
     // Delete from storage

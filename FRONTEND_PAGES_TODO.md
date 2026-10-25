@@ -1,3 +1,5 @@
+> Note : historique — Stripe a depuis été remplacé, voir docs/PAIEMENTS.md.
+
 # Frontend Pages - Implementation Guide Complet
 
 ## 📋 Pages Manquantes à Créer

@@ -31,7 +31,7 @@ Le script démarre PostgreSQL, Redis, MinIO et MailDev (Docker), crée `apps/api
 Comptes de test (mot de passe `SecurePass123!`) : voir [docs/SEED_ACCOUNTS.md](docs/SEED_ACCOUNTS.md).
 
 - `npm run dev:up -- --keep-db` relance sans toucher aux données.
-- Paiements : renseigner les clés Stripe **de test** dans `apps/api/.env` (`STRIPE_SECRET_KEY`) et `apps/web/.env.local` (`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`).
+- Paiements : rien à configurer, `PAYMENT_PROVIDER=fake` (simulateur local, aucune carte réellement débitée) est la valeur par défaut hors production. Cartes de test : 4242 (acceptée), 0002 (refusée). Détails dans [docs/PAIEMENTS.md](docs/PAIEMENTS.md).
 - Windows : fonctionne directement depuis cmd ou PowerShell (Docker Desktop doit être lancé).
 - Le script aligne `apps/api/.env` sur les services Docker (base, Redis, MinIO). Si un autre PostgreSQL occupe déjà le port 5432 sur la machine, le conteneur passe automatiquement sur le port 5433.
 
@@ -135,7 +135,7 @@ Le fichier `.env` a été créé automatiquement dans `apps/api/.env` avec les v
 
 **Variables importantes à modifier en production** :
 - `JWT_SECRET` - Clé secrète JWT
-- `STRIPE_SECRET_KEY` - Clé Stripe (obtenir sur https://stripe.com)
+- `PAYMENT_PROVIDER=ccbill` et les variables `CCBILL_*`, `PAYOUT_DEBTOR_*`, `DATA_ENCRYPTION_KEY` - Paiements (voir `.env.production.example` et [docs/PAIEMENTS.md](docs/PAIEMENTS.md))
 - `DATABASE_URL` - URL de votre base de données de production
 
 ### Lives (WebRTC) : STUN / TURN

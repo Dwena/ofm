@@ -12,6 +12,7 @@ import { ImageProcessor } from './processors/image.processor';
 import { VideoProcessor } from './processors/video.processor';
 import { MediaValidator } from './validators/media.validator';
 import { StorageModule } from '../storage/storage.module';
+import { MediaScanService } from './media-scan/media-scan.service';
 
 @Module({
   imports: [
@@ -23,7 +24,7 @@ import { StorageModule } from '../storage/storage.module';
     ),
   ],
   controllers: [MediaController],
-  providers: [MediaService, ImageProcessor, VideoProcessor, MediaValidator],
-  exports: [MediaService],
+  providers: [MediaService, ImageProcessor, VideoProcessor, MediaValidator, MediaScanService],
+  exports: [MediaService, MediaScanService],
 })
 export class MediaModule {}

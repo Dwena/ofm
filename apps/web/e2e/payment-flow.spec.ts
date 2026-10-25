@@ -2,17 +2,22 @@ import { Page } from '@playwright/test';
 import { test, expect, testUser } from './fixtures/auth.fixture';
 
 /**
- * Subscription / PPV / tip payments go through /checkout and the Stripe Payment Element.
- * Card entry needs the API configured with Stripe test keys: set E2E_STRIPE=1 to run those steps.
+ * Subscription / PPV / tip payments go through /checkout. With the API's
+ * payment simulator (PAYMENT_PROVIDER=fake, the default in development) the
+ * provider's card page is /checkout/simulateur: test card 4242 is approved,
+ * 0002 declined. The seeded subscriber already has a saved 4242 card.
  */
-const stripeEnabled = !!process.env.E2E_STRIPE;
 
-async function fillStripeCard(page: Page, cardNumber: string) {
-  // Payment Element renders its fields inside a Stripe iframe
-  const frame = page.frameLocator('iframe[name^="__privateStripeFrame"]').first();
-  await frame.getByPlaceholder(/1234 1234 1234 1234/).fill(cardNumber);
-  await frame.getByPlaceholder(/MM \/ AA|MM \/ YY/).fill('12 / 34');
-  await frame.getByPlaceholder(/CVC/).fill('123');
+/** Pay a subscription with a new card on the simulator's page */
+async function payWithNewCard(page: Page, last4: '4242' | '0002') {
+  await page.getByLabel(/Nouvelle carte/).check();
+  await page.getByRole('checkbox', { name: /droit de rétractation/ }).check();
+  await page.getByRole('button', { name: /S’abonner/ }).click();
+
+  await expect(page).toHaveURL(/\/checkout\/simulateur/);
+  await page.getByLabel(new RegExp(`•••• ${last4}`)).check();
+  await page.getByRole('button', { name: /^Payer/ }).click();
+  await expect(page).toHaveURL(/\/checkout\/retour/);
 }
 
 /** Claire (creator3): the seeded subscriber is not subscribed to her paid tier */
@@ -35,7 +40,7 @@ function tierButton(page: Page, tierName: string) {
 test.describe('Paiements', () => {
   test.beforeEach(async ({ asSubscriber }) => {});
 
-  test("ouvre le paiement sécurisé d'un abonnement payant", async ({ page }) => {
+  test("affiche le prix HT, la TVA et le total TTC d'un abonnement payant", async ({ page }) => {
     await openCreatorTiers(page);
 
     const subscribe = tierButton(page, 'Gourmand');
@@ -43,47 +48,35 @@ test.describe('Paiements', () => {
     await subscribe.click();
 
     await expect(page).toHaveURL(/\/checkout\?.*type=subscription/);
-    if (!stripeEnabled) {
-      // Without Stripe keys the checkout explains why instead of showing a broken form
-      await expect(page.getByRole('heading', { name: 'Paiement impossible' })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Retour' })).toBeVisible();
-      return;
-    }
-    await expect(page.getByRole('heading', { level: 1, name: 'Paiement Sécurisé' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Récapitulatif' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Méthode de Paiement' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Paiement sécurisé' })).toBeVisible();
+    await expect(page.getByText('Prix HT')).toBeVisible();
+    await expect(page.getByText(/TVA 20 %/)).toBeVisible();
+    await expect(page.getByText('Total TTC')).toBeVisible();
+    // Digital content: the withdrawal waiver is required
+    await page.getByRole('button', { name: /S’abonner/ }).click();
+    await expect(page.getByText(/Cochez cette case/)).toBeVisible();
   });
 
-  test('souscrit un abonnement avec une carte de test', async ({ page }) => {
-    test.skip(!stripeEnabled, 'E2E_STRIPE non défini : paiement Stripe non testé');
+  test('souscrit un abonnement avec une nouvelle carte (simulateur)', async ({ page }) => {
     await openCreatorTiers(page);
 
     const subscribe = tierButton(page, 'Gourmand');
     test.skip(!(await subscribe.isEnabled()), "L'abonné de test est déjà abonné à ce créateur");
     await subscribe.click();
 
-    await page.getByRole('button', { name: /Continuer|Payer/ }).click();
-    await fillStripeCard(page, '4242424242424242');
-    await page.getByRole('button', { name: /^Payer/ }).click();
-
-    await expect(page.getByRole('heading', { name: 'Abonnement activé !' })).toBeVisible({ timeout: 30000 });
+    await payWithNewCard(page, '4242');
+    await expect(page.getByRole('heading', { name: 'Paiement effectué' })).toBeVisible({ timeout: 30000 });
   });
 
-  test('affiche un échec de paiement avec une carte refusée', async ({ page }) => {
-    test.skip(!stripeEnabled, 'E2E_STRIPE non défini : paiement Stripe non testé');
+  test('affiche un échec de paiement avec une carte refusée (simulateur)', async ({ page }) => {
     await openCreatorTiers(page);
 
     const subscribe = tierButton(page, 'Gourmand');
     test.skip(!(await subscribe.isEnabled()), "L'abonné de test est déjà abonné à ce créateur");
     await subscribe.click();
 
-    await page.getByRole('button', { name: /Continuer|Payer/ }).click();
-    await fillStripeCard(page, '4000000000000002');
-    await page.getByRole('button', { name: /^Payer/ }).click();
-
-    await expect(page.getByText(/Paiement Échoué|carte a été refusée|declined/i).first()).toBeVisible({
-      timeout: 30000,
-    });
+    await payWithNewCard(page, '0002');
+    await expect(page.getByRole('heading', { name: 'Paiement refusé' })).toBeVisible({ timeout: 30000 });
   });
 
   test('propose de débloquer un contenu payant depuis le feed', async ({ page }) => {
@@ -98,7 +91,7 @@ test.describe('Paiements', () => {
     await unlock.click();
 
     // Unlocking either opens the secure checkout or confirms the payment in place
-    await expect(page.getByRole('heading', { level: 1, name: /Paiement Sécurisé|Feed/ })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: /Paiement sécurisé|Feed/ })).toBeVisible();
   });
 
   test('envoie un pourboire pendant un live', async ({ page }) => {

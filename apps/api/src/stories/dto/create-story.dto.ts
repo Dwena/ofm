@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsInt, Min, MaxLength, Matches } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsInt, Min, MaxLength, Matches, IsArray, IsUUID, ArrayMaxSize } from 'class-validator';
 
 export enum StoryType {
   PHOTO = 'PHOTO',
@@ -62,4 +62,11 @@ export class CreateStoryDto {
   @IsOptional()
   @IsEnum(StoryVisibility)
   visibility?: StoryVisibility;
+
+  /** Verified co-performers (CoPerformer ids) appearing in the story */
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  @ArrayMaxSize(20)
+  coPerformerIds?: string[];
 }

@@ -48,7 +48,7 @@ describe('SettingsService', () => {
   });
 
   it('falls back to environment variables', async () => {
-    env.STRIPE_PLATFORM_FEE_PERCENTAGE = '20';
+    env.PLATFORM_FEE_PERCENTAGE = '20';
     env.REGISTRATION_OPEN = 'false';
 
     expect(await service.getPlatformFeePercentage()).toBe(20);
@@ -59,7 +59,7 @@ describe('SettingsService', () => {
   });
 
   it('prefers database values and caches them', async () => {
-    env.STRIPE_PLATFORM_FEE_PERCENTAGE = '20';
+    env.PLATFORM_FEE_PERCENTAGE = '20';
     mockPrismaService.platformSetting.findMany.mockResolvedValue([
       { key: 'platformFeePercentage', value: 12.5, updatedAt: new Date(), updatedBy: 'admin-1' },
     ]);

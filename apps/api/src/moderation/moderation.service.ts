@@ -96,7 +96,7 @@ export class ModerationService {
           type: 'CONTENT_REJECTED',
           title: 'Contenu rejeté',
           message: 'Votre contenu a été rejeté car il ne respecte pas nos règles communautaires',
-          linkUrl: `/content/${contentId}`,
+          linkUrl: '/creator/content?status=REVIEW',
         });
       }
     } else if (analysisResult.shouldRequireReview) {
@@ -105,6 +105,8 @@ export class ModerationService {
         where: { id: contentId },
         data: {
           status: 'UNDER_REVIEW',
+          isModerated: false,
+          submittedForReviewAt: new Date(),
           moderationNotes: `Marqué pour révision: ${analysisResult.flaggedKeywords.join(', ')}`,
         },
       });

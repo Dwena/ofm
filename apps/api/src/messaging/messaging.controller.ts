@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   ParseUUIDPipe,
+  Req,
 } from '@nestjs/common';
 import { MessagingService } from './messaging.service';
 import { MessagingGateway } from './messaging.gateway';
@@ -16,6 +17,10 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
+import { paymentContext } from '../payments/payment-context';
+import { Request } from 'express';
+import { AgeVerified } from '../age-verification/decorators/age-verified.decorator';
+import { gateMessagePage } from '../age-verification/age-gate';
 
 @Controller('messages')
 @UseGuards(JwtAuthGuard)
@@ -89,20 +94,21 @@ export class MessagingController {
   }
 
   /**
-   * Buy a PPV message: returns a pending payment (clientSecret) to confirm
-   * client-side, or completes right away with a saved card
+   * Buy a PPV message: completes right away with a saved card, or returns
+   * the provider's payment page to redirect to
    */
   @Post(':messageId/unlock')
   unlockMessage(
     @CurrentUser('id') userId: string,
     @Param('messageId', ParseUUIDPipe) messageId: string,
     @Body() dto: OneTimePaymentDto,
+    @Req() request: Request,
   ) {
-    return this.messagingService.unlockMessage(userId, messageId, dto?.paymentMethodId);
+    return this.messagingService.unlockMessage(userId, messageId, { ...dto, ...paymentContext(request) });
   }
 
   /**
-   * Re-check the PPV message payment with Stripe (idempotent)
+   * State of the PPV message payment (idempotent)
    */
   @Post(':messageId/unlock/confirm')
   confirmUnlockMessage(
@@ -110,24 +116,27 @@ export class MessagingController {
     @Param('messageId', ParseUUIDPipe) messageId: string,
     @Body() dto: ConfirmPaymentDto,
   ) {
-    return this.messagingService.confirmUnlockMessage(userId, messageId, dto.paymentIntentId);
+    return this.messagingService.confirmUnlockMessage(userId, messageId, dto.transactionId);
   }
 
   @Get(':partnerId')
-  getMessages(
+  async getMessages(
     @CurrentUser('id') userId: string,
     @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @AgeVerified() ageVerified: boolean,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('before') before?: string,
   ) {
-    return this.messagingService.getMessages(
+    const result = await this.messagingService.getMessages(
       userId,
       partnerId,
       page ? parseInt(page) || 1 : 1,
       limit ? parseInt(limit) || 50 : 50,
       before,
     );
+    // Attachments received from the partner need a verified age
+    return gateMessagePage(result, { viewerId: userId, ageVerified });
   }
 
   @Delete(':messageId')

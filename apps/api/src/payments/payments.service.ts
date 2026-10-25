@@ -4,16 +4,14 @@ import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma, TransactionStatus, TransactionType } from '@prisma/client';
 
 import { PrismaService } from '../common/database/prisma.service';
-import { StripeService } from './stripe.service';
-import { StripeWebhookService } from './stripe-webhook.service';
-import { OneTimePaymentService } from './one-time-payment.service';
+import { CreatorBalanceService } from './creator-balance.service';
+import { PayoutsService } from './payouts.service';
+import { PaymentFlowService, PaymentFlowResult } from './payment-flow.service';
+import { RefundsService } from './refunds.service';
 import {
   FilterTransactionsDto,
   GetStatsDto,
@@ -21,9 +19,15 @@ import {
   StatsInterval,
   TransactionDirection,
 } from './dto/payments.dto';
-import { roundMoney, sumBalanceEntries, toCents } from '../common/utils/money';
+import { roundMoney } from '../common/utils/money';
 import { createPeriodMap, getPeriodKey, resolvePeriodRange } from '../common/utils/periods';
 import { SettingsService } from '../settings/settings.service';
+
+/** Context of the request starting a payment (VAT evidence, fraud checks) */
+export interface PaymentRequestContext {
+  ipCountry?: string | null;
+  clientIp?: string | null;
+}
 
 @Injectable()
 export class PaymentsService {
@@ -31,316 +35,141 @@ export class PaymentsService {
 
   constructor(
     private prisma: PrismaService,
-    private stripeService: StripeService,
-    private configService: ConfigService,
-    private stripeWebhookService: StripeWebhookService,
-    private oneTimePayments: OneTimePaymentService,
+    private paymentFlow: PaymentFlowService,
+    private balance: CreatorBalanceService,
+    private payouts: PayoutsService,
+    private refunds: RefundsService,
     private settingsService: SettingsService,
   ) {}
 
   /**
-   * Create Stripe Connect account for creator
-   */
-  async createConnectAccount(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    if (user.role !== 'CREATOR') {
-      throw new BadRequestException('Only creators can create Connect accounts');
-    }
-
-    if (user.stripeAccountId) {
-      throw new BadRequestException('Connect account already exists');
-    }
-
-    this.assertStripeConfigured();
-
-    // Create Stripe Connect account
-    const account = await this.stripeService.createConnectAccount(user.email, userId);
-
-    // Update user
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        stripeAccountId: account.id,
-        stripeOnboarded: false,
-      },
-    });
-
-    this.logger.log(`Created Connect account for user ${userId}: ${account.id}`);
-
-    return {
-      accountId: account.id,
-      message: 'Connect account created successfully',
-    };
-  }
-
-  /**
-   * Get onboarding link for creator
-   */
-  async getOnboardingLink(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    if (!user.stripeAccountId) {
-      throw new BadRequestException('No Connect account found. Please create one first.');
-    }
-
-    this.assertStripeConfigured();
-
-    // Stripe sends the creator back to the earnings page, which re-checks the status
-    const webUrl = this.configService.get('WEB_URL', 'http://localhost:3000');
-    const returnUrl = `${webUrl}/creator/earnings?stripe=return`;
-    const refreshUrl = `${webUrl}/creator/earnings?stripe=refresh`;
-
-    const accountLink = await this.stripeService.createAccountLink(
-      user.stripeAccountId,
-      refreshUrl,
-      returnUrl,
-    );
-
-    return {
-      url: accountLink.url,
-      expiresAt: accountLink.expires_at,
-    };
-  }
-
-  /**
-   * Check onboarding status
-   */
-  async getOnboardingStatus(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    const stripeConfigured = this.stripeService.isConfigured();
-
-    if (!user.stripeAccountId) {
-      return {
-        stripeConfigured,
-        hasAccount: false,
-        isOnboarded: false,
-        chargesEnabled: false,
-        payoutsEnabled: false,
-        detailsSubmitted: false,
-      };
-    }
-
-    // Without Stripe (or when it is unreachable) report the last known state
-    const lastKnown = {
-      stripeConfigured,
-      hasAccount: true,
-      isOnboarded: user.stripeOnboarded,
-      chargesEnabled: user.stripeOnboarded,
-      payoutsEnabled: user.stripeOnboarded,
-      detailsSubmitted: user.stripeOnboarded,
-    };
-
-    if (!stripeConfigured) {
-      return lastKnown;
-    }
-
-    let account: Awaited<ReturnType<StripeService['getAccount']>>;
-    try {
-      account = await this.stripeService.getAccount(user.stripeAccountId);
-    } catch (error: any) {
-      this.logger.warn(`Unable to read Stripe account for ${userId}: ${error.message}`);
-      return { ...lastKnown, error: 'STRIPE_UNAVAILABLE' };
-    }
-
-    const isOnboarded = Boolean(
-      account.charges_enabled && account.payouts_enabled && account.details_submitted,
-    );
-
-    // Update user onboarding status if changed
-    if (user.stripeOnboarded !== isOnboarded) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { stripeOnboarded: isOnboarded },
-      });
-    }
-
-    return {
-      stripeConfigured,
-      hasAccount: true,
-      isOnboarded,
-      chargesEnabled: account.charges_enabled,
-      payoutsEnabled: account.payouts_enabled,
-      detailsSubmitted: account.details_submitted,
-    };
-  }
-
-  /**
-   * Request manual payout for creator
-   * @param amount Amount in euros
-   */
-  async requestPayout(userId: string, amount: number) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    this.assertStripeConfigured();
-
-    if (!user.stripeAccountId || !user.stripeOnboarded) {
-      throw new BadRequestException('Stripe account not fully onboarded');
-    }
-
-    amount = roundMoney(amount);
-
-    const minimumPayout = await this.settingsService.getMinimumPayoutAmount();
-    if (amount < minimumPayout) {
-      throw new BadRequestException(`Minimum payout amount is ${minimumPayout.toFixed(2)}€`);
-    }
-
-    // Get available balance (Stripe returns cents)
-    const balance = await this.stripeService.getAccountBalance(user.stripeAccountId);
-    const availableBalance = sumBalanceEntries(balance.available, 'eur');
-
-    if (amount > availableBalance) {
-      throw new BadRequestException(
-        `Insufficient balance. Available: ${availableBalance.toFixed(2)}€`,
-      );
-    }
-
-    // Create payout (Stripe expects cents)
-    const payout = await this.stripeService.createPayout(
-      user.stripeAccountId,
-      toCents(amount),
-    );
-
-    // Save payout record
-    const payoutRecord = await this.prisma.payout.create({
-      data: {
-        creatorId: userId,
-        amount,
-        currency: 'EUR',
-        status: 'PROCESSING',
-        stripePayoutId: payout.id,
-        destinationType: 'bank_account',
-      },
-    });
-
-    this.logger.log(`Payout requested: ${payoutRecord.id}`);
-
-    return {
-      payout: payoutRecord,
-      estimatedArrival: new Date(payout.arrival_date * 1000),
-    };
-  }
-
-  /**
-   * Get creator earnings summary
+   * Creator earnings summary. Amounts are the creator's share (prices
+   * excluding VAT minus the platform fee), in euros.
    */
   async getEarnings(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
+      select: { role: true, kycStatus: true },
     });
 
     if (!user || user.role !== 'CREATOR') {
       throw new ForbiddenException('Only creators can view earnings');
     }
 
-    // Total earnings (all time)
-    const totalEarnings = await this.prisma.transaction.aggregate({
-      where: {
-        toUserId: userId,
-        status: 'COMPLETED',
-      },
-      _sum: {
-        netAmount: true,
-      },
-    });
-
-    // This month earnings
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const monthlyEarnings = await this.prisma.transaction.aggregate({
-      where: {
-        toUserId: userId,
-        status: 'COMPLETED',
-        createdAt: {
-          gte: startOfMonth,
-        },
-      },
-      _sum: {
-        netAmount: true,
-      },
-    });
-
-    // Stripe balance of the connected account (cents, converted to euros below)
-    const balance = user.stripeAccountId && this.stripeService.isConfigured()
-      ? await this.stripeService.getAccountBalance(user.stripeAccountId).catch((error) => {
-          this.logger.warn(`Unable to read Stripe balance for ${userId}: ${error.message}`);
-          return null;
-        })
-      : null;
-    const availableBalance = sumBalanceEntries(balance?.available, 'eur');
-    const pendingBalance = sumBalanceEntries(balance?.pending, 'eur');
-
-    const recentTransactions = await this.prisma.transaction.findMany({
-      where: { toUserId: userId, type: { in: ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'] } },
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-      select: {
-        id: true,
-        type: true,
-        status: true,
-        amount: true,
-        netAmount: true,
-        currency: true,
-        createdAt: true,
-      },
-    });
-
-    // Total payouts
-    const totalPayouts = await this.prisma.payout.aggregate({
-      where: {
-        creatorId: userId,
-        status: 'COMPLETED',
-      },
-      _sum: {
-        amount: true,
-      },
-    });
-
-    const minimumPayoutAmount = await this.settingsService.getMinimumPayoutAmount();
+    const earnedStatuses: TransactionStatus[] = ['COMPLETED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'DISPUTED'];
+    const [earned, monthly, balance, totalPayouts, recentTransactions, eligibility, minimumPayoutAmount, holdDays, feePercentage] =
+      await Promise.all([
+        // Ledger credits and debits of sales (refunds and chargebacks deducted)
+        this.prisma.creatorBalanceEntry.aggregate({
+          where: { creatorId: userId, type: { in: ['EARNING', 'REFUND', 'CHARGEBACK', 'CHARGEBACK_REVERSAL', 'ADJUSTMENT'] } },
+          _sum: { amount: true },
+        }),
+        this.prisma.creatorBalanceEntry.aggregate({
+          where: {
+            creatorId: userId,
+            type: { in: ['EARNING', 'REFUND', 'CHARGEBACK', 'CHARGEBACK_REVERSAL', 'ADJUSTMENT'] },
+            createdAt: { gte: startOfMonth },
+          },
+          _sum: { amount: true },
+        }),
+        this.balance.getBalance(userId),
+        this.prisma.payout.aggregate({
+          where: { creatorId: userId, status: 'COMPLETED' },
+          _sum: { amount: true },
+        }),
+        this.prisma.transaction.findMany({
+          where: { toUserId: userId, type: { in: ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'] }, status: { in: earnedStatuses } },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            amount: true,
+            platformFee: true,
+            netAmount: true,
+            currency: true,
+            createdAt: true,
+          },
+        }),
+        this.payouts.getEligibility(userId),
+        this.settingsService.getMinimumPayoutAmount(),
+        this.settingsService.getEarningsHoldDays(),
+        this.settingsService.getPlatformFeePercentage(),
+      ]);
 
     // Every amount is in euros
     return {
       currency: 'EUR',
       minimumPayoutAmount,
-      totalEarnings: Number(totalEarnings._sum.netAmount ?? 0),
-      monthlyEarnings: Number(monthlyEarnings._sum.netAmount ?? 0),
-      availableBalance,
-      pendingBalance,
-      availableForPayout: availableBalance,
+      earningsHoldDays: holdDays,
+      platformFeePercentage: feePercentage,
+      totalEarnings: roundMoney(Number(earned._sum.amount ?? 0)),
+      monthlyEarnings: roundMoney(Number(monthly._sum.amount ?? 0)),
+      availableBalance: balance.available,
+      pendingBalance: balance.pending,
+      availableForPayout: eligibility.eligible ? Math.max(0, balance.available) : 0,
       totalPayouts: Number(totalPayouts._sum?.amount ?? 0),
+      // What is missing before payouts can be made
+      payoutEligibility: eligibility,
+      canSell: user.kycStatus === 'VERIFIED',
       recentTransactions: recentTransactions.map((transaction) => ({
         ...transaction,
         amount: Number(transaction.amount),
+        platformFee: Number(transaction.platformFee),
         netAmount: Number(transaction.netAmount),
       })),
     };
+  }
+
+  /**
+   * Movements of the creator balance (earnings, refunds, chargebacks, payouts)
+   */
+  async getBalanceHistory(userId: string, page = 1, limit = 20) {
+    const [entries, total] = await Promise.all([
+      this.prisma.creatorBalanceEntry.findMany({
+        where: { creatorId: userId },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: { transaction: { select: { id: true, type: true, amount: true, platformFee: true } } },
+      }),
+      this.prisma.creatorBalanceEntry.count({ where: { creatorId: userId } }),
+    ]);
+
+    const now = new Date();
+    return {
+      items: entries.map((entry) => ({
+        id: entry.id,
+        type: entry.type,
+        amount: Number(entry.amount),
+        description: entry.description,
+        availableAt: entry.availableAt,
+        available: entry.availableAt <= now,
+        createdAt: entry.createdAt,
+        transaction: entry.transaction
+          ? {
+              id: entry.transaction.id,
+              type: entry.transaction.type,
+              amount: Number(entry.transaction.amount),
+              platformFee: Number(entry.transaction.platformFee),
+            }
+          : null,
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Request a payout of the available balance
+   * @param amount Euros, the whole available balance when omitted
+   */
+  async requestPayout(userId: string, amount?: number) {
+    return this.payouts.requestPayout(userId, amount);
   }
 
   /**
@@ -406,251 +235,79 @@ export class PaymentsService {
    * Get payout history
    */
   async getPayouts(userId: string) {
-    const payouts = await this.prisma.payout.findMany({
-      where: { creatorId: userId },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
-    return payouts.map((payout) => ({ ...payout, amount: Number(payout.amount) }));
-  }
-
-  /** Stripe Connect calls need a real secret key */
-  private assertStripeConfigured() {
-    if (!this.stripeService.isConfigured()) {
-      throw new ServiceUnavailableException('Stripe payments are not configured on this platform');
-    }
+    return this.payouts.getPayouts(userId);
   }
 
   /**
-   * Automated payout job (runs daily)
-   * Pays out creators with balance > threshold
-   */
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
-  async processAutomatedPayouts() {
-    this.logger.log('Running automated payouts...');
-
-    const minPayoutAmount = await this.settingsService.getMinimumPayoutAmount(); // EUR, see /admin/settings
-
-    // Get all creators with Stripe accounts
-    const creators = await this.prisma.user.findMany({
-      where: {
-        role: 'CREATOR',
-        stripeAccountId: { not: null },
-        stripeOnboarded: true,
-      },
-    });
-
-    let processedCount = 0;
-    let failedCount = 0;
-
-    for (const creator of creators) {
-      try {
-        // Get balance
-        const balance = await this.stripeService.getAccountBalance(
-          creator.stripeAccountId!,
-        );
-        const amount = sumBalanceEntries(balance.available, 'eur');
-
-        // Check if balance exceeds minimum
-        if (amount >= minPayoutAmount) {
-          // Create payout (Stripe expects cents)
-          const payout = await this.stripeService.createPayout(
-            creator.stripeAccountId!,
-            toCents(amount),
-          );
-
-          // Save record
-          await this.prisma.payout.create({
-            data: {
-              creatorId: creator.id,
-              amount,
-              currency: 'EUR',
-              status: 'PROCESSING',
-              stripePayoutId: payout.id,
-              destinationType: 'bank_account',
-            },
-          });
-
-          processedCount++;
-          this.logger.log(`Automated payout for ${creator.id}: €${amount}`);
-        }
-      } catch (error) {
-        failedCount++;
-        this.logger.error(
-          `Failed to process payout for ${creator.id}: ${error.message}`,
-        );
-      }
-    }
-
-    this.logger.log(
-      `Automated payouts completed: ${processedCount} processed, ${failedCount} failed`,
-    );
-  }
-
-  /**
-   * Create payment intent
-   * @param amount Amount in euros (converted to cents for Stripe)
-   */
-  async createPaymentIntent(userId: string, amount: number, currency: string = 'eur') {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    // Create or get Stripe customer
-    const customerId = await this.getOrCreateCustomerId(user);
-
-    // Create payment intent
-    const paymentIntent = await this.stripeService.createPaymentIntent(
-      amount,
-      currency,
-      customerId,
-    );
-
-    return {
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id,
-    };
-  }
-
-  /**
-   * Get the user's Stripe customer ID, creating the customer on first use
-   */
-  async getOrCreateCustomerId(user: {
-    id: string;
-    email: string;
-    username: string;
-    stripeCustomerId: string | null;
-  }) {
-    return this.oneTimePayments.getOrCreateCustomerId(user);
-  }
-
-  /**
-   * List the user's saved cards
+   * Saved cards of the fan (saved at the payment provider during a payment)
    */
   async listPaymentMethods(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { stripeCustomerId: true },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    // No saved card without Stripe (local stack with placeholder keys)
-    if (!user.stripeCustomerId || !this.stripeService.isConfigured()) {
-      return [];
-    }
-
-    const [methods, customer] = await Promise.all([
-      this.stripeService.listPaymentMethods(user.stripeCustomerId),
-      this.stripeService.getCustomer(user.stripeCustomerId),
-    ]);
-
-    const defaultPaymentMethod = customer.deleted
-      ? null
-      : customer.invoice_settings?.default_payment_method;
-    const defaultId =
-      typeof defaultPaymentMethod === 'string'
-        ? defaultPaymentMethod
-        : defaultPaymentMethod?.id;
-
-    return methods.data.map((method) => ({
-      id: method.id,
+    const cards = await this.paymentFlow.listCards(userId);
+    return cards.map((card) => ({
+      id: card.id,
       type: 'card' as const,
-      brand: method.card?.brand,
-      last4: method.card?.last4,
-      expMonth: method.card?.exp_month,
-      expYear: method.card?.exp_year,
-      isDefault: method.id === defaultId,
-      createdAt: new Date(method.created * 1000).toISOString(),
+      brand: card.brand,
+      last4: card.last4,
+      expMonth: card.expMonth,
+      expYear: card.expYear,
+      isDefault: card.isDefault,
+      createdAt: card.createdAt.toISOString(),
     }));
-  }
-
-  /**
-   * Create a setup intent so the client can save a new card with Stripe Elements
-   */
-  async createSetupIntent(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    if (!this.stripeService.isConfigured()) {
-      throw new ServiceUnavailableException('Payments are not configured');
-    }
-
-    const customerId = await this.getOrCreateCustomerId(user);
-    const setupIntent = await this.stripeService.createSetupIntent(customerId);
-
-    return {
-      clientSecret: setupIntent.client_secret,
-      setupIntentId: setupIntent.id,
-    };
   }
 
   /**
    * Set a saved card as the default one
    */
-  async setDefaultPaymentMethod(userId: string, paymentMethodId: string) {
-    const customerId = await this.assertPaymentMethodOwnership(userId, paymentMethodId);
+  async setDefaultPaymentMethod(userId: string, cardId: string) {
+    await this.paymentFlow.getOwnCard(userId, cardId);
 
-    await this.stripeService.setDefaultPaymentMethod(customerId, paymentMethodId);
+    await this.prisma.$transaction([
+      this.prisma.paymentCard.updateMany({ where: { userId, isDefault: true }, data: { isDefault: false } }),
+      this.prisma.paymentCard.update({ where: { id: cardId }, data: { isDefault: true } }),
+    ]);
 
     return { message: 'Default payment method updated' };
   }
 
   /**
-   * Remove a saved card
+   * Remove a saved card. Subscriptions renewed with it fall back to the
+   * default card at their next renewal.
    */
-  async deletePaymentMethod(userId: string, paymentMethodId: string) {
-    await this.assertPaymentMethodOwnership(userId, paymentMethodId);
+  async deletePaymentMethod(userId: string, cardId: string) {
+    const card = await this.paymentFlow.getOwnCard(userId, cardId);
 
-    await this.stripeService.detachPaymentMethod(paymentMethodId);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.paymentCard.update({ where: { id: card.id }, data: { deletedAt: new Date(), isDefault: false } });
+      await tx.subscription.updateMany({ where: { paymentCardId: card.id }, data: { paymentCardId: null } });
 
-    this.logger.log(`Payment method ${paymentMethodId} removed by user ${userId}`);
+      if (card.isDefault) {
+        const next = await tx.paymentCard.findFirst({
+          where: { userId, deletedAt: null, id: { not: card.id } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (next) {
+          await tx.paymentCard.update({ where: { id: next.id }, data: { isDefault: true } });
+        }
+      }
+    });
 
+    this.logger.log(`Payment card ${cardId} removed by user ${userId}`);
     return { message: 'Payment method removed' };
   }
 
   /**
-   * Ensure the payment method belongs to the user's Stripe customer
+   * Fan's billing country, which decides the VAT rate charged
    */
-  async assertPaymentMethodOwnership(userId: string, paymentMethodId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { stripeCustomerId: true },
-    });
-
-    if (!user?.stripeCustomerId) {
-      throw new NotFoundException('Payment method not found');
-    }
-
-    const method = await this.stripeService
-      .retrievePaymentMethod(paymentMethodId)
-      .catch(() => null);
-    const owner = typeof method?.customer === 'string' ? method.customer : method?.customer?.id;
-
-    if (!method || owner !== user.stripeCustomerId) {
-      throw new NotFoundException('Payment method not found');
-    }
-
-    return user.stripeCustomerId;
+  async setBillingCountry(userId: string, country: string) {
+    await this.prisma.user.update({ where: { id: userId }, data: { billingCountry: country } });
+    return { billingCountry: country };
   }
 
   /**
-   * Handle webhook
+   * State of a payment after the provider's payment page (checkout return page)
    */
-  async handleWebhook(signature: string, payload: Buffer) {
-    // Same handling as /webhooks/stripe so both endpoints keep data consistent
-    return this.stripeWebhookService.handleWebhook(payload, signature);
+  async getPaymentStatus(userId: string, transactionId: string) {
+    return this.paymentFlow.getPaymentStatus(userId, transactionId);
   }
 
   /**
@@ -741,19 +398,19 @@ export class PaymentsService {
         },
       }),
       this.prisma.transaction.count({ where }),
-      // Paid to creators
+      // Paid by the fan (VAT included)
       this.prisma.transaction.aggregate({
         where: {
           fromUserId: userId,
           type: { in: ['SUBSCRIPTION', 'TIP', 'PPV_UNLOCK'] },
           status: { in: paidStatuses },
         },
-        _sum: { amount: true },
+        _sum: { totalAmount: true },
       }),
-      // Refunds received back
+      // Refunds received back (VAT included)
       this.prisma.transaction.aggregate({
         where: { toUserId: userId, type: 'REFUND', status: 'COMPLETED' },
-        _sum: { amount: true },
+        _sum: { totalAmount: true },
       }),
       // Earnings (creators), net of the platform fee
       this.prisma.transaction.aggregate({
@@ -772,6 +429,9 @@ export class PaymentsService {
         amount: Number(transaction.amount),
         platformFee: Number(transaction.platformFee),
         netAmount: Number(transaction.netAmount),
+        vatRate: Number(transaction.vatRate),
+        vatAmount: Number(transaction.vatAmount),
+        totalAmount: Number(transaction.totalAmount),
       })),
       pagination: {
         page,
@@ -781,105 +441,25 @@ export class PaymentsService {
       },
       // Euros
       summary: {
-        totalSpent: roundMoney(Number(spent._sum.amount ?? 0)),
-        totalRefunded: roundMoney(Number(refunded._sum.amount ?? 0)),
+        totalSpent: roundMoney(Number(spent._sum.totalAmount ?? 0)),
+        totalRefunded: roundMoney(Number(refunded._sum.totalAmount ?? 0)),
         totalReceived: roundMoney(Number(received._sum.netAmount ?? 0)),
       },
     };
   }
 
   /**
-   * Create refund for a transaction
+   * Refund (part of) a payment received by the creator, or any payment for an admin
+   * @param amount Euros VAT included; the whole remaining amount when omitted
    */
-  async createRefund(userId: string, transactionId: string, amount?: number, reason?: string) {
-    // Get the transaction
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { id: transactionId },
-      include: {
-        toUser: true,
-      },
+  async createRefund(userId: string, role: string, transactionId: string, amount?: number, reason?: string) {
+    return this.refunds.refundTransaction({
+      requesterId: userId,
+      requesterRole: role,
+      transactionId,
+      amount,
+      reason,
     });
-
-    if (!transaction) {
-      throw new NotFoundException('Transaction not found');
-    }
-
-    // Check if user is the creator who received the payment
-    if (transaction.toUserId !== userId) {
-      throw new ForbiddenException('You can only refund transactions where you are the recipient');
-    }
-
-    if (transaction.status === 'REFUNDED') {
-      throw new BadRequestException('Transaction already refunded');
-    }
-
-    if (transaction.status !== 'COMPLETED') {
-      throw new BadRequestException('Can only refund completed transactions');
-    }
-
-    // Calculate refund amount
-    const refundAmount = amount || Number(transaction.amount);
-
-    if (refundAmount > Number(transaction.amount)) {
-      throw new BadRequestException('Refund amount cannot exceed transaction amount');
-    }
-
-    // Create refund via Stripe
-    let stripeRefund;
-    if (transaction.stripePaymentIntentId) {
-      try {
-        stripeRefund = await this.stripeService.createRefund(
-          transaction.stripePaymentIntentId,
-          Math.round(refundAmount * 100),
-          reason,
-        );
-      } catch (error) {
-        this.logger.error(`Stripe refund failed: ${error.message}`);
-        throw new BadRequestException(`Failed to process refund: ${error.message}`);
-      }
-    }
-
-    // Update transaction status
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        status: 'REFUNDED',
-        metadata: {
-          ...(transaction.metadata as any),
-          refundedAt: new Date().toISOString(),
-          refundAmount,
-          refundReason: reason,
-          stripeRefundId: stripeRefund?.id,
-        },
-      },
-    });
-
-    // Create a reverse transaction for the refund
-    await this.prisma.transaction.create({
-      data: {
-        fromUserId: transaction.toUserId,
-        toUserId: transaction.fromUserId,
-        type: 'REFUND',
-        amount: refundAmount,
-        currency: transaction.currency,
-        status: 'COMPLETED',
-        platformFee: 0,
-        netAmount: refundAmount,
-        metadata: {
-          originalTransactionId: transactionId,
-          reason,
-          description: `Refund for transaction ${transactionId}`,
-        },
-      },
-    });
-
-    this.logger.log(`Refund processed: ${transactionId}, amount: ${refundAmount}`);
-
-    return {
-      message: 'Refund processed successfully',
-      refundAmount,
-      originalTransactionId: transactionId,
-    };
   }
 
   /**
@@ -1051,10 +631,11 @@ export class PaymentsService {
   }
 
   /**
-   * Send a tip to a creator. The tip stays PENDING until Stripe confirms the
-   * payment (webhook or confirmTip), only then is the creator credited.
+   * Send a tip to a creator (amount excluding VAT, VAT added on top). The tip
+   * stays PENDING until the payment provider confirms it, only then is the
+   * creator credited.
    */
-  async sendTip(userId: string, creatorId: string, dto: SendTipDto) {
+  async sendTip(userId: string, creatorId: string, dto: SendTipDto, context: PaymentRequestContext = {}): Promise<PaymentFlowResult> {
     const amount = roundMoney(dto.amount);
 
     // Cannot tip yourself
@@ -1119,13 +700,17 @@ export class PaymentsService {
       menuItem = { id: item.id, label: item.label };
     }
 
-    const result = await this.oneTimePayments.startPayment({
+    const result = await this.paymentFlow.startPayment({
       payerId: userId,
       creatorId,
       kind: 'tip',
       amount,
-      paymentMethodId: dto.paymentMethodId,
+      paymentCardId: dto.paymentCardId,
+      billingCountry: dto.billingCountry,
       description: `Pourboire pour @${creator.username}`,
+      returnPath: dto.streamId ? `/live/${dto.streamId}` : `/${creator.username}`,
+      ipCountry: context.ipCountry,
+      clientIp: context.clientIp,
       metadata: {
         message: dto.message?.trim() || null,
         streamId: dto.streamId,
@@ -1140,10 +725,10 @@ export class PaymentsService {
   }
 
   /**
-   * Confirm a tip after the client-side Stripe confirmation (idempotent)
+   * State of a tip payment (after the provider's payment page)
    */
-  async confirmTip(userId: string, creatorId: string, paymentIntentId: string) {
-    return this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+  async confirmTip(userId: string, creatorId: string, transactionId: string) {
+    return this.paymentFlow.confirmPayment(userId, transactionId, {
       kind: 'tip',
       creatorId,
     });

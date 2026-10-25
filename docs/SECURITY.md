@@ -245,7 +245,7 @@ helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
       imgSrc: ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", 'https://api.stripe.com'],
+      connectSrc: ["'self'"],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],
     },
@@ -374,7 +374,7 @@ await sharp(inputBuffer)
 const apiKey = 'sk_live_xxx';
 
 // ✅ From secure store
-const apiKey = await secretsManager.getSecret('stripe/api_key');
+const apiKey = await secretsManager.getSecret('ccbill/datalink_password');
 ```
 
 **Rotation**:
@@ -448,8 +448,9 @@ logger.error('Payment failed', {
 ### PCI-DSS
 
 ✅ **Nous ne stockons JAMAIS les cartes bancaires**
-- Stripe gère 100% des paiements
+- Le prestataire de paiement (CCBill) gère 100% des paiements sur sa page hébergée ; en développement, le simulateur ne manipule aucune vraie carte
 - Tokens uniquement (non sensibles)
+- Voir [PAIEMENTS.md](PAIEMENTS.md)
 
 ### RGPD
 
@@ -467,7 +468,7 @@ logger.error('Payment failed', {
 ### KYC/AML
 
 **Vérification créateurs**:
-- Stripe Identity / Onfido
+- Vérification d'identité (KYC) obligatoire avant tout virement, profil fiscal DAC7 complet (IBAN chiffré avec `DATA_ENCRYPTION_KEY`)
 - Documents requis: ID + Proof of address
 - Review sous 48h
 - Revalidation annuelle

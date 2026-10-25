@@ -72,7 +72,6 @@ export interface UserDetails {
     kycRejectedAt?: string | null
     kycRejectionReason?: string | null
     twoFactorEnabled?: boolean
-    stripeOnboarded?: boolean
     bannedAt?: string | null
     banReason?: string | null
     suspendedUntil?: string | null
@@ -367,9 +366,6 @@ export function UserDetailDialog({
                     <div><dt className="text-muted-foreground">Dernière connexion</dt><dd>{formatDateTime(detailUser.lastLoginAt)}</dd></div>
                     <div><dt className="text-muted-foreground">Email vérifié</dt><dd>{detailUser.emailVerified ? 'Oui' : 'Non'}</dd></div>
                     <div><dt className="text-muted-foreground">Double authentification</dt><dd>{detailUser.twoFactorEnabled ? 'Activée' : 'Désactivée'}</dd></div>
-                    {detailUser.role === 'CREATOR' && (
-                      <div><dt className="text-muted-foreground">Paiements Stripe</dt><dd>{detailUser.stripeOnboarded ? 'Configurés' : 'Non configurés'}</dd></div>
-                    )}
                     <div>
                       <dt className="text-muted-foreground">Vérification d&apos;identité (KYC)</dt>
                       <dd className="flex flex-wrap items-center gap-2">

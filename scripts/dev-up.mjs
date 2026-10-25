@@ -10,8 +10,7 @@
 // Variables utiles :
 //   SKIP_DOCKER=1   utiliser des services déjà lancés (fournir DATABASE_URL, REDIS_*) ;
 //                   lives en pair-à-pair sauf si LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET sont fournis
-//   STRIPE_SECRET_KEY / NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY   clés Stripe de test
-//   SEED_STRIPE_ACCOUNT_ID   compte Connect de test attribué à la créatrice Alice
+//   Paiements : simulateur local (PAYMENT_PROVIDER=fake), cartes de test 4242 (acceptée) et 0002 (refusée)
 //
 // Comptes de démo : docs/SEED_ACCOUNTS.md (mot de passe SecurePass123!)
 
@@ -440,10 +439,16 @@ JWT_REFRESH_EXPIRES_IN=7d
 THROTTLE_TTL=60
 THROTTLE_LIMIT=1000
 
-# Stripe (mode test) : https://dashboard.stripe.com/test/apikeys
-STRIPE_SECRET_KEY=${process.env.STRIPE_SECRET_KEY || 'sk_test_remplacez_moi'}
-STRIPE_WEBHOOK_SECRET=${process.env.STRIPE_WEBHOOK_SECRET || 'whsec_remplacez_moi'}
-STRIPE_PLATFORM_FEE_PERCENTAGE=15
+# Paiements : simulateur local (aucune carte réelle), voir docs/PAIEMENTS.md
+PAYMENT_PROVIDER=fake
+PLATFORM_FEE_PERCENTAGE=15
+EARNINGS_HOLD_DAYS=7
+# Chiffrement des IBAN des créateurs (valeur de développement uniquement)
+DATA_ENCRYPTION_KEY=dev-only-encryption-key-change-me
+# Compte de la plateforme pour les fichiers de virements SEPA (fictif en dev)
+PAYOUT_DEBTOR_NAME=FanVIP Dev
+PAYOUT_DEBTOR_IBAN=FR7630006000011234567890189
+PAYOUT_DEBTOR_BIC=AGRIFRPP
 
 # Stockage MinIO (console : http://localhost:9001)
 AWS_S3_ENDPOINT=${S3_ENDPOINT}
@@ -507,7 +512,6 @@ NEXT_PUBLIC_API_URL=${API_URL}
 NEXT_PUBLIC_WS_URL=${API_URL}
 NEXT_PUBLIC_APP_URL=${WEB_URL}
 NEXT_PUBLIC_APP_NAME=FanVIP
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || 'pk_test_remplacez_moi'}
 NEXT_PUBLIC_ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"}]
 `,
   );

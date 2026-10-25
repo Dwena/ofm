@@ -10,7 +10,7 @@ import { RedisService } from '../common/redis/redis.service';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../common/mail/mail.service';
 import { SettingsService } from '../settings/settings.service';
-import { StripeService } from '../payments/stripe.service';
+import { LegalService } from '../legal/legal.service';
 
 // bcrypt hashing is CPU bound: leave room on a busy machine
 jest.setTimeout(30000);
@@ -30,6 +30,7 @@ describe('AuthService (account: change password, logout all, delete)', () => {
       findMany: jest.fn(),
       updateMany: jest.fn((args) => ({ op: 'subscription.updateMany', args })),
     },
+    paymentCard: { updateMany: jest.fn((args) => ({ op: 'paymentCard.updateMany', args })) },
     subscriptionTier: { updateMany: jest.fn((args) => ({ op: 'subscriptionTier.updateMany', args })) },
     content: { updateMany: jest.fn((args) => ({ op: 'content.updateMany', args })) },
     follow: { deleteMany: jest.fn((args) => ({ op: 'follow.deleteMany', args })) },
@@ -40,7 +41,6 @@ describe('AuthService (account: change password, logout all, delete)', () => {
 
   const mockRedisService = { get: jest.fn(), set: jest.fn(), del: jest.fn(), exists: jest.fn() };
   const mockMailService = { sendPasswordChangedEmail: jest.fn().mockResolvedValue(true) };
-  const mockStripeService = { setCancelAtPeriodEnd: jest.fn().mockResolvedValue({}) };
   const mockJwtService = { sign: jest.fn(() => 'signed-token'), verify: jest.fn(), decode: jest.fn() };
   const mockConfigService = {
     get: jest.fn((key: string, defaultValue?: any) => (key === 'BCRYPT_ROUNDS' ? '4' : defaultValue)),
@@ -72,7 +72,7 @@ describe('AuthService (account: change password, logout all, delete)', () => {
         { provide: UsersService, useValue: {} },
         { provide: MailService, useValue: mockMailService },
         { provide: SettingsService, useValue: {} },
-        { provide: StripeService, useValue: mockStripeService },
+        LegalService,
       ],
     }).compile();
 
@@ -170,16 +170,13 @@ describe('AuthService (account: change password, logout all, delete)', () => {
     it('anonymizes the user, stops billing and revokes every session', async () => {
       mockPrismaService.user.findUnique.mockResolvedValue({ ...baseUser(), role: 'CREATOR' });
       mockPrismaService.subscription.findMany.mockResolvedValue([
-        { id: 'sub-1', stripeSubscriptionId: 'stripe-sub-1' },
-        { id: 'sub-2', stripeSubscriptionId: null },
+        { id: 'sub-1' },
+        { id: 'sub-2' },
       ]);
 
       await expect(service.deleteAccount('user-1', { password: 'OldPass1!' })).resolves.toEqual({
         message: 'Account deleted',
       });
-
-      expect(mockStripeService.setCancelAtPeriodEnd).toHaveBeenCalledTimes(1);
-      expect(mockStripeService.setCancelAtPeriodEnd).toHaveBeenCalledWith('stripe-sub-1', true);
 
       const userUpdate = mockPrismaService.user.update.mock.calls[0][0];
       expect(userUpdate.data).toEqual(
@@ -198,6 +195,10 @@ describe('AuthService (account: change password, logout all, delete)', () => {
         where: { id: { in: ['sub-1', 'sub-2'] } },
         data: { cancelAtPeriodEnd: true },
       });
+      expect(mockPrismaService.paymentCard.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', deletedAt: null },
+        data: { deletedAt: expect.any(Date), isDefault: false },
+      });
       expect(mockPrismaService.subscriptionTier.updateMany).toHaveBeenCalledWith({
         where: { creatorId: 'user-1' },
         data: { isActive: false },
@@ -211,17 +212,6 @@ describe('AuthService (account: change password, logout all, delete)', () => {
         expect.any(String),
         expect.any(Number),
       );
-    });
-
-    it('still deletes the account when Stripe fails', async () => {
-      mockPrismaService.user.findUnique.mockResolvedValue(baseUser());
-      mockPrismaService.subscription.findMany.mockResolvedValue([{ id: 'sub-1', stripeSubscriptionId: 's-1' }]);
-      mockStripeService.setCancelAtPeriodEnd.mockRejectedValueOnce(new Error('stripe down'));
-
-      await expect(service.deleteAccount('user-1', { password: 'OldPass1!' })).resolves.toEqual({
-        message: 'Account deleted',
-      });
-      expect(mockPrismaService.$transaction).toHaveBeenCalled();
     });
   });
 });

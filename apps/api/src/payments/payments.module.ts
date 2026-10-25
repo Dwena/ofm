@@ -1,33 +1,44 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { TaxModule } from '../tax/tax.module';
 import { PaymentsService } from './payments.service';
 import { PaymentsController } from './payments.controller';
-import { StripeService } from './stripe.service';
-import { StripeWebhookController } from './stripe-webhook.controller';
-import { StripeWebhookService } from './stripe-webhook.service';
+import { PaymentWebhookController } from './payment-webhook.controller';
+import { PaymentSimulatorController } from './payment-simulator.controller';
+import { AdminPayoutsController } from './admin-payouts.controller';
+import { PaymentFlowService } from './payment-flow.service';
+import { PaymentEventsService } from './payment-events.service';
+import { CreatorBalanceService } from './creator-balance.service';
+import { RefundsService } from './refunds.service';
+import { PayoutsService } from './payouts.service';
 import { BillingService } from './billing.service';
 import { SubscriptionSyncService } from './subscription-sync.service';
-import { OneTimePaymentService } from './one-time-payment.service';
 import { CheckoutInfoService } from './checkout-info.service';
+import { paymentProviderFactory } from './providers/payment-provider.factory';
+import { PAYMENT_PROVIDER } from './providers/payment-provider';
 
 @Module({
-  imports: [ConfigModule],
-  controllers: [PaymentsController, StripeWebhookController],
+  imports: [ConfigModule, TaxModule],
+  controllers: [PaymentsController, PaymentWebhookController, PaymentSimulatorController, AdminPayoutsController],
   providers: [
+    paymentProviderFactory,
     PaymentsService,
-    StripeService,
-    StripeWebhookService,
+    PaymentFlowService,
+    PaymentEventsService,
+    CreatorBalanceService,
+    RefundsService,
+    PayoutsService,
     BillingService,
     SubscriptionSyncService,
-    OneTimePaymentService,
     CheckoutInfoService,
   ],
   exports: [
+    PAYMENT_PROVIDER,
     PaymentsService,
-    StripeService,
+    PaymentFlowService,
+    CreatorBalanceService,
     BillingService,
     SubscriptionSyncService,
-    OneTimePaymentService,
   ],
 })
 export class PaymentsModule {}

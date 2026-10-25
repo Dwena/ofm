@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Test, TestingModule } from '@nestjs/testing';
 import { MessagingService } from './messaging.service';
 import { PrismaService } from '../common/database/prisma.service';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService } from '../payments/payment-flow.service';
 
 describe('MessagingService', () => {
   let service: MessagingService;
@@ -45,7 +45,7 @@ describe('MessagingService', () => {
           useValue: mockPrismaService,
         },
         {
-          provide: OneTimePaymentService,
+          provide: PaymentFlowService,
           useValue: mockOneTimePayments,
         },
       ],
@@ -439,13 +439,13 @@ describe('MessagingService', () => {
     it('starts a one-off payment for the recipient', async () => {
       mockPrismaService.message.findUnique.mockResolvedValue(message);
       mockOneTimePayments.startPayment.mockResolvedValue({
-        status: 'requires_payment_method',
+        status: 'requires_redirect',
         completed: false,
-        clientSecret: 'secret',
-        paymentIntentId: 'pi_1',
+        transactionId: 'tx-1',
+        redirectUrl: 'https://pay.example/checkout',
       });
 
-      const result = await service.unlockMessage('fan-1', 'm-ppv', 'pm_1');
+      const result = await service.unlockMessage('fan-1', 'm-ppv', { paymentCardId: 'card-1', withdrawalWaiver: true });
 
       expect(mockOneTimePayments.startPayment).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -453,11 +453,12 @@ describe('MessagingService', () => {
           creatorId: 'creator-1',
           kind: 'message_unlock',
           amount: 7.99,
-          paymentMethodId: 'pm_1',
+          paymentCardId: 'card-1',
+          withdrawalWaiver: true,
           metadata: { messageId: 'm-ppv' },
         }),
       );
-      expect(result).toEqual(expect.objectContaining({ unlocked: false, clientSecret: 'secret', messageId: 'm-ppv' }));
+      expect(result).toEqual(expect.objectContaining({ unlocked: false, redirectUrl: 'https://pay.example/checkout', messageId: 'm-ppv' }));
     });
 
     it('does not charge twice, nor anyone but the recipient', async () => {
@@ -479,9 +480,9 @@ describe('MessagingService', () => {
     it('confirms against the message id', async () => {
       mockOneTimePayments.confirmPayment.mockResolvedValue({ status: 'completed', completed: true });
 
-      const result = await service.confirmUnlockMessage('fan-1', 'm-ppv', 'pi_1');
+      const result = await service.confirmUnlockMessage('fan-1', 'm-ppv', 'tx-1');
 
-      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('fan-1', 'pi_1', {
+      expect(mockOneTimePayments.confirmPayment).toHaveBeenCalledWith('fan-1', 'tx-1', {
         kind: 'message_unlock',
         metadata: { messageId: 'm-ppv' },
       });

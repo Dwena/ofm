@@ -1,13 +1,12 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { CheckoutInfoService, MAXIMUM_TIP } from './checkout-info.service';
-import { StripeService } from './stripe.service';
-import { PrismaService } from '../common/database/prisma.service';
 import { CheckoutItemType } from './dto/payments.dto';
 
 describe('CheckoutInfoService', () => {
   let service: CheckoutInfoService;
+  let fanBillingCountry: string | null;
+  let tipCreator: any;
 
   const mockPrismaService = {
     subscriptionTier: { findUnique: jest.fn() },
@@ -19,42 +18,46 @@ describe('CheckoutInfoService', () => {
     user: { findUnique: jest.fn() },
   };
 
-  const mockStripeService = { isConfigured: jest.fn() };
+  const mockPaymentFlow = { isConfigured: jest.fn() };
+  const mockSettings = { getPlatformFeePercentage: jest.fn() };
 
   const creator = {
     id: 'creator-1',
     username: 'alice',
     displayName: 'Alice',
     avatar: null,
-    stripeAccountId: 'acct_1',
-    stripeOnboarded: true,
+    role: 'CREATOR',
+    kycStatus: 'VERIFIED',
+    status: 'ACTIVE',
+    deletedAt: null,
   };
+  const publicCreator = { id: 'creator-1', username: 'alice', displayName: 'Alice', avatar: null };
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        CheckoutInfoService,
-        { provide: PrismaService, useValue: mockPrismaService },
-        { provide: StripeService, useValue: mockStripeService },
-      ],
-    }).compile();
-
-    service = module.get(CheckoutInfoService);
+  beforeEach(() => {
     jest.resetAllMocks();
-    mockStripeService.isConfigured.mockReturnValue(true);
+    mockPaymentFlow.isConfigured.mockReturnValue(true);
+    mockSettings.getPlatformFeePercentage.mockResolvedValue(15);
+    fanBillingCountry = 'FR';
+    tipCreator = null;
+    // Creator of a tip checkout, or the fan's billing country
+    mockPrismaService.user.findUnique.mockImplementation(async ({ where, select }: any) =>
+      select?.billingCountry ? { billingCountry: fanBillingCountry } : where.id === 'creator-1' ? tipCreator : null,
+    );
+
+    service = new CheckoutInfoService(mockPrismaService as any, mockPaymentFlow as any, mockSettings as any);
   });
 
   describe('subscription', () => {
     const tier = {
       id: 'tier-1',
       name: 'Premium',
-      price: new Prisma.Decimal('24.99'),
+      price: new Prisma.Decimal('10'),
       interval: 'month',
       isActive: true,
       creator,
     };
 
-    it('returns the server price of the tier, ignoring the URL amount', async () => {
+    it('returns the server price of the tier with the VAT of the fan country on top', async () => {
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(tier);
       mockPrismaService.subscription.findFirst.mockResolvedValue(null);
 
@@ -64,41 +67,79 @@ describe('CheckoutInfoService', () => {
         type: 'subscription',
         itemId: 'tier-1',
         title: 'Premium',
-        amount: 24.99,
+        amount: 10,
+        vatRate: 20,
+        vatAmount: 2,
+        totalAmount: 12,
+        billingCountry: 'FR',
+        requiresWithdrawalWaiver: true,
         interval: 'month',
-        creator: { id: 'creator-1', username: 'alice', displayName: 'Alice', avatar: null },
+        creator: publicCreator,
         available: true,
         alreadyOwned: false,
       });
     });
 
-    it('reports a creator without Stripe account', async () => {
-      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({
-        ...tier,
-        creator: { ...creator, stripeAccountId: null, stripeOnboarded: false },
-      });
+    it('computes the VAT for the country chosen at checkout', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(tier);
 
-      const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1');
+      const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1', 'de');
 
-      expect(info.available).toBe(false);
-      expect(info.unavailableReason).toBe('CREATOR_NOT_READY');
+      expect(info).toEqual(expect.objectContaining({ billingCountry: 'DE', vatRate: 19, vatAmount: 1.9, totalAmount: 11.9 }));
     });
 
-    it('reports payments disabled when Stripe has no key', async () => {
-      mockStripeService.isConfigured.mockReturnValue(false);
+    it('charges no VAT while the billing country is unknown', async () => {
+      fanBillingCountry = null;
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(tier);
 
       const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1');
 
+      expect(info).toEqual(expect.objectContaining({ billingCountry: null, vatRate: 0, vatAmount: 0, totalAmount: 10 }));
+    });
+
+    it('reports a creator who cannot sell yet (identity not verified, suspended, deleted)', async () => {
+      for (const override of [{ kycStatus: 'PENDING' }, { status: 'SUSPENDED' }, { deletedAt: new Date() }, { role: 'SUBSCRIBER' }]) {
+        mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({ ...tier, creator: { ...creator, ...override } });
+
+        const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1');
+
+        expect(info.available).toBe(false);
+        expect(info.unavailableReason).toBe('CREATOR_NOT_READY');
+        // Private fields of the creator are not returned
+        expect(info.creator).toEqual(publicCreator);
+      }
+    });
+
+    it('reports payments disabled when the payment provider is not configured', async () => {
+      mockPaymentFlow.isConfigured.mockReturnValue(false);
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValue(tier);
+
+      const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1');
+
+      expect(info.available).toBe(false);
       expect(info.unavailableReason).toBe('PAYMENTS_DISABLED');
+    });
+
+    it('flags a tier already subscribed and a free tier', async () => {
+      mockPrismaService.subscriptionTier.findUnique.mockResolvedValueOnce(tier).mockResolvedValueOnce({ ...tier, price: new Prisma.Decimal('0') });
+      mockPrismaService.subscription.findFirst.mockResolvedValueOnce({ id: 'sub-1' }).mockResolvedValueOnce(null);
+
+      const owned = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1');
+      expect(owned).toEqual(expect.objectContaining({ alreadyOwned: true, available: false }));
+      expect(owned.unavailableReason).toBeUndefined();
+      expect(mockPrismaService.subscription.findFirst).toHaveBeenCalledWith({
+        where: { subscriberId: 'fan-1', tierId: 'tier-1', status: { in: ['ACTIVE', 'PAST_DUE'] } },
+        select: { id: true },
+      });
+
+      const free = await service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1');
+      expect(free.unavailableReason).toBe('NOT_PAID');
     });
 
     it('throws for an inactive tier', async () => {
       mockPrismaService.subscriptionTier.findUnique.mockResolvedValue({ ...tier, isActive: false });
 
-      await expect(
-        service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1'),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.getCheckoutInfo('fan-1', CheckoutItemType.SUBSCRIPTION, 'tier-1')).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -120,31 +161,51 @@ describe('CheckoutInfoService', () => {
       const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.PPV, 'content-1');
 
       expect(info).toEqual(
-        expect.objectContaining({ amount: 7.5, title: 'Contenu exclusif', alreadyOwned: true, available: false }),
+        expect.objectContaining({
+          amount: 7.5,
+          vatAmount: 1.5,
+          totalAmount: 9,
+          title: 'Contenu exclusif',
+          requiresWithdrawalWaiver: true,
+          alreadyOwned: true,
+          available: false,
+        }),
       );
       expect(info.unavailableReason).toBeUndefined();
     });
 
-    it('refuses buying your own content', async () => {
+    it('refuses buying your own content, even before the platform setup', async () => {
+      mockPaymentFlow.isConfigured.mockReturnValue(false);
       mockPrismaService.content.findUnique.mockResolvedValue(content);
 
       const info = await service.getCheckoutInfo('creator-1', CheckoutItemType.PPV, 'content-1');
 
       expect(info.unavailableReason).toBe('OWN_ITEM');
     });
+
+    it('reports content that is not pay-per-view and hides unpublished content', async () => {
+      mockPrismaService.content.findUnique.mockResolvedValueOnce({ ...content, isPpv: false }).mockResolvedValueOnce({ ...content, status: 'DRAFT' });
+
+      await expect(service.getCheckoutInfo('fan-1', CheckoutItemType.PPV, 'content-1')).resolves.toEqual(
+        expect.objectContaining({ unavailableReason: 'NOT_PAID', available: false }),
+      );
+      await expect(service.getCheckoutInfo('fan-1', CheckoutItemType.PPV, 'content-1')).rejects.toThrow(NotFoundException);
+    });
   });
 
   describe('stream', () => {
+    const stream = {
+      id: 'stream-1',
+      title: 'Live',
+      creatorId: 'creator-1',
+      status: 'LIVE',
+      isPpv: true,
+      ppvPrice: new Prisma.Decimal('5'),
+      creator,
+    };
+
     it('reports an ended stream', async () => {
-      mockPrismaService.liveStream.findUnique.mockResolvedValue({
-        id: 'stream-1',
-        title: 'Live',
-        creatorId: 'creator-1',
-        status: 'ENDED',
-        isPpv: true,
-        ppvPrice: new Prisma.Decimal('5'),
-        creator,
-      });
+      mockPrismaService.liveStream.findUnique.mockResolvedValue({ ...stream, status: 'ENDED' });
 
       const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.STREAM, 'stream-1');
 
@@ -155,41 +216,59 @@ describe('CheckoutInfoService', () => {
       );
       expect(info.unavailableReason).toBe('ENDED');
     });
+
+    it('flags a live already bought', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(stream);
+      mockPrismaService.transaction.findFirst.mockResolvedValue({ id: 'tx-1' });
+
+      const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.STREAM, 'stream-1');
+
+      expect(info).toEqual(expect.objectContaining({ alreadyOwned: true, available: false, totalAmount: 6 }));
+    });
   });
 
   describe('tip', () => {
-    it('returns the creator minimum tip', async () => {
-      mockPrismaService.user.findUnique.mockResolvedValue({
-        ...creator,
-        role: 'CREATOR',
-        creatorProfile: { allowTips: true, minimumTip: new Prisma.Decimal('2') },
-      });
+    it('returns the tip limits, the VAT rate and no amount', async () => {
+      tipCreator = { ...creator, creatorProfile: { allowTips: true, minimumTip: new Prisma.Decimal('2') } };
 
       const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.TIP, 'creator-1');
 
       expect(info).toEqual(
-        expect.objectContaining({ amount: null, minimumTip: 2, maximumTip: MAXIMUM_TIP, available: true }),
+        expect.objectContaining({
+          amount: null,
+          vatRate: 20,
+          vatAmount: null,
+          totalAmount: null,
+          billingCountry: 'FR',
+          minimumTip: 2,
+          maximumTip: MAXIMUM_TIP,
+          requiresWithdrawalWaiver: false,
+          available: true,
+          creator: publicCreator,
+        }),
       );
     });
 
     it('reports a creator who does not accept tips', async () => {
-      mockPrismaService.user.findUnique.mockResolvedValue({
-        ...creator,
-        role: 'CREATOR',
-        creatorProfile: { allowTips: false, minimumTip: new Prisma.Decimal('5') },
-      });
+      tipCreator = { ...creator, creatorProfile: { allowTips: false, minimumTip: new Prisma.Decimal('5') } };
 
       const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.TIP, 'creator-1');
 
       expect(info.unavailableReason).toBe('TIPS_DISABLED');
     });
 
-    it('throws for a user who is not a creator', async () => {
-      mockPrismaService.user.findUnique.mockResolvedValue({ ...creator, role: 'SUBSCRIBER', creatorProfile: null });
+    it('reports a creator not verified yet', async () => {
+      tipCreator = { ...creator, kycStatus: 'PENDING', creatorProfile: { allowTips: true, minimumTip: new Prisma.Decimal('5') } };
 
-      await expect(service.getCheckoutInfo('fan-1', CheckoutItemType.TIP, 'creator-1')).rejects.toThrow(
-        NotFoundException,
-      );
+      const info = await service.getCheckoutInfo('fan-1', CheckoutItemType.TIP, 'creator-1');
+
+      expect(info.unavailableReason).toBe('CREATOR_NOT_READY');
+    });
+
+    it('throws for a user who is not a creator', async () => {
+      tipCreator = { ...creator, role: 'SUBSCRIBER', creatorProfile: null };
+
+      await expect(service.getCheckoutInfo('fan-1', CheckoutItemType.TIP, 'creator-1')).rejects.toThrow(NotFoundException);
     });
   });
 });

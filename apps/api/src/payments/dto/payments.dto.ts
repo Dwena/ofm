@@ -1,12 +1,25 @@
-import { IsNumber, IsString, IsEnum, IsOptional, IsUUID, IsPositive, Min, Max, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsNumber,
+  IsString,
+  IsEnum,
+  IsOptional,
+  IsUUID,
+  IsPositive,
+  Matches,
+  Min,
+  Max,
+  MaxLength,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 export class RequestPayoutDto {
-  // Euros
+  // Euros, the whole available balance when omitted
   // The minimum is a platform setting (minimumPayoutAmount), checked by the service
   @IsNumber({ maxDecimalPlaces: 2 })
   @IsPositive()
-  amount: number;
+  @IsOptional()
+  amount?: number;
 
   @IsString()
   @IsOptional()
@@ -147,22 +160,44 @@ export class SendTipDto {
   @IsOptional()
   menuItemId?: string;
 
-  // Saved card (GET /payments/methods); without it the client confirms with Stripe Elements
-  @IsString()
+  // Saved card (GET /payments/methods); without it the fan pays on the provider's page
+  @IsUUID()
   @IsOptional()
-  paymentMethodId?: string;
+  paymentCardId?: string;
+
+  // Billing country (ISO 3166-1 alpha-2), decides the VAT rate; saved on the account
+  @Matches(/^[A-Za-z]{2}$/)
+  @IsOptional()
+  billingCountry?: string;
 }
 
+/** Options of a purchase (PPV content / message / live, subscription) */
 export class OneTimePaymentDto {
-  // Saved card (GET /payments/methods); without it the client confirms with Stripe Elements
-  @IsString()
+  // Saved card (GET /payments/methods); without it the fan pays on the provider's page
+  @IsUUID()
   @IsOptional()
-  paymentMethodId?: string;
+  paymentCardId?: string;
+
+  // Billing country (ISO 3166-1 alpha-2), decides the VAT rate; saved on the account
+  @Matches(/^[A-Za-z]{2}$/)
+  @IsOptional()
+  billingCountry?: string;
+
+  // The fan asks for immediate access to the digital content and waives the
+  // 14-day withdrawal right (art. L221-28 13° Code de la consommation): required
+  @IsBoolean()
+  @IsOptional()
+  withdrawalWaiver?: boolean;
 }
 
 export class ConfirmPaymentDto {
-  @IsString()
-  paymentIntentId: string;
+  @IsUUID()
+  transactionId: string;
+}
+
+export class BillingCountryDto {
+  @Matches(/^[A-Za-z]{2}$/)
+  country: string;
 }
 
 export enum CheckoutItemType {
@@ -179,4 +214,22 @@ export class CheckoutInfoQueryDto {
   // Tier id, content id, stream id or creator id (tip)
   @IsUUID()
   itemId: string;
+
+  // Country to compute the VAT for (defaults to the fan's billing country)
+  @Matches(/^[A-Za-z]{2}$/)
+  @IsOptional()
+  country?: string;
+}
+
+export class AdminPayoutBatchDto {
+  // Pending payouts to export; every pending payout when omitted
+  @IsUUID('all', { each: true })
+  @IsOptional()
+  payoutIds?: string[];
+}
+
+export class AdminPayoutFailureDto {
+  @IsString()
+  @MaxLength(300)
+  reason: string;
 }

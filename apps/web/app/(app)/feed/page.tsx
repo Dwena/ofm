@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { formatFanPrice } from '@/lib/vat'
 import Link from 'next/link'
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { contentApi } from '@/lib/api'
@@ -31,6 +32,7 @@ import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 import { shareContent, useToggleLike } from '@/hooks/use-content-actions'
 import { cn, formatEuros } from '@/lib/utils'
 import { StoriesBar } from '@/components/stories/stories-bar'
+import { AgeGatedMedia } from '@/components/age-verification/age-gated-media'
 
 // Shape returned by /content/feed and /content/feed/subscriptions
 interface ContentFile {
@@ -51,6 +53,8 @@ interface ContentItem {
   isPpv: boolean
   ppvPrice: number | null // euros
   isLocked: boolean
+  /** Media URLs withheld until the visitor's age is verified */
+  ageVerificationRequired?: boolean
   hasUnlocked: boolean
   isLiked: boolean
   mediaCount: number
@@ -268,7 +272,7 @@ function ContentCard({ content, onUnlock }: { content: ContentItem; onUnlock: (c
             )}
             {content.isPpv && (
               <Badge variant="secondary">
-                {content.hasUnlocked || isOwner ? 'PPV' : `PPV ${formatEuros(content.ppvPrice)}`}
+                {content.hasUnlocked || isOwner ? 'PPV' : `PPV ${formatFanPrice(content.ppvPrice)}`}
               </Badge>
             )}
             <ContentActionsMenu content={content} isOwner={isOwner} />
@@ -294,6 +298,8 @@ function ContentCard({ content, onUnlock }: { content: ContentItem; onUnlock: (c
 
         {content.isLocked ? (
           <LockedMedia content={content} onUnlock={onUnlock} />
+        ) : content.ageVerificationRequired ? (
+          <AgeGatedMedia className="aspect-video rounded-none" />
         ) : content.files.length > 0 ? (
           <MediaCarousel files={content.files} title={content.title || `Média de ${creatorName}`} />
         ) : null}
@@ -357,7 +363,7 @@ function LockedMedia({ content, onUnlock }: { content: ContentItem; onUnlock: (c
             <p className="font-semibold">{content.isPpv ? 'Contenu payant' : 'Contenu verrouillé'}</p>
             <p className="text-sm text-muted-foreground">
               {content.isPpv
-                ? `Débloquez ce contenu pour ${formatEuros(content.ppvPrice)}`
+                ? `Débloquez ce contenu pour ${formatFanPrice(content.ppvPrice)}`
                 : isPremium
                   ? 'Réservé aux abonnés premium de ce créateur'
                   : 'Abonnez-vous à ce créateur pour voir ce contenu'}
@@ -369,7 +375,7 @@ function LockedMedia({ content, onUnlock }: { content: ContentItem; onUnlock: (c
             )}
           </div>
           {content.isPpv ? (
-            <Button onClick={() => onUnlock(content)}>Débloquer pour {formatEuros(content.ppvPrice)}</Button>
+            <Button onClick={() => onUnlock(content)}>Débloquer pour {formatFanPrice(content.ppvPrice)}</Button>
           ) : (
             <Button asChild>
               <Link href={`/${content.creator.username}#tiers-section`}>

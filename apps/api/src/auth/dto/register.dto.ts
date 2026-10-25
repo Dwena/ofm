@@ -1,4 +1,14 @@
-import { IsEmail, IsString, MinLength, MaxLength, IsEnum, IsOptional, Matches } from 'class-validator';
+import {
+  Equals,
+  IsEmail,
+  IsString,
+  MinLength,
+  MaxLength,
+  IsIn,
+  IsOptional,
+  Matches,
+  ValidateIf,
+} from 'class-validator';
 import { UserRole } from '../decorators/roles.decorator';
 
 export class RegisterDto {
@@ -21,7 +31,21 @@ export class RegisterDto {
   })
   password: string;
 
-  @IsEnum(UserRole, { message: 'Invalid role' })
+  // Only fan and creator accounts can be self-registered (never ADMIN / MODERATOR)
+  @IsIn([UserRole.SUBSCRIBER, UserRole.CREATOR], { message: 'Invalid role' })
   @IsOptional()
   role?: UserRole = UserRole.SUBSCRIBER;
+
+  /** "J'ai lu et j'accepte les CGU et la Politique de confidentialité" */
+  @Equals(true, { message: 'You must accept the terms of use and the privacy policy' })
+  acceptTerms: boolean;
+
+  /** "Je certifie avoir 18 ans ou plus" */
+  @Equals(true, { message: 'You must certify that you are at least 18 years old' })
+  confirmAdult: boolean;
+
+  /** "J'accepte les Conditions créateurs": required for creator accounts */
+  @ValidateIf((dto: RegisterDto) => dto.role === UserRole.CREATOR)
+  @Equals(true, { message: 'You must accept the creator terms' })
+  acceptCreatorTerms?: boolean;
 }

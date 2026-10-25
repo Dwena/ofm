@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsBoolean, IsNumber, Min, IsArray, IsUUID, IsDate, MaxLength } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsBoolean, IsNumber, Min, IsArray, IsUUID, IsDate, MaxLength, ArrayMaxSize } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum ContentType {
@@ -63,4 +63,18 @@ export class CreateContentDto {
   @IsBoolean()
   @IsOptional()
   publish?: boolean;
+
+  /**
+   * "Seulement moi" (default true). false = other people appear in the
+   * content: coPerformerIds must list them (verified co-performers only)
+   */
+  @IsBoolean()
+  @IsOptional()
+  soloContent?: boolean;
+
+  @IsArray()
+  @IsUUID('4', { each: true })
+  @ArrayMaxSize(20)
+  @IsOptional()
+  coPerformerIds?: string[];
 }

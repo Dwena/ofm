@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundEx
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 import { roundMoney } from '../common/utils/money';
-import type { TipCompletedEvent } from '../payments/one-time-payment.service';
+import type { TipCompletedEvent } from '../payments/payment-flow.service';
 import {
   MAX_TIP_GOAL_AMOUNT,
   MAX_TIP_GOAL_LABEL_LENGTH,

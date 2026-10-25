@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { computeFees, fromCents, roundMoney, serializeDecimals, sumBalanceEntries, toCents } from './money';
+import { computeFees, fromCents, roundMoney, serializeDecimals, toCents } from './money';
 
 describe('money helpers', () => {
   it('converts euros to Stripe cents without float drift', () => {
@@ -23,17 +23,6 @@ describe('money helpers', () => {
   it('splits platform fee and creator net amount in euros', () => {
     expect(computeFees(10, 15)).toEqual({ platformFee: 1.5, netAmount: 8.5 });
     expect(computeFees(9.99, 15)).toEqual({ platformFee: 1.5, netAmount: 8.49 });
-  });
-
-  it('sums a Stripe balance in euros for one currency', () => {
-    expect(
-      sumBalanceEntries([
-        { amount: 12345, currency: 'eur' },
-        { amount: 500, currency: 'usd' },
-        { amount: 55, currency: 'EUR' },
-      ]),
-    ).toBe(124);
-    expect(sumBalanceEntries(undefined)).toBe(0);
   });
 
   it('serializes Prisma Decimals as numbers, deeply', () => {

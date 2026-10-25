@@ -27,6 +27,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import { LIVE_REFETCH_INTERVAL, useLiveAnalytics } from '@/hooks/use-live-analytics'
 import { LiveIndicator } from '@/components/live-indicator'
+import { KycBanner } from '@/components/creator/kyc-banner'
 import { ProcessingJobsCard } from '@/components/media/media-job-progress'
 import { formatEuros } from '@/lib/utils'
 import {
@@ -193,6 +194,9 @@ export default function CreatorDashboard() {
           onRefresh={refreshAll}
         />
       </div>
+
+      {/* Identity verification needed before publishing */}
+      <KycBanner />
 
       {(earningsError || profileError || contentError) && (
         <Card className="border-red-300 bg-red-50 dark:bg-red-950/20">

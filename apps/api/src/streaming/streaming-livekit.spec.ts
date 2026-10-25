@@ -5,7 +5,7 @@ import { StreamingService } from './streaming.service';
 import { StreamingGateway, AuthenticatedStreamSocket, streamRoom } from './streaming.gateway';
 import { LiveKitService } from './livekit.service';
 import { PrismaService } from '../common/database/prisma.service';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService } from '../payments/payment-flow.service';
 
 const decode = (jwt: string) => JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf8'));
 
@@ -41,7 +41,7 @@ describe('Streaming with LiveKit', () => {
         LiveKitService,
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: ConfigService, useValue: { get: jest.fn((_key: string, fallback?: string) => fallback) } },
-        { provide: OneTimePaymentService, useValue: {} },
+        { provide: PaymentFlowService, useValue: {} },
       ],
     }).compile();
     return { service: module.get(StreamingService), liveKit: module.get(LiveKitService) };

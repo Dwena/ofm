@@ -31,6 +31,10 @@ import { StoriesModule } from './stories/stories.module';
 import { StreamingModule } from './streaming/streaming.module';
 import { SettingsModule } from './settings/settings.module';
 import { OverlaysModule } from './overlays/overlays.module';
+import { VerificationModule } from './verification/verification.module';
+import { AgeVerificationModule } from './age-verification/age-verification.module';
+import { LegalModule } from './legal/legal.module';
+import { TaxModule } from './tax/tax.module';
 
 @Module({
   imports: [
@@ -100,6 +104,10 @@ import { OverlaysModule } from './overlays/overlays.module';
     StoriesModule,
     StreamingModule,
     OverlaysModule,
+    VerificationModule,
+    AgeVerificationModule,
+    LegalModule,
+    TaxModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -23,6 +23,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { storiesApi } from '@/lib/api';
+import { AgeGatedMedia } from '@/components/age-verification/age-gated-media';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -624,6 +625,17 @@ export default function StoriesViewerPage({
                   <Link href={profileHref}>S&apos;abonner</Link>
                 </Button>
               )}
+            </div>
+          ) : currentStory.ageVerificationRequired ? (
+            <div className="flex h-full w-full items-center justify-center bg-neutral-950 p-6">
+              {/* Taps on the placeholder must not switch to the next story */}
+              <div
+                className="w-full max-w-sm"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+              >
+                <AgeGatedMedia label="Story réservée aux adultes" />
+              </div>
             </div>
           ) : currentStory.mediaType === 'TEXT' ? (
             <div

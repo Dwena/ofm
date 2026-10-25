@@ -10,6 +10,9 @@ import {
   MaxLength,
   Min,
   Max,
+  IsArray,
+  IsUUID,
+  ArrayMaxSize,
 } from 'class-validator';
 import { LIVE_SOURCES, type LiveSource } from './live-ingress.dto';
 
@@ -57,6 +60,13 @@ export class CreateStreamDto {
   @IsOptional()
   @IsIn(LIVE_SOURCES)
   source?: LiveSource;
+
+  /** Verified co-performers (CoPerformer ids) taking part in the live */
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  @ArrayMaxSize(20)
+  coPerformerIds?: string[];
 }
 
 export class UpdateStreamDto {
@@ -91,4 +101,19 @@ export class UpdateStreamDto {
   @IsOptional()
   @IsDateString()
   scheduledFor?: string;
+
+  /** Replaces the co-performers of the live (verified ones only) */
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  @ArrayMaxSize(20)
+  coPerformerIds?: string[];
+}
+
+/** A moderator cuts a live: the reason is sent to the creator */
+export class ModeratorEndStreamDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }

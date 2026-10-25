@@ -167,14 +167,21 @@ function CreatorContentPageInner() {
       if (action === 'unarchive') return contentApi.unarchive(id)
       return contentApi.delete(id)
     },
-    onSuccess: (_result, { action }) => {
+    onSuccess: (result: any, { action }) => {
       const messages: Record<Action, string> = {
         publish: 'Contenu publié',
         archive: 'Contenu archivé',
         unarchive: 'Contenu de nouveau visible',
         delete: 'Contenu supprimé',
       }
-      toast({ title: messages[action] })
+      if (action === 'publish' && result?.data?.status === 'UNDER_REVIEW') {
+        toast({
+          title: 'Contenu envoyé en validation',
+          description: 'Il sera visible par vos fans dès sa validation par notre équipe.',
+        })
+      } else {
+        toast({ title: messages[action] })
+      }
       queryClient.invalidateQueries({ queryKey: ['my-content'] })
       queryClient.invalidateQueries({ queryKey: ['creator-content'] })
       queryClient.invalidateQueries({ queryKey: ['creator-profile'] })
@@ -208,11 +215,11 @@ function CreatorContentPageInner() {
     }
     if (action === 'publish') {
       const ok = await confirm({
-        title: 'Publier maintenant ?',
+        title: item.status === 'REJECTED' ? 'Renvoyer en validation ?' : 'Publier maintenant ?',
         description: item.scheduledFor
-          ? `La programmation du ${formatDate(item.scheduledFor)} sera annulée et le contenu publié immédiatement.`
-          : `« ${name} » sera visible par vos fans (${visibilityLabel(item.visibility)}).`,
-        confirmText: 'Publier',
+          ? `La programmation du ${formatDate(item.scheduledFor)} sera annulée et le contenu publié dès sa validation.`
+          : `« ${name} » sera visible par vos fans (${visibilityLabel(item.visibility)}) après validation par notre équipe de modération.`,
+        confirmText: item.status === 'REJECTED' ? 'Renvoyer' : 'Publier',
       })
       if (!ok) return
     }
@@ -308,10 +315,11 @@ function CreatorContentPageInner() {
         <div className={`space-y-3 transition-opacity ${isFetching ? 'opacity-70' : ''}`}>
           {items.map((item) => {
             const state = displayStatus(item)
-            const canPublish = item.status === 'DRAFT'
+            // Rejected content can be corrected and sent back to review
+            const canPublish = item.status === 'DRAFT' || item.status === 'REJECTED'
             const canArchive = item.status === 'PUBLISHED'
             const canUnarchive = item.status === 'ARCHIVED'
-            const canEdit = item.status !== 'REJECTED' && item.status !== 'UNDER_REVIEW'
+            const canEdit = item.status !== 'UNDER_REVIEW'
             const busy = pending?.id === item.id
 
             return (
@@ -351,6 +359,12 @@ function CreatorContentPageInner() {
 
                     {item.status === 'REJECTED' && item.moderationNotes && (
                       <p className="text-xs text-red-600">Motif du refus : {item.moderationNotes}</p>
+                    )}
+                    {item.status === 'UNDER_REVIEW' && (
+                      <p className="text-xs text-muted-foreground" data-testid="content-under-review">
+                        En cours de validation par l’équipe de modération
+                        {item.scheduledFor ? ` · publication prévue le ${formatDate(item.scheduledFor)}` : ''}
+                      </p>
                     )}
 
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground" data-testid="creator-content-stats">
@@ -401,7 +415,7 @@ function CreatorContentPageInner() {
                         ) : (
                           <Send className="mr-2 h-4 w-4" />
                         )}
-                        Publier
+                        {item.status === 'REJECTED' ? 'Renvoyer' : 'Publier'}
                       </Button>
                     )}
                     {canArchive && (

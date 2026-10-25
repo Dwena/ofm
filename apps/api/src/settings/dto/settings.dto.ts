@@ -14,6 +14,12 @@ export class UpdatePlatformSettingsDto {
   @IsOptional()
   minimumPayoutAmount?: number;
 
+  @IsNumber({ maxDecimalPlaces: 0 })
+  @Min(0)
+  @Max(90)
+  @IsOptional()
+  earningsHoldDays?: number;
+
   @IsBoolean()
   @IsOptional()
   registrationOpen?: boolean;

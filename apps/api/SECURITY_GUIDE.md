@@ -476,7 +476,7 @@ this.logger.warn(`Rate limit exceeded for ${ip}`);
 - Privacy policy linked
 
 ### PCI DSS
-- Payment data handled by Stripe (PCI compliant)
+- Payment data handled by the payment provider (CCBill, PCI compliant) on its hosted page; see docs/PAIEMENTS.md
 - No credit card data stored locally
 
 ## References

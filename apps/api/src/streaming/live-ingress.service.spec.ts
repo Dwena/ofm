@@ -16,7 +16,7 @@ import {
   ingressIdleRoomName,
 } from './live-ingress.service';
 import { PrismaService } from '../common/database/prisma.service';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService } from '../payments/payment-flow.service';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ROLES_KEY } from '../auth/decorators/roles.decorator';
 
@@ -107,7 +107,7 @@ describe('LiveIngressService', () => {
         LiveIngressService,
         { provide: PrismaService, useValue: prisma },
         { provide: ConfigService, useValue: { get: jest.fn((_key: string, fallback?: string) => fallback) } },
-        { provide: OneTimePaymentService, useValue: {} },
+        { provide: PaymentFlowService, useValue: {} },
       ],
     }).compile();
     const ingress = module.get(LiveIngressService);
@@ -139,7 +139,13 @@ describe('LiveIngressService', () => {
     liveStreams = {
       'stream-1': { id: 'stream-1', creatorId: CREATOR, status: 'LIVE', source: 'OBS', startedAt: null },
     };
-    prisma.user.findUnique.mockResolvedValue({ username: 'alice', displayName: 'Alice', role: 'CREATOR', status: 'ACTIVE' });
+    prisma.user.findUnique.mockResolvedValue({
+      username: 'alice',
+      displayName: 'Alice',
+      role: 'CREATOR',
+      kycStatus: 'VERIFIED',
+      status: 'ACTIVE',
+    });
     ingressClient.createIngress.mockResolvedValue(remoteIngress());
     ingressClient.updateIngress.mockImplementation(async (ingressId: string, opts: any) => remoteIngress({ ingressId, ...opts }));
     ingressClient.deleteIngress.mockResolvedValue({});

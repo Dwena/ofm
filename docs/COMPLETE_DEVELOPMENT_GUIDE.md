@@ -4,9 +4,9 @@
 
 ### ✅ Phase 1 - Backend (100% COMPLET)
 - Upload médias sécurisé (S3/MinIO, Sharp, FFmpeg)
-- Stripe Connect onboarding complet
-- Payouts automatisés
-- Webhooks Stripe
+- Paiements via prestataire (CCBill / simulateur), TVA, solde créateur (voir PAIEMENTS.md)
+- Virements SEPA hebdomadaires exportés par les admins
+- Webhooks du prestataire de paiement
 - Base de données complète (18 tables)
 - Authentification JWT + 2FA
 
@@ -1253,7 +1253,7 @@ tracer.init();
 - [ ] WAF Cloudflare activé
 - [ ] Rate limiting production (plus strict)
 - [ ] Security headers vérifiés
-- [ ] Passer Stripe en mode live
+- [ ] Passer `PAYMENT_PROVIDER=ccbill` et valider le parcours sur le compte de test CCBill (voir PAIEMENTS.md)
 - [ ] Backups automatiques configurés
 
 #### Performance
@@ -1368,7 +1368,7 @@ docker restart ofm-web
 - Issues GitHub
 - Documentation Next.js: https://nextjs.org/docs
 - Documentation NestJS: https://docs.nestjs.com
-- Documentation Stripe: https://stripe.com/docs
+- Paiements: [PAIEMENTS.md](PAIEMENTS.md)
 
 ---
 

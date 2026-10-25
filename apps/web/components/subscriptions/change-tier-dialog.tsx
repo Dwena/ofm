@@ -3,8 +3,9 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { subscriptionsApi } from '@/lib/api'
+import { formatFanPrice } from '@/lib/vat'
 import { formatEuros } from '@/lib/utils'
-import { getStripe } from '@/components/checkout/stripe-payment-element'
+import PaymentCheckout from '@/components/checkout/payment-checkout'
 import {
   Dialog,
   DialogContent,
@@ -29,20 +30,12 @@ export interface ChangeableSubscription {
   id: string
   tierId: string
   status: string
+  currentPeriodStart?: string
   currentPeriodEnd: string
   cancelAtPeriodEnd: boolean
-  stripeSubscriptionId?: string | null
   pendingTierId?: string | null
   pendingTier?: TierSummary | null
   tier: TierSummary
-}
-
-interface SubscribeResult {
-  requiresPayment: boolean
-  subscription?: any
-  stripeSubscriptionId?: string
-  clientSecret?: string | null
-  paymentStatus?: string
 }
 
 /**
@@ -57,7 +50,7 @@ interface SubscribeResult {
 export type TierChangeKind = 'upgrade' | 'downgrade' | 'to-free' | 'checkout' | 'free-switch' | 'undo'
 
 export function getTierChangeKind(subscription: ChangeableSubscription, tier: TierSummary): TierChangeKind {
-  const currentIsPaid = !!subscription.stripeSubscriptionId
+  const currentIsPaid = Number(subscription.tier.price) > 0
   const targetPrice = Number(tier.price)
 
   if (tier.id === subscription.tierId) return 'undo'
@@ -78,10 +71,26 @@ export function getTierChangeLabel(subscription: ChangeableSubscription, tier: T
 
 export const formatDate = (date: string) => new Date(date).toLocaleDateString('fr-FR')
 
+/**
+ * Price excluding VAT charged now for an upgrade, as computed by the API
+ * (BillingService.upgradePrice): new price minus the unused part of the period
+ */
+export function estimateUpgradePrice(subscription: ChangeableSubscription, tier: TierSummary, now = Date.now()) {
+  const end = new Date(subscription.currentPeriodEnd).getTime()
+  const length =
+    subscription.currentPeriodStart
+      ? end - new Date(subscription.currentPeriodStart).getTime()
+      : (subscription.tier.interval === 'year' ? 365 : 30) * 24 * 60 * 60 * 1000
+  const remaining = Math.max(0, end - now)
+  const credit = length > 0 ? (Number(subscription.tier.price) * remaining) / length : 0
+  const price = Math.round(Math.max(0, Number(tier.price) - credit) * 100) / 100
+  return Math.max(price, 0.5)
+}
+
 export const formatTierPrice = (tier: TierSummary) =>
   Number(tier.price) === 0
     ? 'Gratuit'
-    : `${formatEuros(tier.price)}/${tier.interval === 'year' ? 'an' : 'mois'}`
+    : `${formatFanPrice(tier.price)}/${tier.interval === 'year' ? 'an' : 'mois'}`
 
 /**
  * "Passera à X le <date>" for a scheduled downgrade
@@ -126,16 +135,6 @@ export default function ChangeTierDialog({
     onOpenChange(false)
   }
 
-  // Stripe may take a moment to apply the upgrade once its invoice is paid
-  const waitForConfirmation = async (stripeSubscriptionId: string) => {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const response = await subscriptionsApi.confirm(stripeSubscriptionId)
-      if (!(response.data as SubscribeResult).requiresPayment) return
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-    }
-    throw new Error('Le paiement est en cours de traitement. Votre offre sera mise à jour sous peu.')
-  }
-
   const handleConfirm = async () => {
     if (!subscription || !tier || !kind) return
 
@@ -156,23 +155,7 @@ export default function ChangeTierDialog({
     setError(null)
 
     try {
-      const response = await subscriptionsApi.changeTier(subscription.id, { tierId: tier.id })
-      const result = response.data as SubscribeResult
-
-      if (result.requiresPayment) {
-        // Upgrade invoice needing 3D Secure, or declined
-        if (!result.clientSecret || !result.stripeSubscriptionId || result.paymentStatus === 'requires_payment_method') {
-          throw new Error('Le paiement de la différence a été refusé. Mettez à jour votre moyen de paiement puis réessayez.')
-        }
-
-        const stripe = await getStripe()
-        if (!stripe) throw new Error('Le paiement est indisponible : clé Stripe manquante.')
-
-        const { error: stripeError } = await stripe.confirmCardPayment(result.clientSecret)
-        if (stripeError) throw stripeError
-
-        await waitForConfirmation(result.stripeSubscriptionId)
-      }
+      await subscriptionsApi.changeTier(subscription.id, { tierId: tier.id })
 
       toast({
         title:
@@ -201,9 +184,9 @@ export default function ChangeTierDialog({
           upgrade: {
             title: `Passer à ${tier.name}`,
             description:
-              `Le changement est immédiat. La différence de prix entre ${subscription.tier.name} et ${tier.name} ` +
-              `pour le reste de la période en cours (jusqu'au ${periodEnd}) est calculée au prorata et débitée ` +
-              `maintenant sur la carte de votre abonnement. Ensuite, ${formatTierPrice(tier)} à chaque renouvellement.`,
+              `Une nouvelle période à ${tier.name} commence dès le paiement. La partie non utilisée de votre ` +
+              `période en cours (jusqu'au ${periodEnd}) est déduite du prix. Ensuite, ${formatTierPrice(tier)} ` +
+              `à chaque renouvellement.`,
             confirm: 'Passer à ce palier',
           },
           downgrade: {
@@ -247,8 +230,30 @@ export default function ChangeTierDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && close()}>
-      <DialogContent>
-        {text && (
+      <DialogContent className={kind === 'upgrade' ? 'max-w-lg max-h-[90vh] overflow-y-auto' : undefined}>
+        {text && kind === 'upgrade' && subscription && tier ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>{text.title}</DialogTitle>
+              <DialogDescription>{text.description}</DialogDescription>
+            </DialogHeader>
+            <PaymentCheckout
+              kind="subscription"
+              compact
+              amount={estimateUpgradePrice(subscription, tier)}
+              interval={tier.interval}
+              description={`Passage à ${tier.name} (montant au prorata)`}
+              start={async (options) => (await subscriptionsApi.changeTier(subscription.id, { tierId: tier.id, ...options })).data}
+              confirm={async (transactionId) => (await subscriptionsApi.confirm(transactionId)).data}
+              successDelay={1200}
+              onSuccess={() => {
+                onOpenChange(false)
+                onChanged()
+              }}
+              onCancel={close}
+            />
+          </>
+        ) : text && (
           <>
             <DialogHeader>
               <DialogTitle>{text.title}</DialogTitle>

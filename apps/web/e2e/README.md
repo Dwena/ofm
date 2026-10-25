@@ -69,7 +69,7 @@ et `asAdmin` (voir `fixtures/auth.fixture.ts`) connectent le compte correspondan
   (« Traitement de la vidéo » → « Vidéo prête »)
 - `subscriber-feed.spec.ts` : feed, abonnements, messagerie côté abonné
 - `messaging.spec.ts` : messages temps réel entre créateur et abonné, indicateur de saisie, image
-- `payment-flow.spec.ts` : paiement sécurisé d'un abonnement, cartes Stripe, PPV, pourboire, résiliation
+- `payment-flow.spec.ts` : paiement sécurisé d'un abonnement, cartes de test du simulateur, PPV, pourboire, résiliation
 - `admin.spec.ts` : back-office (analytique, paramètres, signalements, statistiques de modération, journaux)
 
 Les scénarios dépendant de données absentes (aucune conversation, aucun live...) sont ignorés
@@ -88,19 +88,17 @@ Surchargeables via `TEST_CREATOR_EMAIL`, `TEST_SUBSCRIBER_PASSWORD`, etc.
 ### Fichiers
 Les images et fichiers texte sont générés en mémoire (`fixtures/files.ts`).
 Pour tester le traitement vidéo, fournissez un fichier : `E2E_VIDEO_PATH=/chemin/video.mp4`.
-Les paiements par carte ne sont exécutés qu'avec `E2E_STRIPE=1` (API configurée avec des clés Stripe de test).
+Les paiements par carte passent par le simulateur local : lancez l'API avec `PAYMENT_PROVIDER=fake` (valeur par défaut hors production), voir [docs/PAIEMENTS.md](../../../docs/PAIEMENTS.md). Les contenus sont publiés après validation par un modérateur : pour les tests de publication, lancez l'API avec `CONTENT_PREMODERATION=false`. L'avertissement « contenu réservé aux adultes » est fermé automatiquement par la fixture (`sessionStorage.ageGateDismissed`).
 
-## Cartes de test Stripe
+## Cartes de test du simulateur
 
-Pour les tests de paiement, utilisez les cartes de test Stripe :
+Pour les tests de paiement, utilisez les cartes de test du simulateur de paiement (`/checkout/simulateur`), qui ne débite aucune vraie carte. Le simulateur ne regarde que les 4 derniers chiffres :
 
-- **Succès** : `4242 4242 4242 4242`
-- **Échec** : `4000 0000 0000 0002`
-- **3D Secure** : `4000 0027 6000 3184`
+- **Succès** : `4242`
+- **Échec** : `0002`
+- **Authentification requise aux achats suivants en un clic** : `3220`
 
-Date d'expiration : N'importe quelle date future (ex: 12/34)
-CVC : N'importe quel 3 chiffres (ex: 123)
-Code postal : N'importe quel code (ex: 12345)
+Le seed enregistre déjà une carte 4242 pour chaque fan (et une carte 0002 pour Sophie).
 
 ## Configuration
 
@@ -127,9 +125,9 @@ PLAYWRIGHT_BASE_URL=http://localhost:3000
 - S'assurer que le backend WebSocket est actif
 
 ### Les tests de paiement échouent
-- Vérifier que Stripe est configuré en mode test
-- Utiliser les clés de test Stripe
-- Vérifier que les webhooks Stripe sont configurés
+- Vérifier que l'API tourne avec `PAYMENT_PROVIDER=fake` (le simulateur refuse de fonctionner en production)
+- Vérifier que le seed a été joué (cartes de test enregistrées)
+- Vérifier que `DATA_ENCRYPTION_KEY` est défini
 
 ## CI/CD
 

@@ -20,7 +20,7 @@ interface PpvUnlockDialogProps {
 }
 
 /**
- * Pay for a PPV content without leaving the page (saved card or Stripe Elements)
+ * Pay for a PPV content (saved card, or the payment provider's page)
  */
 export default function PpvUnlockDialog({ content, onClose, onUnlocked }: PpvUnlockDialogProps) {
   return (
@@ -40,10 +40,8 @@ export default function PpvUnlockDialog({ content, onClose, onUnlocked }: PpvUnl
             compact
             amount={Number(content.ppvPrice ?? 0)}
             description={content.title || 'Contenu exclusif'}
-            start={async (paymentMethodId) => (await contentApi.unlockPPV(content.id, paymentMethodId)).data}
-            confirm={async (paymentIntentId) =>
-              (await contentApi.confirmUnlock(content.id, paymentIntentId)).data
-            }
+            start={async (options) => (await contentApi.unlockPPV(content.id, options)).data}
+            confirm={async (transactionId) => (await contentApi.confirmUnlock(content.id, transactionId)).data}
             successDelay={1200}
             onSuccess={() => {
               onUnlocked()

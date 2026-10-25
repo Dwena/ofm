@@ -28,6 +28,7 @@ import { VideoPlayer } from '@/components/ui/video-player'
 import CommentsSection from '@/components/social/comments-section'
 import ContentActionsMenu from '@/components/social/content-actions-menu'
 import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
+import { AgeGatedMedia } from '@/components/age-verification/age-gated-media'
 import { shareContent, useToggleLike } from '@/hooks/use-content-actions'
 import { cn, formatCurrency, formatRelativeTime } from '@/lib/utils'
 
@@ -59,6 +60,8 @@ interface ContentDetail {
   files: ContentFile[]
   mediaCount: number
   isLocked: boolean
+  /** Media URLs withheld until the visitor's age is verified */
+  ageVerificationRequired?: boolean
   hasUnlocked: boolean
   isLiked: boolean
   isSubscribed: boolean
@@ -244,6 +247,8 @@ export default function ContentDetailPage() {
             </div>
           </div>
         </Card>
+      ) : content.ageVerificationRequired ? (
+        <AgeGatedMedia className="aspect-video" />
       ) : content.files.length > 0 ? (
         <div className={content.files.length > 1 ? 'grid gap-2 sm:grid-cols-2' : ''}>
           {content.files.map((file) => {

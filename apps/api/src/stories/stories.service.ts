@@ -1,10 +1,25 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { MessagingService } from '../messaging/messaging.service';
 import { MessagingGateway } from '../messaging/messaging.gateway';
+import { MediaScanService } from '../media/media-scan/media-scan.service';
+import {
+  PUBLISHING_USER_SELECT,
+  assertCanPublish,
+  validateCoPerformerIds,
+} from '../verification/publication-gate';
+import { assertTextAllowed } from '../moderation/content-rules';
 
 const CREATOR_SELECT = {
   id: true,
@@ -38,24 +53,34 @@ export class StoriesService {
     private storageService: StorageService,
     private messagingService: MessagingService,
     private messagingGateway: MessagingGateway,
+    @Optional() private mediaScan?: MediaScanService,
   ) {}
 
   /**
-   * Create a new story (expires in 24h)
+   * Create a new story (expires in 24h).
+   *
+   * Stories are NOT pre-reviewed like content (a 24h story waiting hours for
+   * a moderator is useless): they are gated by the creator's verified
+   * identity (KYC), the known-illegal-media scan, the text rules, verified
+   * co-performers and fan reports. The payment processor may require stories
+   * to be pre-reviewed too: to confirm with them (CCBill / card networks).
    */
   async createStory(userId: string, dto: CreateStoryDto) {
-    // Verify user is a creator
+    // Verify user is a creator with a verified identity
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { role: true },
+      select: PUBLISHING_USER_SELECT,
     });
 
     if (user?.role !== 'CREATOR') {
       throw new ForbiddenException('Only creators can create stories');
     }
+    assertCanPublish(user);
 
     const text = dto.text?.trim() || null;
     const caption = dto.caption?.trim() || null;
+    assertTextAllowed(text, caption);
+    const coPerformerIds = await validateCoPerformerIds(this.prisma, userId, dto.coPerformerIds);
 
     // Validate content
     if (dto.type === 'TEXT' && !text) {
@@ -70,6 +95,26 @@ export class StoriesService {
     if (isMediaStory) {
       this.assertOwnMedia(userId, dto.mediaUrl);
       this.assertOwnMedia(userId, dto.thumbnailUrl);
+    }
+
+    // Known-illegal-media scan of the story media, before it is visible (a
+    // story is published right away). A match suspends the account and
+    // alerts the admins (MediaScanService); the file is kept as evidence.
+    let scanStatus: 'PENDING' | 'CLEAN' | 'FLAGGED' | 'SKIPPED' = isMediaStory ? 'PENDING' : 'SKIPPED';
+    if (isMediaStory && dto.mediaUrl && this.mediaScan) {
+      scanStatus = await this.mediaScan.scanStoredFile({
+        userId,
+        key: dto.mediaUrl,
+        mimeType: dto.type === 'VIDEO' ? 'video/mp4' : 'image/jpeg',
+      });
+      if (scanStatus === 'FLAGGED') {
+        throw new ForbiddenException('Ce média ne peut pas être publié');
+      }
+      if (scanStatus === 'PENDING' && this.mediaScan.isEnabled) {
+        throw new ServiceUnavailableException(
+          'Publication momentanément impossible : réessayez dans quelques minutes',
+        );
+      }
     }
 
     // Set expiration to 24h from now
@@ -89,6 +134,8 @@ export class StoriesService {
         width: dto.width,
         height: dto.height,
         visibility: dto.visibility || 'SUBSCRIBERS_ONLY',
+        coPerformerIds,
+        scanStatus,
         expiresAt,
       },
       include: STORY_INCLUDE,
@@ -591,6 +638,8 @@ export class StoriesService {
         expiresAt: {
           lt: now,
         },
+        // Stories whose media matched known illegal content are evidence
+        scanStatus: { not: 'FLAGGED' },
       },
     });
 

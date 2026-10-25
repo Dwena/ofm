@@ -46,6 +46,7 @@ import {
   CreditCard,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { formatFanPrice } from '@/lib/vat'
 import { formatEuros, formatRelativeTime } from '@/lib/utils'
 import { toast } from '@/hooks/use-toast'
 import { useConfirm } from '@/hooks/use-confirm'
@@ -56,6 +57,7 @@ import ChangeTierDialog, {
 import PpvUnlockDialog from '@/components/checkout/ppv-unlock-dialog'
 import TipDialog from '@/components/profile/tip-dialog'
 import ReportDialog from '@/components/social/report-dialog'
+import { AgeGatedMedia } from '@/components/age-verification/age-gated-media'
 
 interface PublicProfile {
   id: string
@@ -270,7 +272,7 @@ export default function CreatorProfilePage() {
   }
 
   const handleCancel = async (subscription: any) => {
-    const isPaid = !!subscription.stripeSubscriptionId
+    const isPaid = Number(subscription.tier?.price ?? 0) > 0
     let description: string
     if (subscription.status === 'PAST_DUE') {
       description = 'Votre abonnement impayé sera résilié immédiatement.'
@@ -710,7 +712,7 @@ export default function CreatorProfilePage() {
                     </CardHeader>
                     <CardContent className="space-y-4 flex-1">
                       <div>
-                        <p className="text-3xl font-bold">{isFree ? 'Gratuit' : formatEuros(tier.price)}</p>
+                        <p className="text-3xl font-bold">{isFree ? 'Gratuit' : formatFanPrice(tier.price)}</p>
                         {!isFree && (
                           <p className="text-sm text-muted-foreground">
                             par {tier.interval === 'year' ? 'an' : 'mois'}
@@ -738,7 +740,7 @@ export default function CreatorProfilePage() {
                               : getPendingChangeLabel(currentSubscription) ||
                                 (currentSubscription.cancelAtPeriodEnd
                                   ? `Se termine le ${formatDay(currentSubscription.currentPeriodEnd)}`
-                                  : currentSubscription.stripeSubscriptionId
+                                  : Number(currentSubscription.tier?.price ?? 0) > 0
                                     ? `Renouvellement le ${formatDay(currentSubscription.currentPeriodEnd)}`
                                     : 'Vous êtes abonné')}
                           </p>
@@ -1002,6 +1004,13 @@ function ContentGallery({
               )}
             </div>
 
+            {/* Media withheld until the visitor's age is verified */}
+            {item.ageVerificationRequired && !item.isLocked && (
+              <div className="absolute inset-0">
+                <AgeGatedMedia compact className="h-full min-h-0 rounded-none" />
+              </div>
+            )}
+
             {/* Lock overlay (PPV not unlocked, or subscribers only) */}
             {item.isLocked && (
               <div className="absolute inset-0 bg-black/60 flex items-center justify-center pointer-events-none">
@@ -1009,7 +1018,7 @@ function ContentGallery({
                   <Lock className="h-8 w-8 mx-auto mb-2" />
                   <p className="text-sm font-medium">
                     {item.isPpv
-                      ? formatEuros(item.ppvPrice)
+                      ? formatFanPrice(item.ppvPrice)
                       : item.visibility === 'PREMIUM_SUBSCRIBERS'
                         ? 'Abonnés premium'
                         : 'Abonnés'}

@@ -11,6 +11,8 @@ import { RedisService } from '../common/redis/redis.service';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../common/mail/mail.service';
 import { SettingsService } from '../settings/settings.service';
+import { LegalService } from '../legal/legal.service';
+import { LEGAL_VERSIONS } from '../legal/legal-versions';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -63,6 +65,7 @@ describe('AuthService (email verification & password reset)', () => {
         { provide: UsersService, useValue: {} },
         { provide: MailService, useValue: mockMailService },
         { provide: SettingsService, useValue: mockSettingsService },
+        LegalService,
       ],
     }).compile();
 
@@ -85,6 +88,8 @@ describe('AuthService (email verification & password reset)', () => {
         username: 'alice',
         password: 'Password1!',
         role: 'SUBSCRIBER' as any,
+        acceptTerms: true,
+        confirmAdult: true,
       });
 
       expect(mockMailService.sendVerificationEmail).toHaveBeenCalledWith(
@@ -109,8 +114,76 @@ describe('AuthService (email verification & password reset)', () => {
           username: 'bob',
           password: 'Password1!',
           role: 'SUBSCRIBER' as any,
+          acceptTerms: true,
+          confirmAdult: true,
         }),
       ).rejects.toThrow('Les inscriptions sont actuellement fermées');
+      expect(mockPrismaService.user.create).not.toHaveBeenCalled();
+    });
+
+    it('records the acceptance of the CGU, privacy policy and 18+ declaration with IP and user agent', async () => {
+      mockPrismaService.user.findFirst.mockResolvedValue(null);
+      mockPrismaService.user.create.mockResolvedValue({ id: 'user-1', email: 'alice@example.com', username: 'alice' });
+
+      await service.register(
+        {
+          email: 'alice@example.com',
+          username: 'alice',
+          password: 'Password1!',
+          role: 'SUBSCRIBER' as any,
+          acceptTerms: true,
+          confirmAdult: true,
+        },
+        { ipAddress: '203.0.113.7', userAgent: 'Mozilla/5.0' },
+      );
+
+      const rows = mockPrismaService.user.create.mock.calls[0][0].data.legalAcceptances.create;
+      expect(rows).toEqual([
+        { document: 'terms', version: LEGAL_VERSIONS.terms, ipAddress: '203.0.113.7', userAgent: 'Mozilla/5.0' },
+        { document: 'privacy', version: LEGAL_VERSIONS.privacy, ipAddress: '203.0.113.7', userAgent: 'Mozilla/5.0' },
+        {
+          document: 'adult_declaration',
+          version: LEGAL_VERSIONS.adult_declaration,
+          ipAddress: '203.0.113.7',
+          userAgent: 'Mozilla/5.0',
+        },
+      ]);
+    });
+
+    it('also records the creator terms for a creator account', async () => {
+      mockPrismaService.user.findFirst.mockResolvedValue(null);
+      mockPrismaService.user.create.mockResolvedValue({ id: 'user-2', email: 'carol@example.com', username: 'carol' });
+
+      await service.register({
+        email: 'carol@example.com',
+        username: 'carol',
+        password: 'Password1!',
+        role: 'CREATOR' as any,
+        acceptTerms: true,
+        confirmAdult: true,
+        acceptCreatorTerms: true,
+      });
+
+      const rows = mockPrismaService.user.create.mock.calls[0][0].data.legalAcceptances.create;
+      expect(rows.map((r: any) => r.document)).toEqual(['terms', 'privacy', 'adult_declaration', 'creator_terms']);
+      expect(rows.find((r: any) => r.document === 'creator_terms').version).toBe(LEGAL_VERSIONS.creator_terms);
+      expect(mockPrismaService.creatorProfile.create).toHaveBeenCalledWith({ data: { userId: 'user-2' } });
+    });
+
+    it.each([
+      [{ acceptTerms: false, confirmAdult: true }, 'You must accept the terms of use and the privacy policy'],
+      [{ acceptTerms: true, confirmAdult: false }, 'You must certify that you are at least 18 years old'],
+      [{ acceptTerms: true, confirmAdult: true, role: 'CREATOR' }, 'You must accept the creator terms'],
+    ])('refuses a registration without the required consents (%o)', async (consents, message) => {
+      await expect(
+        service.register({
+          email: 'dave@example.com',
+          username: 'dave',
+          password: 'Password1!',
+          role: 'SUBSCRIBER' as any,
+          ...(consents as any),
+        }),
+      ).rejects.toThrow(message);
       expect(mockPrismaService.user.create).not.toHaveBeenCalled();
     });
   });

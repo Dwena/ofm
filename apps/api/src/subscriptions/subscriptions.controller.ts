@@ -1,4 +1,6 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Query, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Query, Req, UseGuards, BadRequestException } from '@nestjs/common';
+import { Request } from 'express';
+import { paymentContext } from '../payments/payment-context';
 import {
   SubscriptionsService,
   SUBSCRIPTION_STATUSES,
@@ -55,8 +57,9 @@ export class SubscriptionsController {
   async subscribe(
     @CurrentUser('id') userId: string,
     @Body() dto: SubscribeDto,
+    @Req() request: Request,
   ) {
-    return this.subscriptionsService.subscribe(userId, dto);
+    return this.subscriptionsService.subscribe(userId, dto, paymentContext(request));
   }
 
   @Post('confirm')
@@ -64,7 +67,7 @@ export class SubscriptionsController {
     @CurrentUser('id') userId: string,
     @Body() dto: ConfirmSubscriptionDto,
   ) {
-    return this.subscriptionsService.confirmSubscription(userId, dto.stripeSubscriptionId);
+    return this.subscriptionsService.confirmSubscription(userId, dto.transactionId);
   }
 
   @Post(':subscriptionId/cancel')
@@ -79,8 +82,10 @@ export class SubscriptionsController {
   async resumeSubscription(
     @CurrentUser('id') userId: string,
     @Param('subscriptionId') subscriptionId: string,
+    @Body() dto: RetryPaymentDto,
+    @Req() request: Request,
   ) {
-    return this.subscriptionsService.resumeSubscription(userId, subscriptionId);
+    return this.subscriptionsService.resumeSubscription(userId, subscriptionId, dto, paymentContext(request));
   }
 
   // Pay a past-due subscription again (optionally with another saved card)
@@ -89,8 +94,9 @@ export class SubscriptionsController {
     @CurrentUser('id') userId: string,
     @Param('subscriptionId') subscriptionId: string,
     @Body() dto: RetryPaymentDto,
+    @Req() request: Request,
   ) {
-    return this.subscriptionsService.retryPayment(userId, subscriptionId, dto.paymentMethodId);
+    return this.subscriptionsService.retryPayment(userId, subscriptionId, dto, paymentContext(request));
   }
 
   // Upgrade / downgrade to another tier of the same creator
@@ -99,8 +105,9 @@ export class SubscriptionsController {
     @CurrentUser('id') userId: string,
     @Param('subscriptionId') subscriptionId: string,
     @Body() dto: ChangeTierDto,
+    @Req() request: Request,
   ) {
-    return this.subscriptionsService.changeTier(userId, subscriptionId, dto);
+    return this.subscriptionsService.changeTier(userId, subscriptionId, dto, paymentContext(request));
   }
 
   // Tier Management Routes

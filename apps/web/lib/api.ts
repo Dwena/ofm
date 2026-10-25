@@ -16,6 +16,9 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    // Anonymous age verification token (see lib/age-verification.ts)
+    const ageToken = localStorage.getItem('ageVerificationToken')
+    if (ageToken) config.headers['X-Age-Verification'] = ageToken
     return config
   },
   (error) => Promise.reject(error)
@@ -92,8 +95,16 @@ api.interceptors.response.use(
 
 // API methods
 export const authApi = {
-  register: (data: { email: string; username: string; password: string; role?: string }) =>
-    api.post('/auth/register', data),
+  register: (data: {
+    email: string
+    username: string
+    password: string
+    role?: string
+    /** Legal consents, required by the API (see apps/api/src/auth/dto/register.dto.ts) */
+    acceptTerms: boolean
+    confirmAdult: boolean
+    acceptCreatorTerms?: boolean
+  }) => api.post('/auth/register', data),
   // `_retry: true` stops the 401 interceptor from trying a token refresh (and
   // redirecting to /login) when the credentials or the 2FA code are wrong.
   login: (data: { email: string; password: string; totpCode?: string }) =>
@@ -234,26 +245,59 @@ export const mediaApi = {
     api.delete(`/media/${contentFileId}`),
 }
 
+/**
+ * Options of a purchase. The fan pays on the payment provider's page
+ * (redirectUrl) unless a saved card is used. Prices are excluding VAT; the
+ * VAT of the billing country is added on top.
+ */
+export interface PurchaseOptions {
+  paymentCardId?: string
+  billingCountry?: string
+  // Immediate access requested, 14-day withdrawal right waived (required except for tips)
+  withdrawalWaiver?: boolean
+}
+
+/** Result of a payment start / confirm call */
+export interface PaymentResult {
+  status: 'completed' | 'processing' | 'requires_redirect' | 'failed'
+  completed: boolean
+  transactionId: string
+  redirectUrl: string | null
+  amount: number
+  vatRate: number
+  vatAmount: number
+  totalAmount: number
+  failureReason: string | null
+}
+
 export const paymentsApi = {
-  createConnectAccount: () => api.post('/payments/connect/create'),
-  getOnboardingLink: () => api.get('/payments/connect/onboarding-link'),
-  getOnboardingStatus: () => api.get('/payments/connect/status'),
   // Amounts are in euros everywhere (requests and responses)
-  requestPayout: (amount: number) => api.post('/payments/payout/request', { amount }),
+  // Payout of the available balance (whole balance when amount is omitted)
+  requestPayout: (amount?: number) => api.post('/payments/payout/request', amount ? { amount } : {}),
   getEarnings: () => api.get('/payments/earnings'),
   getCreatorEarnings: () => api.get('/payments/creator/earnings'),
+  getBalanceHistory: (page: number = 1, limit: number = 20) =>
+    api.get('/payments/balance/history', { params: { page, limit } }),
   getTransactions: (page: number = 1, limit: number = 20) =>
     api.get(`/payments/transactions?page=${page}&limit=${limit}`),
   getPayouts: () => api.get('/payments/payouts'),
-  // Tips stay pending until the payment is confirmed (saved card or Stripe Elements)
+  // Tips stay pending until the payment provider confirms them
   sendTip: (
     creatorId: string,
-    data: { amount: number; message?: string; streamId?: string; paymentMethodId?: string },
+    data: {
+      amount: number
+      message?: string
+      streamId?: string
+      menuItemId?: string
+      paymentCardId?: string
+      billingCountry?: string
+    },
   ) => api.post(`/payments/tip/${creatorId}`, data),
-  confirmTip: (creatorId: string, paymentIntentId: string) =>
-    api.post(`/payments/tip/${creatorId}/confirm`, { paymentIntentId }),
-  createPaymentIntent: (data: { amount: number; currency?: string }) =>
-    api.post('/payments/create-intent', data),
+  confirmTip: (creatorId: string, transactionId: string) =>
+    api.post(`/payments/tip/${creatorId}/confirm`, { transactionId }),
+  // State of any payment of the user (page the provider sends the fan back to)
+  getPaymentStatus: (transactionId: string) => api.get(`/payments/status/${transactionId}`),
+  setBillingCountry: (country: string) => api.put('/payments/billing-country', { country }),
   getFilteredTransactions: (filters: any) =>
     api.get('/payments/transactions/filter', { params: filters }),
   createRefund: (data: { transactionId: string; amount?: number; reason?: string }) =>
@@ -262,16 +306,29 @@ export const paymentsApi = {
     api.get(`/payments/refunds?page=${page}&limit=${limit}`),
   getRevenueStats: (filters: any) =>
     api.get('/payments/stats/revenue', { params: filters }),
-  // Saved payment methods (cards)
+  // Saved cards (saved during a payment on the provider's page)
   getPaymentMethods: () => api.get('/payments/methods'),
-  createSetupIntent: () => api.post('/payments/methods/setup-intent'),
-  setDefaultPaymentMethod: (paymentMethodId: string) =>
-    api.post(`/payments/methods/${paymentMethodId}/default`),
-  deletePaymentMethod: (paymentMethodId: string) =>
-    api.delete(`/payments/methods/${paymentMethodId}`),
-  // Server price, tip limits and whether the payment can go through
-  getCheckoutInfo: (type: 'subscription' | 'ppv' | 'stream' | 'tip', itemId: string) =>
-    api.get('/payments/checkout-info', { params: { type, itemId } }),
+  setDefaultPaymentMethod: (paymentCardId: string) =>
+    api.post(`/payments/methods/${paymentCardId}/default`),
+  deletePaymentMethod: (paymentCardId: string) =>
+    api.delete(`/payments/methods/${paymentCardId}`),
+  // Price excl. VAT, VAT of the country, total, and whether the payment can go through
+  getCheckoutInfo: (type: 'subscription' | 'ppv' | 'stream' | 'tip', itemId: string, country?: string) =>
+    api.get('/payments/checkout-info', { params: { type, itemId, ...(country && { country }) } }),
+  // Payment simulator (local development only)
+  getSimulatorSession: (sessionId: string) => api.get(`/payments/simulator/sessions/${sessionId}`),
+  approveSimulatorSession: (sessionId: string, last4: string) =>
+    api.post(`/payments/simulator/sessions/${sessionId}/approve`, { last4 }),
+  cancelSimulatorSession: (sessionId: string) => api.post(`/payments/simulator/sessions/${sessionId}/cancel`),
+}
+
+export const adminPayoutsApi = {
+  list: (status?: string) => api.get('/admin/payouts', { params: status ? { status } : {} }),
+  // SEPA credit transfer file (pain.001) of the pending payouts: { batch, fileName, xml, skipped }
+  createBatch: (payoutIds?: string[]) => api.post('/admin/payouts/batch', payoutIds ? { payoutIds } : {}),
+  markPaid: (payoutId: string) => api.post(`/admin/payouts/${payoutId}/paid`),
+  markFailed: (payoutId: string, reason: string) => api.post(`/admin/payouts/${payoutId}/failed`, { reason }),
+  cancel: (payoutId: string, reason: string) => api.post(`/admin/payouts/${payoutId}/cancel`, { reason }),
 }
 
 export const subscriptionsApi = {
@@ -305,19 +362,21 @@ export const subscriptionsApi = {
   // Subscription lifecycle
   getStatusForCreator: (creatorId: string) =>
     api.get(`/subscriptions/creator/${creatorId}/status`),
-  // Returns { requiresPayment, subscription?, clientSecret?, stripeSubscriptionId? }
-  subscribe: (data: { tierId: string; paymentMethodId?: string }) =>
+  // Returns { requiresPayment, subscription?, payment?, redirectUrl?, transactionId? }
+  subscribe: (data: { tierId: string } & PurchaseOptions) =>
     api.post('/subscriptions/subscribe', data),
-  confirm: (stripeSubscriptionId: string) =>
-    api.post('/subscriptions/confirm', { stripeSubscriptionId }),
+  confirm: (transactionId: string) =>
+    api.post('/subscriptions/confirm', { transactionId }),
   cancel: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/cancel`),
-  resume: (subscriptionId: string) => api.post(`/subscriptions/${subscriptionId}/resume`),
+  // Undo a scheduled cancellation, or subscribe again (then payment options apply)
+  resume: (subscriptionId: string, data: PurchaseOptions = {}) =>
+    api.post(`/subscriptions/${subscriptionId}/resume`, data),
   // Upgrade / downgrade within the same creator; same result shape as subscribe.
-  // paymentMethodId only applies to free → paid (new Stripe subscription).
-  changeTier: (subscriptionId: string, data: { tierId: string; paymentMethodId?: string }) =>
+  // Upgrades are paid now (prorated), downgrades apply at the next renewal.
+  changeTier: (subscriptionId: string, data: { tierId: string } & PurchaseOptions) =>
     api.post(`/subscriptions/${subscriptionId}/change-tier`, data),
-  // Past-due subscription: pay the overdue invoice again; same result shape as subscribe
-  retryPayment: (subscriptionId: string, data: { paymentMethodId?: string } = {}) =>
+  // Past-due subscription: pay now (saved card or provider page); same result shape as subscribe
+  retryPayment: (subscriptionId: string, data: PurchaseOptions = {}) =>
     api.post(`/subscriptions/${subscriptionId}/retry-payment`, data),
 }
 
@@ -367,11 +426,11 @@ export const contentApi = {
   unarchive: (id: string) => api.post(`/content/${id}/unarchive`),
   delete: (id: string) => api.delete(`/content/${id}`),
   likeContent: (id: string) => api.post(`/content/${id}/like`),
-  // PPV access is granted once the payment is confirmed (saved card or Stripe Elements)
-  unlockPPV: (id: string, paymentMethodId?: string) =>
-    api.post(`/content/${id}/unlock`, paymentMethodId ? { paymentMethodId } : {}),
-  confirmUnlock: (id: string, paymentIntentId: string) =>
-    api.post(`/content/${id}/unlock/confirm`, { paymentIntentId }),
+  // PPV access is granted once the payment is confirmed (saved card or provider page)
+  unlockPPV: (id: string, options: PurchaseOptions = {}) =>
+    api.post(`/content/${id}/unlock`, options),
+  confirmUnlock: (id: string, transactionId: string) =>
+    api.post(`/content/${id}/unlock/confirm`, { transactionId }),
 }
 
 export const messagesApi = {
@@ -387,10 +446,10 @@ export const messagesApi = {
   markAsRead: (partnerId: string) => api.post(`/messages/${partnerId}/read`),
   // People the user can start a conversation with
   searchContacts: (q?: string) => api.get('/messages/contacts', { params: q ? { q } : {} }),
-  unlockMessage: (messageId: string, paymentMethodId?: string) =>
-    api.post(`/messages/${messageId}/unlock`, paymentMethodId ? { paymentMethodId } : {}),
-  confirmUnlockMessage: (messageId: string, paymentIntentId: string) =>
-    api.post(`/messages/${messageId}/unlock/confirm`, { paymentIntentId }),
+  unlockMessage: (messageId: string, options: PurchaseOptions = {}) =>
+    api.post(`/messages/${messageId}/unlock`, options),
+  confirmUnlockMessage: (messageId: string, transactionId: string) =>
+    api.post(`/messages/${messageId}/unlock/confirm`, { transactionId }),
   deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
 }
 
@@ -600,19 +659,25 @@ export const liveApi = {
   livekitToken: (streamId: string, role?: 'publisher' | 'viewer') =>
     api.post(`/streaming/${streamId}/livekit-token`, role ? { role } : {}),
   // PPV streams: access is granted once the payment is confirmed
-  purchase: (streamId: string, paymentMethodId?: string) =>
-    api.post(`/streaming/${streamId}/purchase`, paymentMethodId ? { paymentMethodId } : {}),
-  confirmPurchase: (streamId: string, paymentIntentId: string) =>
-    api.post(`/streaming/${streamId}/purchase/confirm`, { paymentIntentId }),
+  purchase: (streamId: string, options: PurchaseOptions = {}) =>
+    api.post(`/streaming/${streamId}/purchase`, options),
+  confirmPurchase: (streamId: string, transactionId: string) =>
+    api.post(`/streaming/${streamId}/purchase/confirm`, { transactionId }),
   // Tips go to the stream's creator through the payments endpoint; once paid
   // they are announced in the live chat
   sendTip: (
     creatorId: string,
     amount: number,
-    options: { streamId?: string; menuItemId?: string; message?: string; paymentMethodId?: string } = {},
+    options: {
+      streamId?: string
+      menuItemId?: string
+      message?: string
+      paymentCardId?: string
+      billingCountry?: string
+    } = {},
   ) => paymentsApi.sendTip(creatorId, { amount, ...options }),
-  confirmTip: (creatorId: string, paymentIntentId: string) =>
-    paymentsApi.confirmTip(creatorId, paymentIntentId),
+  confirmTip: (creatorId: string, transactionId: string) =>
+    paymentsApi.confirmTip(creatorId, transactionId),
 }
 
 export const storiesApi = {

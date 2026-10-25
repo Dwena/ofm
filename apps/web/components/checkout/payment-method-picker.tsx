@@ -7,8 +7,8 @@ import { CreditCard, Loader2, Plus } from 'lucide-react'
 export interface SavedPaymentMethod {
   id: string
   type?: 'card'
-  brand?: string
-  last4: string
+  brand?: string | null
+  last4: string | null
   expMonth?: number
   expYear?: number
   isDefault: boolean
@@ -41,7 +41,7 @@ interface PaymentMethodPickerProps {
   loading?: boolean
   value: string
   onChange: (value: string) => void
-  // Offer a new card through Stripe Elements
+  // Offer a new card, entered on the payment provider's secure page
   allowNewCard?: boolean
 }
 
@@ -90,7 +90,7 @@ export default function PaymentMethodPicker({
         >
           <input type="radio" name={name} checked={value === NEW_CARD} onChange={() => onChange(NEW_CARD)} />
           <Plus className="h-5 w-5 text-muted-foreground" />
-          <span className="text-sm">Nouvelle carte</span>
+          <span className="text-sm">Nouvelle carte (page de paiement sécurisée)</span>
         </label>
       )}
     </div>

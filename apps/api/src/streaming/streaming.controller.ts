@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Req, UseGuards, ForbiddenException } from '@nestjs/common';
 import { StreamingService } from './streaming.service';
 import { StreamingGateway } from './streaming.gateway';
 import { IceServersService } from './ice-servers.service';
@@ -7,10 +7,15 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CreateStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
+import { CreateStreamDto, ModeratorEndStreamDto, UpdateStreamDto } from './dto/create-stream.dto';
 import { ConfirmPaymentDto, OneTimePaymentDto } from '../payments/dto/payments.dto';
+import { paymentContext } from '../payments/payment-context';
+import { Request } from 'express';
 import { StartStreamDto } from './dto/live-ingress.dto';
 import { LiveIngressService } from './live-ingress.service';
+import { AgeVerified } from '../age-verification/decorators/age-verified.decorator';
+import { gateStream, gateStreams } from '../age-verification/age-gate';
+import { AGE_VERIFICATION_REQUIRED } from '../age-verification/age-verification.constants';
 
 @Controller('streaming')
 @UseGuards(JwtAuthGuard)
@@ -75,8 +80,9 @@ export class StreamingController {
    * Get live streams
    */
   @Get('live')
-  async getLiveStreams(@CurrentUser('id') userId: string) {
-    return this.streamingService.getLiveStreams(userId);
+  async getLiveStreams(@CurrentUser('id') userId: string, @AgeVerified() ageVerified: boolean) {
+    const streams = await this.streamingService.getLiveStreams(userId);
+    return gateStreams(streams, { viewerId: userId, ageVerified });
   }
 
   /**
@@ -94,8 +100,10 @@ export class StreamingController {
   async getCreatorStreams(
     @Param('creatorId') creatorId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.streamingService.getCreatorStreams(creatorId, userId);
+    const streams = await this.streamingService.getCreatorStreams(creatorId, userId);
+    return gateStreams(streams, { viewerId: userId, ageVerified });
   }
 
   /**
@@ -105,8 +113,10 @@ export class StreamingController {
   async getStreamById(
     @Param('id') streamId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.streamingService.getStreamById(streamId, userId);
+    const stream = await this.streamingService.getStreamById(streamId, userId);
+    return gateStream(stream, { viewerId: userId, ageVerified });
   }
 
   /**
@@ -136,6 +146,25 @@ export class StreamingController {
   }
 
   /**
+   * Moderators / admins cut a live in progress (or cancel an announced one).
+   * Lives are monitored in real time by the moderation team: they cannot be
+   * reviewed before they happen.
+   */
+  @Post(':id/moderation/end')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN', 'MODERATOR')
+  async moderatorEndStream(
+    @CurrentUser('id') moderatorId: string,
+    @Param('id') streamId: string,
+    @Body() dto: ModeratorEndStreamDto,
+  ) {
+    await this.streamingGateway.flushViewerStats(streamId);
+    const stream = await this.streamingService.moderatorEndStream(moderatorId, streamId, dto?.reason);
+    this.streamingGateway.notifyStreamEnded(streamId);
+    return stream;
+  }
+
+  /**
    * End a stream (creator only)
    */
   @Post(':id/end')
@@ -160,7 +189,15 @@ export class StreamingController {
     @CurrentUser('id') userId: string,
     @Param('id') streamId: string,
     @Body() dto: LiveKitTokenDto,
+    @AgeVerified() ageVerified: boolean,
   ) {
+    // Watching a live needs a verified age (the creator broadcasting their own live does not)
+    if (!ageVerified) {
+      const stream = await this.streamingService.getStreamForRealtime(streamId);
+      if (stream && stream.creatorId !== userId) {
+        throw new ForbiddenException({ message: AGE_VERIFICATION_REQUIRED, code: AGE_VERIFICATION_REQUIRED });
+      }
+    }
     return this.streamingService.getLiveKitToken(userId, streamId, dto?.role);
   }
 
@@ -187,19 +224,20 @@ export class StreamingController {
   }
 
   /**
-   * Buy access to a PPV stream (pending until Stripe confirms the payment)
+   * Buy access to a PPV stream (saved card, or the provider's payment page)
    */
   @Post(':id/purchase')
   async purchaseStream(
     @CurrentUser('id') userId: string,
     @Param('id') streamId: string,
     @Body() dto: OneTimePaymentDto,
+    @Req() request: Request,
   ) {
-    return this.streamingService.purchaseStream(userId, streamId, dto?.paymentMethodId);
+    return this.streamingService.purchaseStream(userId, streamId, { ...dto, ...paymentContext(request) });
   }
 
   /**
-   * Re-check the PPV stream payment with Stripe and grant access once paid (idempotent)
+   * State of the PPV stream payment (idempotent)
    */
   @Post(':id/purchase/confirm')
   async confirmStreamPurchase(
@@ -207,7 +245,7 @@ export class StreamingController {
     @Param('id') streamId: string,
     @Body() dto: ConfirmPaymentDto,
   ) {
-    return this.streamingService.confirmStreamPurchase(userId, streamId, dto.paymentIntentId);
+    return this.streamingService.confirmStreamPurchase(userId, streamId, dto.transactionId);
   }
 
   /**

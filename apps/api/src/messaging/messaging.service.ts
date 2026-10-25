@@ -8,7 +8,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/database/prisma.service';
 import { roundMoney } from '../common/utils/money';
-import { OneTimePaymentService } from '../payments/one-time-payment.service';
+import { PaymentFlowService, PurchaseOptions } from '../payments/payment-flow.service';
 import { MESSAGE_MAX_LENGTH, MESSAGE_PPV_MAX_PRICE, MESSAGE_PPV_MIN_PRICE } from './dto/send-message.dto';
 
 const PARTICIPANT_SELECT = {
@@ -94,7 +94,7 @@ export class MessagingService {
 
   constructor(
     private prisma: PrismaService,
-    private oneTimePayments: OneTimePaymentService,
+    private paymentFlow: PaymentFlowService,
   ) {}
 
   /**
@@ -479,10 +479,10 @@ export class MessagingService {
   }
 
   /**
-   * Start the purchase of a PPV message (recipient only): returns a pending
-   * payment to confirm client-side, or completes right away with a saved card
+   * Start the purchase of a PPV message (recipient only): completes right away
+   * with a saved card, or returns the provider's payment page to redirect to
    */
-  async unlockMessage(userId: string, messageId: string, paymentMethodId?: string) {
+  async unlockMessage(userId: string, messageId: string, options: PurchaseOptions = {}) {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
       include: { sender: { select: { id: true, username: true } } },
@@ -498,14 +498,15 @@ export class MessagingService {
       return { unlocked: true, alreadyUnlocked: true, messageId };
     }
 
-    const payment = await this.oneTimePayments.startPayment({
+    const payment = await this.paymentFlow.startPayment({
+      ...options,
       payerId: userId,
       creatorId: message.senderId,
       kind: 'message_unlock',
       amount: Number(message.ppvPrice),
-      paymentMethodId,
       description: `Message privé de @${message.sender.username}`,
       metadata: { messageId },
+      returnPath: `/messages?user=${message.sender.username}`,
     });
 
     this.logger.log(`PPV message unlock started: ${messageId} by user ${userId} (${payment.status})`);
@@ -519,10 +520,10 @@ export class MessagingService {
   }
 
   /**
-   * Re-check a PPV message payment with Stripe after client-side confirmation (idempotent)
+   * State of a PPV message payment (after the provider's payment page, idempotent)
    */
-  async confirmUnlockMessage(userId: string, messageId: string, paymentIntentId: string) {
-    const payment = await this.oneTimePayments.confirmPayment(userId, paymentIntentId, {
+  async confirmUnlockMessage(userId: string, messageId: string, transactionId: string) {
+    const payment = await this.paymentFlow.confirmPayment(userId, transactionId, {
       kind: 'message_unlock',
       metadata: { messageId },
     });

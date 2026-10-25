@@ -1,8 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { paymentsApi } from '@/lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,7 +18,8 @@ import {
   CheckCircle,
   Clock,
   DollarSign,
-  ExternalLink,
+  FileText,
+  ShieldCheck,
   Loader2,
   RefreshCw,
   TrendingUp,
@@ -39,6 +39,9 @@ interface Earnings {
   pendingBalance: number
   totalPayouts: number
   minimumPayoutAmount?: number
+  earningsHoldDays?: number
+  platformFeePercentage?: number
+  payoutEligibility?: { eligible: boolean; identityVerified: boolean; taxProfileComplete: boolean }
   recentTransactions: {
     id: string
     type: string
@@ -47,16 +50,6 @@ interface Earnings {
     netAmount: number
     createdAt: string
   }[]
-}
-
-interface ConnectStatus {
-  stripeConfigured?: boolean
-  hasAccount: boolean
-  isOnboarded: boolean
-  chargesEnabled?: boolean
-  payoutsEnabled?: boolean
-  detailsSubmitted?: boolean
-  error?: string
 }
 
 interface Payout {
@@ -96,14 +89,15 @@ const TRANSACTION_STATUS: Record<string, string> = {
 function paymentErrorMessage(error: any, fallback: string): string {
   const raw = error?.response?.data?.message
   const message = Array.isArray(raw) ? raw.join(', ') : String(raw ?? '')
-  if (/not configured/i.test(message)) return "Les paiements Stripe ne sont pas configurés sur la plateforme."
+  if (/compte bancaire de la plateforme|not configured/i.test(message)) return 'Les virements ne sont pas encore configurés sur la plateforme.'
+  if (/solde disponible insuffisant|insufficient balance/i.test(message)) return 'Solde insuffisant pour ce retrait.'
+  if (/minimum/i.test(message) && /virement/i.test(message)) return message
+  if (/profil fiscal|identité/i.test(message)) return message
   if (/insufficient balance/i.test(message)) return 'Solde insuffisant pour ce retrait.'
   if (/minimum payout/i.test(message)) {
     const amount = message.match(/([\d.]+)€/)?.[1]
     return amount ? `Le montant minimum de retrait est de ${formatEuros(amount)}.` : 'Montant inférieur au minimum de retrait.'
   }
-  if (/not fully onboarded/i.test(message)) return 'Votre compte Stripe doit être entièrement configuré avant un retrait.'
-  if (/already exists/i.test(message)) return 'Un compte Stripe existe déjà pour ce profil.'
   if (!error?.response) return 'Impossible de joindre le serveur. Vérifiez votre connexion.'
   return fallback
 }
@@ -112,7 +106,6 @@ export default function CreatorEarningsPage() {
   const [payoutAmount, setPayoutAmount] = useState('')
   const [payoutError, setPayoutError] = useState<string | null>(null)
   const queryClient = useQueryClient()
-  const router = useRouter()
   const { toast } = useToast()
   const { confirm } = useConfirm()
 
@@ -127,15 +120,6 @@ export default function CreatorEarningsPage() {
   })
 
   const {
-    data: connectStatus,
-    isLoading: loadingConnect,
-    isError: connectError,
-  } = useQuery<ConnectStatus>({
-    queryKey: ['stripe-connect-status'],
-    queryFn: async () => (await paymentsApi.getOnboardingStatus()).data,
-  })
-
-  const {
     data: payouts,
     isLoading: loadingPayouts,
     isError: payoutsError,
@@ -143,25 +127,6 @@ export default function CreatorEarningsPage() {
     queryKey: ['payouts'],
     queryFn: async () => (await paymentsApi.getPayouts()).data,
   })
-
-  // Back from Stripe onboarding (?stripe=return) or expired link (?stripe=refresh)
-  const stripeReturnHandled = useRef(false)
-  useEffect(() => {
-    const stripeParam = new URLSearchParams(window.location.search).get('stripe')
-    if (!stripeParam || stripeReturnHandled.current) return
-    stripeReturnHandled.current = true
-    queryClient.invalidateQueries({ queryKey: ['stripe-connect-status'] })
-    queryClient.invalidateQueries({ queryKey: ['creator-earnings'] })
-    toast(
-      stripeParam === 'refresh'
-        ? {
-            title: 'Lien Stripe expiré',
-            description: 'Cliquez à nouveau sur « Configurer mes paiements » pour reprendre la configuration.',
-          }
-        : { title: 'Retour de Stripe', description: 'Le statut de votre compte de paiement a été actualisé.' },
-    )
-    router.replace('/creator/earnings')
-  }, [queryClient, router, toast])
 
   const requestPayoutMutation = useMutation({
     mutationFn: async (amount: number) => (await paymentsApi.requestPayout(amount)).data,
@@ -172,39 +137,13 @@ export default function CreatorEarningsPage() {
       setPayoutError(null)
       toast({
         title: 'Retrait demandé',
-        description: `${formatEuros(amount)} seront virés sur votre compte bancaire sous 2 à 5 jours ouvrés.`,
+        description: `Un virement de ${formatEuros(amount)} est programmé vers votre compte bancaire (quelques jours ouvrés).`,
       })
     },
     onError: (error: any) => {
       toast({
         title: 'Retrait impossible',
         description: paymentErrorMessage(error, 'Une erreur est survenue lors de la demande de retrait.'),
-        variant: 'destructive',
-      })
-    },
-  })
-
-  // Creates the Connect account if needed, then sends the creator to Stripe
-  const onboardingMutation = useMutation({
-    mutationFn: async () => {
-      if (!connectStatus?.hasAccount) {
-        await paymentsApi.createConnectAccount()
-      }
-      return (await paymentsApi.getOnboardingLink()).data as { url?: string }
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['stripe-connect-status'] })
-      if (data?.url) {
-        window.location.href = data.url
-      } else {
-        toast({ title: 'Lien indisponible', description: "Stripe n'a pas renvoyé de lien de configuration.", variant: 'destructive' })
-      }
-    },
-    onError: (error: any) => {
-      queryClient.invalidateQueries({ queryKey: ['stripe-connect-status'] })
-      toast({
-        title: 'Configuration impossible',
-        description: paymentErrorMessage(error, "Impossible d'ouvrir la configuration Stripe. Réessayez plus tard."),
         variant: 'destructive',
       })
     },
@@ -232,14 +171,14 @@ export default function CreatorEarningsPage() {
     const amount = Math.round(Number(payoutAmount.replace(',', '.')) * 100) / 100
     const confirmed = await confirm({
       title: 'Confirmer le retrait',
-      description: `${formatEuros(amount)} seront virés depuis votre solde Stripe vers votre compte bancaire.`,
+      description: `${formatEuros(amount)} seront virés par virement SEPA depuis votre solde vers le compte bancaire de votre profil fiscal.`,
       confirmText: 'Retirer',
     })
     if (!confirmed) return
     requestPayoutMutation.mutate(amount)
   }
 
-  if (loadingEarnings || loadingConnect) {
+  if (loadingEarnings) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
@@ -263,26 +202,10 @@ export default function CreatorEarningsPage() {
     )
   }
 
-  const stripeConfigured = connectStatus?.stripeConfigured !== false
-  const isOnboarded = !!connectStatus?.isOnboarded
-  const canRequestPayout = stripeConfigured && isOnboarded && connectStatus?.payoutsEnabled !== false
+  const eligibility = earnings.payoutEligibility
+  const canRequestPayout = !!eligibility?.eligible
   const canWithdraw = availableBalance >= minimumPayout
-
-  const onboardingButton = (label: string, variant: 'default' | 'outline' = 'default') => (
-    <Button
-      variant={variant}
-      onClick={() => onboardingMutation.mutate()}
-      disabled={onboardingMutation.isPending}
-      className="shrink-0"
-    >
-      {onboardingMutation.isPending ? (
-        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-      ) : (
-        <ExternalLink className="h-4 w-4 mr-2" />
-      )}
-      {label}
-    </Button>
-  )
+  const holdDays = earnings.earningsHoldDays ?? 7
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -291,64 +214,84 @@ export default function CreatorEarningsPage() {
         <p className="text-muted-foreground mt-2">Gérez vos revenus et effectuez des retraits</p>
       </div>
 
-      {/* Stripe Connect status */}
-      {connectError ? (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Statut Stripe indisponible</AlertTitle>
-          <AlertDescription>Impossible de vérifier votre compte de paiement pour le moment.</AlertDescription>
-        </Alert>
-      ) : !stripeConfigured ? (
+      {/* What payouts need: verified identity (KYC) and complete tax profile (DAC7) */}
+      {!canRequestPayout ? (
         <Alert>
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Paiements non disponibles</AlertTitle>
-          <AlertDescription>
-            Les paiements Stripe ne sont pas encore configurés sur la plateforme. Vos revenus restent
-            comptabilisés ; les retraits seront possibles dès que l&apos;administrateur aura activé Stripe.
-          </AlertDescription>
-        </Alert>
-      ) : !isOnboarded ? (
-        <Alert>
-          {connectStatus?.detailsSubmitted ? <Clock className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-          <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="font-medium mb-1">
-                {connectStatus?.detailsSubmitted
-                  ? 'Compte Stripe en cours de vérification'
-                  : connectStatus?.hasAccount
-                    ? 'Configuration Stripe à terminer'
-                    : 'Configuration requise'}
-              </p>
-              <p className="text-sm">
-                {connectStatus?.detailsSubmitted
-                  ? 'Stripe vérifie vos informations. Les retraits seront disponibles une fois le compte validé.'
-                  : 'Connectez un compte Stripe pour recevoir vos paiements et effectuer des retraits.'}
-              </p>
-              {connectStatus?.error && (
-                <p className="text-sm text-destructive mt-1">Stripe est momentanément injoignable, le statut affiché peut être ancien.</p>
-              )}
-            </div>
-            {onboardingButton(connectStatus?.detailsSubmitted ? 'Compléter sur Stripe' : 'Configurer mes paiements')}
+          <AlertTitle>Avant de recevoir vos virements</AlertTitle>
+          <AlertDescription className="space-y-3">
+            <p className="text-sm">
+              Vos revenus sont bien comptabilisés. Pour les recevoir sur votre compte bancaire, il vous reste :
+            </p>
+            <ul className="text-sm space-y-2">
+              <li className="flex flex-wrap items-center gap-2">
+                {eligibility?.identityVerified ? (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                ) : (
+                  <Clock className="h-4 w-4 text-yellow-600" />
+                )}
+                Vérification d’identité
+                {!eligibility?.identityVerified && (
+                  <Button asChild size="sm" variant="outline" className="h-7">
+                    <Link href="/creator/verification">Vérifier mon identité</Link>
+                  </Button>
+                )}
+              </li>
+              <li className="flex flex-wrap items-center gap-2">
+                {eligibility?.taxProfileComplete ? (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                ) : (
+                  <Clock className="h-4 w-4 text-yellow-600" />
+                )}
+                Profil fiscal et coordonnées bancaires (obligation de déclaration DAC7)
+                {!eligibility?.taxProfileComplete && (
+                  <Button asChild size="sm" variant="outline" className="h-7">
+                    <Link href="/creator/tax-profile">Compléter mon profil fiscal</Link>
+                  </Button>
+                )}
+              </li>
+            </ul>
           </AlertDescription>
         </Alert>
       ) : (
         <Card>
           <CardContent className="pt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3">
-              <CheckCircle className="h-5 w-5 text-green-600 shrink-0" />
+              <ShieldCheck className="h-5 w-5 text-green-600 shrink-0" />
               <div>
-                <p className="font-medium">Compte Stripe connecté</p>
+                <p className="font-medium">Virements activés</p>
                 <p className="text-sm text-muted-foreground">
-                  {connectStatus?.payoutsEnabled === false
-                    ? 'Les virements sont temporairement suspendus par Stripe.'
-                    : 'Vous pouvez recevoir des paiements et demander des retraits.'}
+                  Identité vérifiée et profil fiscal complet. Un virement SEPA est fait chaque lundi si votre solde
+                  dépasse {formatEuros(minimumPayout)}, ou à votre demande.
                 </p>
               </div>
             </div>
-            {onboardingButton('Mettre à jour mes informations', 'outline')}
+            <Button asChild variant="outline" className="shrink-0">
+              <Link href="/creator/tax-profile">Coordonnées bancaires</Link>
+            </Button>
           </CardContent>
         </Card>
       )}
+
+      <Alert>
+        <FileText className="h-4 w-4" />
+        <AlertTitle>Vos obligations fiscales et sociales</AlertTitle>
+        <AlertDescription className="text-sm space-y-1">
+          <p>
+            Les sommes perçues sur la plateforme sont des revenus à déclarer (impôt sur le revenu et cotisations
+            sociales, par exemple en micro-entreprise auprès de l’URSSAF). La plateforme transmet chaque année à
+            l’administration fiscale le montant de vos revenus (article 242 bis du CGI, directive DAC7) et vous en
+            adresse un récapitulatif.
+          </p>
+          <p>
+            <a className="underline" href="https://www.impots.gouv.fr" target="_blank" rel="noreferrer">impots.gouv.fr</a>
+            {' · '}
+            <a className="underline" href="https://www.urssaf.fr" target="_blank" rel="noreferrer">urssaf.fr</a>
+            {' · '}
+            <Link className="underline" href="/creator/documents">Mes factures et relevés annuels</Link>
+          </p>
+        </AlertDescription>
+      </Alert>
 
       {/* Balance cards */}
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
@@ -360,11 +303,7 @@ export default function CreatorEarningsPage() {
           <CardContent>
             <div className="text-xl sm:text-2xl font-bold text-green-600">{formatEuros(availableBalance)}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              {isOnboarded
-                ? 'Prêt à être retiré'
-                : stripeConfigured
-                  ? 'Sur votre compte Stripe, une fois configuré'
-                  : 'Disponible une fois Stripe activé'}
+              {canRequestPayout ? 'Prêt à être viré' : 'Viré une fois vos informations complètes'}
             </p>
           </CardContent>
         </Card>
@@ -376,7 +315,9 @@ export default function CreatorEarningsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-xl sm:text-2xl font-bold text-yellow-600">{formatEuros(earnings.pendingBalance)}</div>
-            <p className="text-xs text-muted-foreground mt-1">En cours de traitement par Stripe</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Disponible {holdDays} jours après chaque paiement (remboursements et contestations)
+            </p>
           </CardContent>
         </Card>
 
@@ -387,7 +328,9 @@ export default function CreatorEarningsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-xl sm:text-2xl font-bold">{formatEuros(earnings.monthlyEarnings)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Revenus nets depuis le 1er du mois</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Votre part depuis le 1er du mois (prix HT moins la commission de {earnings.platformFeePercentage ?? 15} %)
+            </p>
           </CardContent>
         </Card>
 

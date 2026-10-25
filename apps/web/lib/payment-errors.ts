@@ -1,10 +1,11 @@
 /**
- * French message for a failed payment call: API errors (English messages),
- * Stripe.js errors (already localized) or plain errors.
+ * French message for a failed payment call: API errors (English messages
+ * translated below, French ones kept) or plain errors.
  */
 const API_MESSAGES: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
   [/payments are not configured/i, 'Les paiements ne sont pas encore configurés sur la plateforme.'],
   [/creator payment account is not ready/i, 'Ce créateur n’a pas encore activé les paiements. Réessayez plus tard.'],
+  [/le paiement est momentanément indisponible/i, 'Le paiement est momentanément indisponible, réessayez plus tard.'],
   [/minimum tip amount is €?\s*([\d.,]+)/i, (m) => `Le pourboire minimum est de ${m[1].replace('.', ',')} €.`],
   [/does not accept tips/i, 'Ce créateur n’accepte pas les pourboires.'],
   [/cannot tip yourself/i, 'Vous ne pouvez pas vous envoyer un pourboire.'],

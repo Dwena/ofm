@@ -60,9 +60,11 @@ export class AdminController {
   }
 
   /**
-   * Approve or reject a pending identity verification (KYC)
+   * Approve or reject a pending identity verification (KYC). Moderators
+   * review identity documents too (queue: GET /admin/verification/kyc).
    */
   @Post('users/:id/kyc')
+  @Roles('ADMIN', 'MODERATOR')
   async reviewKyc(
     @CurrentUser('id') adminId: string,
     @Param('id') userId: string,

@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
-import { contentApi } from '@/lib/api'
+import { CoPerformersPicker } from '@/components/creator/co-performers-picker'
+import { contentCoPerformersApi } from '@/lib/verification'
 import { toast } from '@/hooks/use-toast'
 import {
   Dialog,
@@ -33,7 +34,7 @@ import {
 
 type EditableContent = Pick<
   CreatorContentItem,
-  'id' | 'title' | 'description' | 'visibility' | 'isPpv' | 'ppvPrice' | 'status' | 'scheduledFor'
+  'id' | 'title' | 'description' | 'visibility' | 'isPpv' | 'ppvPrice' | 'status' | 'scheduledFor' | 'soloContent' | 'coPerformers'
 >
 
 interface EditContentDialogProps {
@@ -54,6 +55,8 @@ export function EditContentDialog({ content, open, onOpenChange }: EditContentDi
   const [scheduled, setScheduled] = useState(false)
   const [scheduledFor, setScheduledFor] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [soloContent, setSoloContent] = useState(true)
+  const [coPerformerIds, setCoPerformerIds] = useState<string[]>([])
 
   // Reset the form each time another content is opened
   useEffect(() => {
@@ -64,8 +67,16 @@ export function EditContentDialog({ content, open, onOpenChange }: EditContentDi
     setPrice(content.ppvPrice != null ? String(content.ppvPrice) : '')
     setScheduled(!!content.scheduledFor)
     setScheduledFor(content.scheduledFor ? toDateTimeLocal(content.scheduledFor) : '')
+    setSoloContent(content.soloContent ?? true)
+    setCoPerformerIds((content.coPerformers ?? []).map((row) => row.coPerformer.id))
     setSubmitted(false)
   }, [content, open])
+
+  const initialCoPerformerIds = (content?.coPerformers ?? []).map((row) => row.coPerformer.id)
+  const coPerformersChanged =
+    soloContent !== (content?.soloContent ?? true) ||
+    coPerformerIds.length !== initialCoPerformerIds.length ||
+    coPerformerIds.some((id) => !initialCoPerformerIds.includes(id))
 
   const isDraft = content?.status === 'DRAFT'
   const isPpv = visibility === 'PPV'
@@ -74,12 +85,15 @@ export function EditContentDialog({ content, open, onOpenChange }: EditContentDi
     title: !title.trim() ? 'Le titre est obligatoire' : null,
     price: isPpv ? validatePpvPrice(price) : null,
     scheduledFor: isDraft && scheduled ? validateScheduleDate(scheduledFor) : null,
+    coPerformers: !soloContent && coPerformerIds.length === 0 ? 'Sélectionnez les personnes présentes' : null,
   }
   const hasErrors = Object.values(errors).some(Boolean)
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const response = await contentApi.update(content!.id, {
+      const response = await contentCoPerformersApi.update(content!.id, {
+        // Only sent when changed: a published content goes back to validation
+        ...(coPerformersChanged && { soloContent, coPerformerIds: soloContent ? [] : coPerformerIds }),
         title: title.trim(),
         description: description.trim(),
         visibility,
@@ -91,11 +105,15 @@ export function EditContentDialog({ content, open, onOpenChange }: EditContentDi
       })
       return response.data
     },
-    onSuccess: () => {
+    onSuccess: (updated: any) => {
       queryClient.invalidateQueries({ queryKey: ['my-content'] })
       queryClient.invalidateQueries({ queryKey: ['creator-content'] })
       queryClient.invalidateQueries({ queryKey: ['content', content!.id] })
-      toast({ title: 'Contenu mis à jour' })
+      toast(
+        updated?.status === 'UNDER_REVIEW' && content?.status !== 'UNDER_REVIEW'
+          ? { title: 'Contenu renvoyé en validation', description: 'Il sera de nouveau visible après validation par notre équipe.' }
+          : { title: 'Contenu mis à jour' },
+      )
       onOpenChange(false)
     },
     onError: (error) => {
@@ -220,6 +238,23 @@ export function EditContentDialog({ content, open, onOpenChange }: EditContentDi
               )}
             </div>
           )}
+
+          <div className="space-y-2">
+            <Label>Personnes présentes</Label>
+            <CoPerformersPicker
+              soloContent={soloContent}
+              onSoloContentChange={setSoloContent}
+              selectedIds={coPerformerIds}
+              onSelectedIdsChange={setCoPerformerIds}
+              disabled={mutation.isPending}
+              showError={submitted}
+            />
+            {coPerformersChanged && content?.status === 'PUBLISHED' && (
+              <p className="text-xs text-muted-foreground">
+                Modifier les personnes présentes renvoie le contenu en validation avant qu’il ne soit de nouveau visible.
+              </p>
+            )}
+          </div>
 
           <DialogFooter className="gap-2 sm:gap-0">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>

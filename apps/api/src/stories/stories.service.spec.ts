@@ -99,7 +99,7 @@ describe('StoriesService', () => {
     };
 
     it('should create a story for a creator', async () => {
-      const mockUser = { role: 'CREATOR' };
+      const mockUser = { role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' };
       const mockStory = {
         id: 'story-123',
         creatorId: userId,
@@ -147,7 +147,7 @@ describe('StoriesService', () => {
     });
 
     it('should throw BadRequestException if text story has no text', async () => {
-      const mockUser = { role: 'CREATOR' };
+      const mockUser = { role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' };
       const invalidDto = { type: 'TEXT' as any };
 
       mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
@@ -158,7 +158,7 @@ describe('StoriesService', () => {
     });
 
     it('should throw BadRequestException if image story has no mediaUrl', async () => {
-      const mockUser = { role: 'CREATOR' };
+      const mockUser = { role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' };
       const invalidDto = { type: 'PHOTO' as any };
 
       mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
@@ -378,7 +378,7 @@ describe('StoriesService', () => {
     const userId = 'creator-123';
 
     beforeEach(() => {
-      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR' });
+      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' });
     });
 
     it('should accept a storage key from the creator folder and sign it on output', async () => {

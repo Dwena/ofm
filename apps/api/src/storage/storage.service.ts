@@ -39,6 +39,9 @@ export class StorageService {
     originalName: string,
     mimeType: string,
     folder: string = 'uploads',
+    // cacheControl: e.g. 'private, no-store' for identity documents (KYC),
+    // which must never be kept by a CDN or proxy cache
+    options: { cacheControl?: string } = {},
   ): Promise<{ key: string; url: string }> {
     const ext = path.extname(originalName);
     const filename = `${nanoid(16)}${ext}`;
@@ -54,7 +57,7 @@ export class StorageService {
           // Server-side encryption
           ServerSideEncryption: 'AES256',
           // Optimized cache control for CDN
-          CacheControl: 'public, max-age=31536000, immutable', // 1 year, immutable for better CDN caching
+          CacheControl: options.cacheControl ?? 'public, max-age=31536000, immutable', // 1 year, immutable for better CDN caching
           // Additional CDN-friendly headers
           Metadata: {
             'uploaded-at': new Date().toISOString(),

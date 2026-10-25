@@ -49,6 +49,12 @@ type AuthFixtures = {
 };
 
 export const test = base.extend<AuthFixtures>({
+  // The adult-content warning (age gate interstitial) would cover every page
+  page: async ({ page }, use) => {
+    await page.addInitScript(() => sessionStorage.setItem('ageGateDismissed', '1'));
+    await use(page);
+  },
+
   authPage: async ({ page }, use) => {
     await use(new AuthPage(page));
   },

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, DragEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { mediaApi, contentApi } from '@/lib/api'
+import { mediaApi } from '@/lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,6 +21,9 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { MediaJobProgress } from '@/components/media/media-job-progress'
+import { CoPerformersPicker } from '@/components/creator/co-performers-picker'
+import { KycBanner } from '@/components/creator/kyc-banner'
+import { contentCoPerformersApi } from '@/lib/verification'
 import { MediaJobState, isFinalJobState, trackMediaJobs } from '@/hooks/use-media-jobs'
 import { toast } from '@/hooks/use-toast'
 import { useConfirm } from '@/hooks/use-confirm'
@@ -78,6 +81,9 @@ export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false)
   const [touched, setTouched] = useState({ title: false, price: false, scheduledFor: false })
   const [submitIntent, setSubmitIntent] = useState<SubmitIntent | null>(null)
+  // People appearing in the content: "Seulement moi" or verified co-performers
+  const [soloContent, setSoloContent] = useState(true)
+  const [coPerformerIds, setCoPerformerIds] = useState<string[]>([])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const filesRef = useRef<UploadedFile[]>([])
@@ -180,7 +186,9 @@ export default function UploadPage() {
       const uploadedFiles = files.filter((f) => f.mediaId)
       const schedule = intent === 'publish' && publishMode === 'schedule'
 
-      const response = await contentApi.create({
+      const response = await contentCoPerformersApi.create({
+        soloContent,
+        coPerformerIds: soloContent ? undefined : coPerformerIds,
         title: title.trim(),
         description: description.trim() || undefined,
         visibility,
@@ -194,7 +202,7 @@ export default function UploadPage() {
 
       return { content: response.data, intent, schedule }
     },
-    onSuccess: ({ intent, schedule }) => {
+    onSuccess: ({ content, intent, schedule }) => {
       // Keep following unfinished processing jobs from the creator dashboard
       trackMediaJobs(
         files
@@ -213,6 +221,18 @@ export default function UploadPage() {
       if (intent === 'draft') {
         toast({ title: 'Brouillon enregistré', description: 'Vous pourrez le publier depuis « Mes contenus ».' })
         router.push('/creator/content?status=draft')
+      } else if (content?.status === 'UNDER_REVIEW') {
+        // Every content is reviewed by the moderation team before it goes live
+        toast({
+          title: 'Contenu envoyé en validation',
+          description: schedule
+            ? `Après validation par notre équipe, il sera publié le ${new Date(scheduledFor).toLocaleString('fr-FR', {
+                dateStyle: 'long',
+                timeStyle: 'short',
+              })}.`
+            : 'Il sera visible par vos fans dès sa validation par notre équipe.',
+        })
+        router.push('/creator/content?status=review')
       } else if (schedule) {
         toast({
           title: 'Publication programmée',
@@ -394,6 +414,7 @@ export default function UploadPage() {
         : null,
     price: isPPV ? validatePpvPrice(price) : null,
     scheduledFor: publishMode === 'schedule' ? validateScheduleDate(scheduledFor) : null,
+    coPerformers: !soloContent && coPerformerIds.length === 0 ? 'Sélectionnez les personnes présentes' : null,
   }
 
   const busy = uploadingCount > 0 || createContentMutation.isPending
@@ -404,12 +425,17 @@ export default function UploadPage() {
     uploadingCount === 0 ? errors.content : null,
     isPPV && errors.price ? 'Indiquez un prix PPV valide' : null,
     publishMode === 'schedule' && errors.scheduledFor ? 'Choisissez une date de publication future' : null,
+    errors.coPerformers,
   ].filter(Boolean) as string[]
 
   const canPublish = blockers.length === 0 && !createContentMutation.isPending
   // A draft only needs a title and finished uploads
   const canSaveDraft =
-    !errors.title && uploadingCount === 0 && !(isPPV && errors.price) && !createContentMutation.isPending
+    !errors.title &&
+    uploadingCount === 0 &&
+    !(isPPV && errors.price) &&
+    !errors.coPerformers &&
+    !createContentMutation.isPending
 
   const submit = (intent: SubmitIntent) => {
     setTouched({ title: true, price: true, scheduledFor: intent === 'publish' })
@@ -445,6 +471,8 @@ export default function UploadPage() {
           Uploadez vos images, vidéos ou fichiers et partagez-les avec vos abonnés
         </p>
       </div>
+
+      <KycBanner />
 
       {/* File Upload Zone */}
       <Card>
@@ -746,7 +774,7 @@ export default function UploadPage() {
                   inputMode="decimal"
                   name="ppvPrice"
                   data-testid="content-ppv-price"
-                  aria-label="Prix PPV (€)"
+                  aria-label="Prix PPV HT (€)"
                   step="0.01"
                   min={PPV_MIN_PRICE}
                   max={PPV_MAX_PRICE}
@@ -760,12 +788,32 @@ export default function UploadPage() {
                   <p className="text-xs text-red-600">{errors.price}</p>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    Prix minimum: 0,50 € • Les fans paieront ce montant pour débloquer le contenu
+                    Prix HT, minimum 0,50 € • Les fans paieront ce prix plus la TVA de leur pays
                   </p>
                 )}
               </div>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* People appearing in the content */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Personnes présentes</CardTitle>
+          <CardDescription>
+            Toute personne autre que vous doit être majeure, vérifiée et avoir signé une autorisation de diffusion
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CoPerformersPicker
+            soloContent={soloContent}
+            onSoloContentChange={setSoloContent}
+            selectedIds={coPerformerIds}
+            onSelectedIdsChange={setCoPerformerIds}
+            disabled={createContentMutation.isPending}
+            showError={touched.title}
+          />
         </CardContent>
       </Card>
 
@@ -778,8 +826,8 @@ export default function UploadPage() {
         <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Moment de publication">
             {([
-              { value: 'now', label: 'Publier maintenant', hint: 'Visible dès la validation' },
-              { value: 'schedule', label: 'Programmer', hint: 'Publié automatiquement à la date choisie' },
+              { value: 'now', label: 'Publier maintenant', hint: 'Visible dès la validation par notre équipe' },
+              { value: 'schedule', label: 'Programmer', hint: 'Publié à la date choisie, après validation' },
             ] as const).map((option) => (
               <label
                 key={option.value}

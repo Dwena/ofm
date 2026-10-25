@@ -6,6 +6,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { ReplyStoryDto } from './dto/reply-story.dto';
+import { AgeVerified } from '../age-verification/decorators/age-verified.decorator';
+import { gateStories, gateStory, gateStoryGroups } from '../age-verification/age-gate';
 
 @Controller('stories')
 @UseGuards(JwtAuthGuard)
@@ -29,8 +31,9 @@ export class StoriesController {
    * Get stories feed from subscribed creators
    */
   @Get('feed')
-  async getStoriesFeed(@CurrentUser('id') userId: string) {
-    return this.storiesService.getStoriesFeed(userId);
+  async getStoriesFeed(@CurrentUser('id') userId: string, @AgeVerified() ageVerified: boolean) {
+    const groups = await this.storiesService.getStoriesFeed(userId);
+    return gateStoryGroups(groups, { viewerId: userId, ageVerified });
   }
 
   /**
@@ -48,8 +51,10 @@ export class StoriesController {
   async getCreatorStories(
     @Param('creatorId') creatorId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.storiesService.getCreatorStories(creatorId, userId);
+    const stories = await this.storiesService.getCreatorStories(creatorId, userId);
+    return gateStories(stories, { viewerId: userId, ageVerified });
   }
 
   /**
@@ -59,8 +64,10 @@ export class StoriesController {
   async getStoryById(
     @Param('id') storyId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    return this.storiesService.getStoryById(storyId, userId);
+    const story = await this.storiesService.getStoryById(storyId, userId);
+    return gateStory(story, { viewerId: userId, ageVerified });
   }
 
   /**

@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
+import { formatFanPrice } from '@/lib/vat'
 import Link from 'next/link';
 import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
@@ -88,7 +89,7 @@ const VIEW_STORAGE_KEY = 'discover-view-mode';
 
 function priceLabel(price?: number) {
   if (price === undefined || price === null) return null;
-  return price === 0 ? 'Gratuit' : formatEuros(price);
+  return price === 0 ? 'Gratuit' : formatFanPrice(price);
 }
 
 function DiscoverContent() {

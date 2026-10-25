@@ -39,7 +39,7 @@ const faq: FaqItem[] = [
     answer: (
       <>
         Vos gains s’accumulent sur votre solde au fil des abonnements, pourboires et achats. Vous pouvez demander un
-        retrait dès <MinimumPayout /> : l’argent est versé sur votre compte bancaire par Stripe.
+        retrait dès <MinimumPayout /> : l’argent est versé par virement bancaire (SEPA), 7 jours après chaque paiement.
       </>
     ),
   },
@@ -51,7 +51,7 @@ const faq: FaqItem[] = [
   {
     question: 'Faut-il vérifier son identité ?',
     answer:
-      'Oui, avant de recevoir de l’argent : Stripe demande une pièce d’identité et un RIB, comme n’importe quel service de paiement.',
+      'Oui : une pièce d’identité et un selfie avant de publier (vous devez être majeur·e), puis un profil fiscal et un RIB avant de recevoir vos virements. Chaque personne qui apparaît avec vous doit aussi être vérifiée.',
   },
   {
     question: 'Comment marchent les objectifs de dons en live ?',

@@ -8,10 +8,12 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../common/database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { MessagingService, presentMessage } from './messaging.service';
+import { AgeVerificationService } from '../age-verification/age-verification.service';
+import { gateMessage } from '../age-verification/age-gate';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -35,6 +37,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     private prisma: PrismaService,
     private jwtService: JwtService,
     private messagingService: MessagingService,
+    @Optional() private ageVerification?: AgeVerificationService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket) {
@@ -228,7 +231,19 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   // Push a new message to the recipient's room (no-op if offline)
   emitNewMessage(recipientId: string, message: any) {
-    this.server?.to(`user:${recipientId}`).emit('message:new', { message });
+    if (!message?.attachmentUrl || message.senderId === recipientId) {
+      this.server?.to(`user:${recipientId}`).emit('message:new', { message });
+      return;
+    }
+    // Attachments need a verified age (account check only: the web reloads
+    // the conversation with its X-Age-Verification token when flagged)
+    void (this.ageVerification?.isAgeVerifiedFor({ userId: recipientId }) ?? Promise.resolve(false))
+      .catch(() => false)
+      .then((ageVerified) => {
+        this.server?.to(`user:${recipientId}`).emit('message:new', {
+          message: gateMessage(message, { viewerId: recipientId, ageVerified }),
+        });
+      });
   }
 
   // Utility method to send notification to user

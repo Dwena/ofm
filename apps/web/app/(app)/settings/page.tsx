@@ -654,7 +654,7 @@ export default function SettingsPage() {
                         href: '/creator/earnings',
                         icon: Wallet,
                         label: 'Revenus et virements',
-                        description: 'Connectez votre compte Stripe pour recevoir vos paiements',
+                        description: 'Solde, virements, profil fiscal et documents',
                       },
                     ]
                   : []),

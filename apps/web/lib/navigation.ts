@@ -7,6 +7,7 @@ import {
   CreditCard,
   DollarSign,
   FileText,
+  Landmark,
   Flag,
   Home,
   MonitorPlay,
@@ -21,6 +22,8 @@ import {
   UserCog,
   Users,
   Wallet,
+  ShieldCheck,
+  UsersRound,
 } from 'lucide-react'
 import type { Translations } from '@/lib/i18n/locales/fr'
 
@@ -76,6 +79,10 @@ const L = {
   creatorEarnings: link('/creator/earnings', 'creatorEarnings', DollarSign),
   creatorAnalytics: link('/creator/analytics', 'creatorAnalytics', BarChart3),
   creatorProfile: link('/creator/profile', 'creatorProfile', UserCog),
+  creatorTaxProfile: link('/creator/tax-profile', 'creatorTaxProfile', Landmark),
+  creatorDocuments: link('/creator/documents', 'creatorDocuments', Receipt),
+  creatorVerification: link('/creator/verification', 'creatorVerification', ShieldCheck),
+  creatorCoPerformers: link('/creator/co-performers', 'creatorCoPerformers', UsersRound),
   admin: link('/admin', 'admin', Shield),
   reports: link('/admin/reports', 'reports', Flag),
 }
@@ -118,6 +125,10 @@ export function getRoleNavigation(role: string | undefined): RoleNavigation {
               L.creatorEarnings,
               L.creatorAnalytics,
               L.creatorProfile,
+              L.creatorTaxProfile,
+              L.creatorDocuments,
+              L.creatorVerification,
+              L.creatorCoPerformers,
             ],
           },
           { titleKey: 'sectionExplore', links: [L.feed, L.discover, L.lives] },

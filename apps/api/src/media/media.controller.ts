@@ -13,6 +13,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { MediaService } from './media.service';
+import { AgeVerified } from '../age-verification/decorators/age-verified.decorator';
 
 @Controller('media')
 @UseGuards(JwtAuthGuard)
@@ -91,8 +92,9 @@ export class MediaController {
   async getSignedUrl(
     @Param('contentFileId') contentFileId: string,
     @CurrentUser('id') userId: string,
+    @AgeVerified() ageVerified: boolean,
   ) {
-    const url = await this.mediaService.getSignedUrl(contentFileId, userId);
+    const url = await this.mediaService.getSignedUrl(contentFileId, userId, { ageVerified });
     return { url };
   }
 

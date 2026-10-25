@@ -13,11 +13,24 @@ interface AuthContextType {
   isAuthenticated: boolean
   /** Logs in and redirects to `redirectTo` (a local path) or to the role's home page */
   login: (email: string, password: string, totpCode?: string, redirectTo?: string | null) => Promise<User>
-  register: (email: string, username: string, password: string, role?: string) => Promise<User>
+  register: (
+    email: string,
+    username: string,
+    password: string,
+    role: string | undefined,
+    consents: RegisterConsents,
+  ) => Promise<User>
   logout: () => Promise<void>
   refreshUser: () => Promise<void>
   /** Drops the local session (tokens, user, cached queries) without calling the API */
   clearSession: () => void
+}
+
+/** Checkboxes of the sign-up form (CGU + privacy, 18+, creator terms for creators) */
+export interface RegisterConsents {
+  acceptTerms: boolean
+  confirmAdult: boolean
+  acceptCreatorTerms?: boolean
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -135,8 +148,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const register = useCallback(
-    async (email: string, username: string, password: string, role: string = 'SUBSCRIBER') => {
-      await authApi.register({ email, username, password, role })
+    async (
+      email: string,
+      username: string,
+      password: string,
+      role: string = 'SUBSCRIBER',
+      consents: RegisterConsents,
+    ) => {
+      await authApi.register({
+        email,
+        username,
+        password,
+        role,
+        acceptTerms: consents.acceptTerms,
+        confirmAdult: consents.confirmAdult,
+        // Only relevant (and required) for creator accounts
+        ...(role === 'CREATOR' ? { acceptCreatorTerms: consents.acceptCreatorTerms === true } : {}),
+      })
       // Auto-login after registration
       try {
         return await login(email, password)

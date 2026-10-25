@@ -5,7 +5,6 @@ import {
   ConflictException,
   ForbiddenException,
   Logger,
-  Optional,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -31,8 +30,9 @@ import { Enable2FaDto } from './dto/enable-2fa.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
 import { ResetPasswordDto } from './dto/email-token.dto';
 import { SettingsService } from '../settings/settings.service';
-import { StripeService } from '../payments/stripe.service';
 import { ChangePasswordDto, DeleteAccountDto } from './dto/account.dto';
+import { AcceptanceContext, LegalService } from '../legal/legal.service';
+import { LegalDocument } from '../legal/legal-versions';
 
 /** Redis key holding the unix time (s) of the user's last password change. */
 export const PASSWORD_CHANGED_KEY = (userId: string) => `auth:pwd-changed:${userId}`;
@@ -50,15 +50,22 @@ export class AuthService {
     private usersService: UsersService,
     private mailService: MailService,
     private settingsService: SettingsService,
-    @Optional() private stripeService?: StripeService,
+    private legalService: LegalService,
   ) {}
 
-  async register(registerDto: RegisterDto) {
+  /**
+   * @param context IP address and user agent of the request, stored with the legal
+   *   acceptances (CGU, privacy policy, 18+ declaration, creator terms) as evidence.
+   */
+  async register(registerDto: RegisterDto, context: AcceptanceContext = {}) {
     const { email, username, password, role } = registerDto;
 
     if (!(await this.settingsService.isRegistrationOpen())) {
       throw new ForbiddenException('Les inscriptions sont actuellement fermées');
     }
+
+    // Also enforced by RegisterDto: checked here so no caller can skip the consents
+    const acceptedDocuments = this.getRegistrationConsents(registerDto);
 
     // Check if user exists
     const existingUser = await this.prisma.user.findFirst({
@@ -86,6 +93,10 @@ export class AuthService {
         username,
         password: hashedPassword,
         role,
+        // Stored atomically with the account
+        legalAcceptances: {
+          create: this.legalService.buildAcceptances(acceptedDocuments, context),
+        },
       },
       select: {
         id: true,
@@ -116,6 +127,24 @@ export class AuthService {
       user,
       message: 'Registration successful. Please verify your email.',
     };
+  }
+
+  /** Legal documents accepted at registration; throws if a required consent is missing */
+  private getRegistrationConsents(dto: RegisterDto): LegalDocument[] {
+    if (dto.acceptTerms !== true) {
+      throw new BadRequestException('You must accept the terms of use and the privacy policy');
+    }
+    if (dto.confirmAdult !== true) {
+      throw new BadRequestException('You must certify that you are at least 18 years old');
+    }
+    const documents: LegalDocument[] = ['terms', 'privacy', 'adult_declaration'];
+    if (dto.role === 'CREATOR') {
+      if (dto.acceptCreatorTerms !== true) {
+        throw new BadRequestException('You must accept the creator terms');
+      }
+      documents.push('creator_terms');
+    }
+    return documents;
   }
 
   async login(loginDto: LoginDto) {
@@ -543,8 +572,9 @@ export class AuthService {
 
   /**
    * Soft-delete the account of the logged-in user: personal data is anonymized,
-   * content hidden, tiers deactivated, Stripe subscriptions set to end with the
-   * current period, every session revoked.
+   * content hidden, tiers deactivated, subscriptions set to end with the
+   * current period (no further renewal), saved cards removed, every session
+   * revoked. Payment and tax records are kept (accounting retention).
    */
   async deleteAccount(userId: string, dto: DeleteAccountDto) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -572,18 +602,8 @@ export class AuthService {
         status: { in: ['ACTIVE', 'PAST_DUE', 'PAUSED'] },
         OR: [{ subscriberId: userId }, { tier: { creatorId: userId } }],
       },
-      select: { id: true, stripeSubscriptionId: true },
+      select: { id: true },
     });
-    for (const subscription of subscriptions) {
-      if (!subscription.stripeSubscriptionId || !this.stripeService) continue;
-      try {
-        await this.stripeService.setCancelAtPeriodEnd(subscription.stripeSubscriptionId, true);
-      } catch (error: any) {
-        this.logger.error(
-          `Failed to schedule cancellation of ${subscription.stripeSubscriptionId}: ${error?.message ?? error}`,
-        );
-      }
-    }
 
     const now = new Date();
     const anonymousId = userId.replace(/-/g, '').slice(0, 12);
@@ -616,6 +636,10 @@ export class AuthService {
       this.prisma.subscription.updateMany({
         where: { id: { in: subscriptions.map((s) => s.id) } },
         data: { cancelAtPeriodEnd: true },
+      }),
+      this.prisma.paymentCard.updateMany({
+        where: { userId, deletedAt: null },
+        data: { deletedAt: now, isDefault: false },
       }),
       this.prisma.subscriptionTier.updateMany({ where: { creatorId: userId }, data: { isActive: false } }),
       this.prisma.content.updateMany({ where: { creatorId: userId, deletedAt: null }, data: { deletedAt: now } }),

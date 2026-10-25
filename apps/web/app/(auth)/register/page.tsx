@@ -24,14 +24,37 @@ import {
 } from '@/components/auth-shell'
 
 type Role = 'SUBSCRIBER' | 'CREATOR'
-type Field = 'email' | 'username' | 'password' | 'confirmPassword'
+type Field = 'email' | 'username' | 'password' | 'confirmPassword' | 'acceptTerms' | 'confirmAdult' | 'acceptCreatorTerms'
 type FieldErrors = Partial<Record<Field, string>>
+
+const FIELD_ORDER: Field[] = ['email', 'username', 'password', 'confirmPassword', 'acceptTerms', 'confirmAdult', 'acceptCreatorTerms']
+
+/** id of the input of each field (used to focus the first invalid one) */
+function fieldInputId(field: Field) {
+  return field === 'confirmPassword' ? 'register-password-confirm' : `register-${field}`
+}
+
+interface Consents {
+  acceptTerms: boolean
+  confirmAdult: boolean
+  acceptCreatorTerms: boolean
+}
+
+const CONSENT_ERRORS = {
+  acceptTerms: 'Vous devez accepter les CGU et la Politique de confidentialité.',
+  confirmAdult: 'Vous devez certifier avoir 18 ans ou plus.',
+  acceptCreatorTerms: 'Vous devez accepter les Conditions créateurs.',
+} as const
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const USERNAME_REGEX = /^[a-zA-Z0-9_-]+$/
 
 /** Same rules as the API's RegisterDto */
-function validate(values: { email: string; username: string; password: string; confirmPassword: string }) {
+function validate(
+  values: { email: string; username: string; password: string; confirmPassword: string },
+  consents: Consents,
+  role: Role,
+) {
   const errors: FieldErrors = {}
   if (!values.email) errors.email = "L'adresse e-mail est requise."
   else if (!EMAIL_REGEX.test(values.email)) errors.email = 'Adresse e-mail invalide.'
@@ -47,6 +70,10 @@ function validate(values: { email: string; username: string; password: string; c
 
   if (!values.confirmPassword) errors.confirmPassword = 'Confirmez votre mot de passe.'
   else if (values.password !== values.confirmPassword) errors.confirmPassword = 'Les mots de passe ne correspondent pas'
+
+  if (!consents.acceptTerms) errors.acceptTerms = CONSENT_ERRORS.acceptTerms
+  if (!consents.confirmAdult) errors.confirmAdult = CONSENT_ERRORS.confirmAdult
+  if (role === 'CREATOR' && !consents.acceptCreatorTerms) errors.acceptCreatorTerms = CONSENT_ERRORS.acceptCreatorTerms
   return errors
 }
 
@@ -55,6 +82,9 @@ function fieldOfApiMessage(message: string): Field | null {
   if (/^Email|email/.test(message)) return 'email'
   if (/^Username/.test(message)) return 'username'
   if (/^Password/.test(message)) return 'password'
+  if (/terms of use|^acceptTerms/.test(message)) return 'acceptTerms'
+  if (/18 years|^confirmAdult/.test(message)) return 'confirmAdult'
+  if (/creator terms|^acceptCreatorTerms/.test(message)) return 'acceptCreatorTerms'
   return null
 }
 
@@ -67,6 +97,7 @@ function RegisterForm() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [role, setRole] = useState<Role>(initialRole)
+  const [consents, setConsents] = useState<Consents>({ acceptTerms: false, confirmAdult: false, acceptCreatorTerms: false })
   const [error, setError] = useState('')
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [submitted, setSubmitted] = useState(false)
@@ -83,9 +114,24 @@ function RegisterForm() {
     setter(value)
     // Re-validate live once the user tried to submit
     if (submitted) {
-      const next = validate({ ...values, [field]: field === 'email' || field === 'username' ? value.trim() : value })
+      const next = validate(
+        { ...values, [field]: field === 'email' || field === 'username' ? value.trim() : value },
+        consents,
+        role,
+      )
       setFieldErrors(next)
     }
+  }
+
+  function updateConsent(field: keyof Consents, checked: boolean) {
+    const next = { ...consents, [field]: checked }
+    setConsents(next)
+    if (submitted) setFieldErrors(validate(values, next, role))
+  }
+
+  function selectRole(next: Role) {
+    setRole(next)
+    if (submitted) setFieldErrors(validate(values, consents, next))
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -93,17 +139,21 @@ function RegisterForm() {
     setError('')
     setSubmitted(true)
 
-    const errors = validate(values)
+    const errors = validate(values, consents, role)
     setFieldErrors(errors)
     if (Object.keys(errors).length > 0) {
-      const first = (['email', 'username', 'password', 'confirmPassword'] as Field[]).find((f) => errors[f])
-      if (first) document.getElementById(`register-${first === 'confirmPassword' ? 'password-confirm' : first}`)?.focus()
+      const first = FIELD_ORDER.find((f) => errors[f])
+      if (first) document.getElementById(fieldInputId(first))?.focus()
       return
     }
 
     setLoading(true)
     try {
-      await register(values.email, values.username, values.password, role)
+      await register(values.email, values.username, values.password, role, {
+        acceptTerms: consents.acceptTerms,
+        confirmAdult: consents.confirmAdult,
+        acceptCreatorTerms: role === 'CREATOR' ? consents.acceptCreatorTerms : undefined,
+      })
       toast({
         title: 'Bienvenue sur FanVIP !',
         description: `Votre compte a été créé. Un e-mail de vérification a été envoyé à ${values.email}.`,
@@ -180,7 +230,7 @@ function RegisterForm() {
                     ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950'
                     : 'border-gray-200 hover:border-gray-300 dark:border-gray-700'
                 }`}
-                onClick={() => setRole('SUBSCRIBER')}
+                onClick={() => selectRole('SUBSCRIBER')}
               >
                 <div className="text-lg font-semibold">Abonné</div>
                 <div className="text-xs text-muted-foreground mt-1">Découvrir du contenu</div>
@@ -195,7 +245,7 @@ function RegisterForm() {
                     ? 'border-purple-600 bg-purple-50 dark:bg-purple-950'
                     : 'border-gray-200 hover:border-gray-300 dark:border-gray-700'
                 }`}
-                onClick={() => setRole('CREATOR')}
+                onClick={() => selectRole('CREATOR')}
               >
                 <div className="text-lg font-semibold">Créateur</div>
                 <div className="text-xs text-muted-foreground mt-1">Partager et gagner</div>
@@ -288,6 +338,47 @@ function RegisterForm() {
               {fieldErrors.confirmPassword}
             </FieldError>
           </div>
+
+          <fieldset className="space-y-3 pt-2" disabled={loading}>
+            <legend className="sr-only">Conditions d’utilisation</legend>
+            <ConsentCheckbox
+              field="acceptTerms"
+              checked={consents.acceptTerms}
+              onChange={(checked) => updateConsent('acceptTerms', checked)}
+              error={fieldErrors.acceptTerms}
+            >
+              J’ai lu et j’accepte les{' '}
+              <Link href="/legal/cgu" target="_blank" className="text-primary underline">
+                CGU
+              </Link>{' '}
+              et la{' '}
+              <Link href="/legal/confidentialite" target="_blank" className="text-primary underline">
+                Politique de confidentialité
+              </Link>
+            </ConsentCheckbox>
+            <ConsentCheckbox
+              field="confirmAdult"
+              checked={consents.confirmAdult}
+              onChange={(checked) => updateConsent('confirmAdult', checked)}
+              error={fieldErrors.confirmAdult}
+            >
+              Je certifie avoir 18 ans ou plus
+            </ConsentCheckbox>
+            {role === 'CREATOR' && (
+              <ConsentCheckbox
+                field="acceptCreatorTerms"
+                checked={consents.acceptCreatorTerms}
+                onChange={(checked) => updateConsent('acceptCreatorTerms', checked)}
+                error={fieldErrors.acceptCreatorTerms}
+              >
+                J’accepte les{' '}
+                <Link href="/legal/conditions-createurs" target="_blank" className="text-primary underline">
+                  Conditions créateurs
+                </Link>{' '}
+                (dont le mandat d’autofacturation)
+              </ConsentCheckbox>
+            )}
+          </fieldset>
         </CardContent>
         <CardFooter className="flex flex-col space-y-4">
           <Button
@@ -308,6 +399,47 @@ function RegisterForm() {
         </CardFooter>
       </form>
     </AuthShell>
+  )
+}
+
+/** Required consent checkbox with its inline error */
+function ConsentCheckbox({
+  field,
+  checked,
+  onChange,
+  error,
+  children,
+}: {
+  field: 'acceptTerms' | 'confirmAdult' | 'acceptCreatorTerms'
+  checked: boolean
+  onChange: (checked: boolean) => void
+  error?: string
+  children: React.ReactNode
+}) {
+  const id = `register-${field}`
+  return (
+    <div className="space-y-1">
+      <div className="flex items-start gap-2">
+        <input
+          id={id}
+          name={field}
+          type="checkbox"
+          data-testid={id}
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          required
+          aria-invalid={!!error}
+          aria-describedby={error ? `${id}-error` : undefined}
+          className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 accent-indigo-600"
+        />
+        <label htmlFor={id} className="text-sm leading-snug">
+          {children}
+        </label>
+      </div>
+      <FieldError id={`${id}-error`} testId={`${id}-error`}>
+        {error}
+      </FieldError>
+    </div>
   )
 }
 

@@ -13,6 +13,11 @@ import {
   ScrollText,
   BarChart3,
   Settings,
+  ClipboardCheck,
+  ShieldCheck,
+  UsersRound,
+  Landmark,
+  Banknote,
 } from 'lucide-react'
 
 type BackOfficeRole = 'ADMIN' | 'MODERATOR'
@@ -29,8 +34,15 @@ const adminLinks: {
   { href: '/admin/users', label: 'Utilisateurs', icon: Users, roles: ['ADMIN'] },
   { href: '/admin/reports', label: 'Signalements', icon: AlertTriangle, roles: ['ADMIN', 'MODERATOR'] },
   { href: '/admin/content', label: 'Contenus', icon: FileText, roles: ['ADMIN'] },
-  { href: '/admin/moderation', label: 'Modération', icon: Shield, roles: ['ADMIN', 'MODERATOR'] },
+  { href: '/admin/moderation', label: 'Modération', icon: Shield, exact: true, roles: ['ADMIN', 'MODERATOR'] },
+  // Compliance queues (card network rules): content reviewed before publication,
+  // identity of creators and co-performers
+  { href: '/admin/moderation/review', label: 'Validation contenus', icon: ClipboardCheck, roles: ['ADMIN', 'MODERATOR'] },
+  { href: '/admin/moderation/kyc', label: 'Identités', icon: ShieldCheck, roles: ['ADMIN', 'MODERATOR'] },
+  { href: '/admin/moderation/co-performers', label: 'Co-participants', icon: UsersRound, roles: ['ADMIN', 'MODERATOR'] },
   { href: '/admin/logs', label: 'Journaux', icon: ScrollText, roles: ['ADMIN'] },
+  { href: '/admin/payouts', label: 'Virements', icon: Banknote, roles: ['ADMIN'] },
+  { href: '/admin/tax', label: 'Fiscalité', icon: Landmark, roles: ['ADMIN'] },
   { href: '/admin/settings', label: 'Paramètres', icon: Settings, roles: ['ADMIN'] },
 ]
 

@@ -1,22 +1,22 @@
 import {
   Controller,
   Post,
+  Put,
   Get,
   Delete,
   Body,
   Query,
-  Headers,
-  RawBodyRequest,
   Req,
   UseGuards,
   Param,
+  ParseUUIDPipe,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { PaymentsService } from './payments.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { Public } from '../auth/decorators/public.decorator';
 import {
   RequestPayoutDto,
   CreateRefundDto,
@@ -25,8 +25,10 @@ import {
   SendTipDto,
   ConfirmPaymentDto,
   CheckoutInfoQueryDto,
+  BillingCountryDto,
 } from './dto/payments.dto';
 import { CheckoutInfoService } from './checkout-info.service';
+import { paymentContext } from './payment-context';
 
 @Controller('payments')
 export class PaymentsController {
@@ -36,37 +38,7 @@ export class PaymentsController {
   ) {}
 
   /**
-   * Stripe Connect - Create account for creator
-   */
-  @Post('connect/create')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CREATOR')
-  async createConnectAccount(@CurrentUser('id') userId: string) {
-    return this.paymentsService.createConnectAccount(userId);
-  }
-
-  /**
-   * Stripe Connect - Get onboarding link
-   */
-  @Get('connect/onboarding-link')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CREATOR')
-  async getOnboardingLink(@CurrentUser('id') userId: string) {
-    return this.paymentsService.getOnboardingLink(userId);
-  }
-
-  /**
-   * Stripe Connect - Check onboarding status
-   */
-  @Get('connect/status')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CREATOR')
-  async getOnboardingStatus(@CurrentUser('id') userId: string) {
-    return this.paymentsService.getOnboardingStatus(userId);
-  }
-
-  /**
-   * Request manual payout
+   * Request a payout of the available balance (SEPA transfer)
    */
   @Post('payout/request')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -99,6 +71,24 @@ export class PaymentsController {
   }
 
   /**
+   * Movements of the creator balance
+   */
+  @Get('balance/history')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CREATOR')
+  async getBalanceHistory(
+    @CurrentUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.paymentsService.getBalanceHistory(
+      userId,
+      page ? Math.max(1, parseInt(page)) : 1,
+      limit ? Math.min(100, Math.max(1, parseInt(limit))) : 20,
+    );
+  }
+
+  /**
    * Get transaction history
    */
   @Get('transactions')
@@ -126,23 +116,7 @@ export class PaymentsController {
   }
 
   /**
-   * Create payment intent (for tips, PPV, etc.)
-   */
-  @Post('create-intent')
-  @UseGuards(JwtAuthGuard)
-  async createPaymentIntent(
-    @CurrentUser('id') userId: string,
-    @Body() body: { amount: number; currency?: string },
-  ) {
-    return this.paymentsService.createPaymentIntent(
-      userId,
-      body.amount,
-      body.currency,
-    );
-  }
-
-  /**
-   * List saved payment methods (cards)
+   * List saved payment methods (cards saved during a payment)
    */
   @Get('methods')
   @UseGuards(JwtAuthGuard)
@@ -151,41 +125,42 @@ export class PaymentsController {
   }
 
   /**
-   * Create setup intent to add a payment method with Stripe Elements
-   */
-  @Post('methods/setup-intent')
-  @UseGuards(JwtAuthGuard)
-  async createSetupIntent(@CurrentUser('id') userId: string) {
-    return this.paymentsService.createSetupIntent(userId);
-  }
-
-  /**
    * Set default payment method
    */
-  @Post('methods/:paymentMethodId/default')
+  @Post('methods/:paymentCardId/default')
   @UseGuards(JwtAuthGuard)
   async setDefaultPaymentMethod(
     @CurrentUser('id') userId: string,
-    @Param('paymentMethodId') paymentMethodId: string,
+    @Param('paymentCardId', ParseUUIDPipe) paymentCardId: string,
   ) {
-    return this.paymentsService.setDefaultPaymentMethod(userId, paymentMethodId);
+    return this.paymentsService.setDefaultPaymentMethod(userId, paymentCardId);
   }
 
   /**
    * Remove a payment method
    */
-  @Delete('methods/:paymentMethodId')
+  @Delete('methods/:paymentCardId')
   @UseGuards(JwtAuthGuard)
   async deletePaymentMethod(
     @CurrentUser('id') userId: string,
-    @Param('paymentMethodId') paymentMethodId: string,
+    @Param('paymentCardId', ParseUUIDPipe) paymentCardId: string,
   ) {
-    return this.paymentsService.deletePaymentMethod(userId, paymentMethodId);
+    return this.paymentsService.deletePaymentMethod(userId, paymentCardId);
   }
 
   /**
-   * Send a tip to a creator (amount in euros). Returns a pending payment to
-   * confirm client-side; the creator is credited once Stripe confirms it.
+   * Billing country of the fan (decides the VAT rate)
+   */
+  @Put('billing-country')
+  @UseGuards(JwtAuthGuard)
+  async setBillingCountry(@CurrentUser('id') userId: string, @Body() dto: BillingCountryDto) {
+    return this.paymentsService.setBillingCountry(userId, dto.country.toUpperCase());
+  }
+
+  /**
+   * Send a tip to a creator (amount in euros excluding VAT). Charges the saved
+   * card, or returns the provider's payment page to redirect to; the creator
+   * is credited once the provider confirms the payment.
    */
   @Post('tip/:creatorId')
   @UseGuards(JwtAuthGuard)
@@ -193,12 +168,13 @@ export class PaymentsController {
     @CurrentUser('id') userId: string,
     @Param('creatorId') creatorId: string,
     @Body() dto: SendTipDto,
+    @Req() request: Request,
   ) {
-    return this.paymentsService.sendTip(userId, creatorId, dto);
+    return this.paymentsService.sendTip(userId, creatorId, dto, paymentContext(request));
   }
 
   /**
-   * Re-check a tip payment with Stripe after client-side confirmation (idempotent)
+   * State of a tip payment (idempotent)
    */
   @Post('tip/:creatorId/confirm')
   @UseGuards(JwtAuthGuard)
@@ -207,12 +183,24 @@ export class PaymentsController {
     @Param('creatorId') creatorId: string,
     @Body() dto: ConfirmPaymentDto,
   ) {
-    return this.paymentsService.confirmTip(userId, creatorId, dto.paymentIntentId);
+    return this.paymentsService.confirmTip(userId, creatorId, dto.transactionId);
   }
 
   /**
-   * What a checkout is about to charge (server price, tip limits) and whether
-   * it can go through (Stripe configured, creator onboarded…)
+   * State of any payment of the fan, for the page the provider sends them back to
+   */
+  @Get('status/:transactionId')
+  @UseGuards(JwtAuthGuard)
+  async getPaymentStatus(
+    @CurrentUser('id') userId: string,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+  ) {
+    return this.paymentsService.getPaymentStatus(userId, transactionId);
+  }
+
+  /**
+   * What a checkout is about to charge (price, VAT of the fan's country, total)
+   * and whether it can go through (payments configured, creator verified…)
    */
   @Get('checkout-info')
   @UseGuards(JwtAuthGuard)
@@ -220,7 +208,7 @@ export class PaymentsController {
     @CurrentUser('id') userId: string,
     @Query() query: CheckoutInfoQueryDto,
   ) {
-    return this.checkoutInfoService.getCheckoutInfo(userId, query.type, query.itemId);
+    return this.checkoutInfoService.getCheckoutInfo(userId, query.type, query.itemId, query.country);
   }
 
   /**
@@ -236,17 +224,18 @@ export class PaymentsController {
   }
 
   /**
-   * Create refund for a transaction
+   * Refund a payment received by the creator (or any payment, for an admin)
    */
   @Post('refund')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CREATOR')
+  @Roles('CREATOR', 'ADMIN')
   async createRefund(
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: { id: string; role: string },
     @Body() dto: CreateRefundDto,
   ) {
     return this.paymentsService.createRefund(
-      userId,
+      user.id,
+      user.role,
       dto.transactionId,
       dto.amount,
       dto.reason,
@@ -281,17 +270,5 @@ export class PaymentsController {
     @Query() filters: GetStatsDto,
   ) {
     return this.paymentsService.getRevenueStats(userId, filters);
-  }
-
-  /**
-   * Stripe webhook endpoint
-   */
-  @Post('webhook')
-  @Public()
-  async handleWebhook(
-    @Headers('stripe-signature') signature: string,
-    @Req() req: RawBodyRequest<Request>,
-  ) {
-    return this.paymentsService.handleWebhook(signature, req.rawBody!);
   }
 }

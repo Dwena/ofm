@@ -11,14 +11,14 @@
 - **Pay-Per-View Content**: Monetize exclusive content beyond subscriptions
 - **Real-time Messaging**: Direct communication with subscribers via WebSocket
 - **Analytics Dashboard**: Track earnings, subscriber growth, and content performance with interactive charts
-- **Automated Payouts**: Stripe Connect integration with automatic transfers
+- **Weekly Payouts**: Internal balance ledger (7-day hold) and weekly SEPA transfers exported by admins, see [docs/PAIEMENTS.md](docs/PAIEMENTS.md)
 - **2FA Security**: TOTP-based two-factor authentication
 
 ### For Subscribers
 
 - **Content Feed**: Browse and discover creator content with filtering
 - **Subscription Management**: Easy subscription and tier management interface
-- **Secure Payments**: Stripe-powered payment processing
+- **Secure Payments**: Card payments through a payment provider (CCBill in production, local simulator in development), VAT included
 - **Real-time Chat**: Direct messaging with favorite creators
 - **Personalized Feed**: Content filtered by active subscriptions
 
@@ -40,7 +40,7 @@
 - **NestJS 10**: Progressive Node.js framework
 - **PostgreSQL 15**: Primary database with Prisma ORM (18 tables)
 - **Redis 7**: Caching, sessions, and message queue (Bull)
-- **Stripe Connect**: Payment processing and automated payouts
+- **Payment provider abstraction**: CCBill (production) / local simulator (`PAYMENT_PROVIDER=fake`), VAT, creator balance ledger and SEPA payouts (see [docs/PAIEMENTS.md](docs/PAIEMENTS.md))
 - **Sharp & FFmpeg**: Media processing and optimization
 - **Socket.io**: Real-time bidirectional communication
 - **JWT**: Authentication with refresh token rotation
@@ -79,7 +79,7 @@ ofm/
 │   │   │   ├── media/          # Media upload & processing
 │   │   │   │   ├── processors/ # Sharp (images) & FFmpeg (videos)
 │   │   │   │   └── storage/    # S3/MinIO integration
-│   │   │   ├── payments/       # Stripe Connect & payouts
+│   │   │   ├── payments/       # Payments, VAT, balance & payouts
 │   │   │   ├── subscriptions/  # Multi-tier subscription logic
 │   │   │   ├── messaging/      # Real-time messaging (WebSocket)
 │   │   │   │   ├── messaging.gateway.ts
@@ -164,7 +164,7 @@ ofm/
 - Docker & Docker Compose
 - PostgreSQL 15
 - Redis 7
-- Stripe account (test mode)
+- No payment account needed in development (local payment simulator)
 
 ### Installation
 
@@ -282,10 +282,26 @@ REDIS_URL=redis://localhost:6379
 JWT_SECRET=your-super-secret-jwt-key
 JWT_REFRESH_SECRET=your-super-secret-refresh-key
 
-# Stripe
-STRIPE_SECRET_KEY=sk_test_xxx
-STRIPE_WEBHOOK_SECRET=whsec_xxx
-STRIPE_CONNECT_CLIENT_ID=ca_xxx
+# Payments (see docs/PAIEMENTS.md and .env.example)
+PAYMENT_PROVIDER=fake            # fake = local simulator, ccbill = production
+PLATFORM_FEE_PERCENTAGE=15
+EARNINGS_HOLD_DAYS=7
+MINIMUM_PAYOUT_AMOUNT=50
+# CCBill (only with PAYMENT_PROVIDER=ccbill)
+CCBILL_ACCOUNT_NUMBER=
+CCBILL_SUBACCOUNT=
+CCBILL_FLEXFORM_ID=
+CCBILL_SALT=
+CCBILL_DATALINK_USERNAME=
+CCBILL_DATALINK_PASSWORD=
+CCBILL_WEBHOOK_TOKEN=
+# CCBILL_WEBHOOK_ALLOWED_IPS=    # optional
+# SEPA payouts (platform bank account) and encryption of creators' IBAN
+PAYOUT_DEBTOR_NAME=
+PAYOUT_DEBTOR_IBAN=
+PAYOUT_DEBTOR_BIC=
+DATA_ENCRYPTION_KEY=
+# Age verification and company details: AGE_VERIFICATION_*, COMPANY_*
 
 # S3/MinIO
 AWS_ACCESS_KEY_ID=minioadmin
@@ -416,7 +432,7 @@ terraform apply
 
 **Supporting:**
 - `Notification` - User notifications
-- `Webhook` - Stripe webhook logs
+- `CreatorBalanceEntry` - Creator balance ledger
 - `RefreshToken` - JWT refresh tokens
 
 ### API Endpoints
@@ -454,14 +470,21 @@ terraform apply
 - `DELETE /:id` - Delete media
 
 #### Payments (`/api/v1/payments`)
-- `POST /connect/create` - Create Stripe Connect account
-- `GET /connect/onboarding-link` - Get onboarding link
-- `GET /connect/status` - Get onboarding status
+- `GET /checkout-info` - Get price incl. VAT before payment
+- `GET /methods` - Get saved cards
+- `PUT /billing-country` - Set billing country (VAT)
 - `GET /earnings` - Get earnings summary
 - `GET /creator/earnings` - Get detailed creator earnings
 - `GET /transactions` - Get transaction history
+- `GET /balance/history` - Get creator balance ledger
 - `POST /payout/request` - Request payout
 - `GET /payouts` - Get payout history
+- `POST /refund` - Refund a transaction
+
+#### Payment webhooks and simulator
+- `POST /webhooks/payments/ccbill?token=...` - CCBill webhook
+- `/payments/simulator/*` - Local payment simulator (`PAYMENT_PROVIDER=fake`, never in production)
+- `/admin/payouts` - Admin SEPA payouts (generate file, mark paid/failed)
 
 #### Subscriptions (`/api/v1/subscriptions`)
 - `GET /my-subscriptions` - Get my subscriptions
@@ -548,7 +571,7 @@ terraform apply
 - ✅ Backend API with NestJS
 - ✅ Authentication with 2FA
 - ✅ Media upload and processing
-- ✅ Stripe Connect integration
+- ✅ Payment provider integration (CCBill / simulator), VAT and SEPA payouts
 - ✅ Frontend with Next.js
 - ✅ Real-time messaging
 - ✅ Analytics dashboard

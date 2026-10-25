@@ -61,6 +61,7 @@ export class ModerationProcessor {
           const analysis = await this.contentModerationService.analyzeContent(
             content.title || '',
             content.description || '',
+            content.caption || '',
           );
 
           if (analysis.shouldAutoReject || analysis.shouldRequireReview) {
@@ -96,6 +97,8 @@ export class ModerationProcessor {
         where: { id: contentId },
         data: {
           status: 'UNDER_REVIEW',
+          isModerated: false,
+          submittedForReviewAt: new Date(),
           moderationNotes: `Auto-flagged: ${keywords.join(', ')}`,
         },
       });
@@ -114,7 +117,7 @@ export class ModerationProcessor {
             type: 'SYSTEM',
             title: 'Contenu à réviser',
             message: `Contenu ${contentId} a été marqué automatiquement pour révision`,
-            linkUrl: `/admin/moderation/content/${contentId}`,
+            linkUrl: `/admin/moderation/review?content=${contentId}`,
             isRead: false,
           },
         });
@@ -174,6 +177,7 @@ export class ModerationProcessor {
           data: {
             status: 'UNDER_REVIEW',
             isModerated: false,
+            submittedForReviewAt: new Date(),
             moderationNotes: `Auto-flagged: ${reportCount} reports received`,
           },
         });
