@@ -680,6 +680,8 @@ describe('StreamingService', () => {
       mockPrismaService.liveStream.findFirst.mockResolvedValue(null);
       mockPrismaService.liveStream.update.mockResolvedValue(row());
       mockPrismaService.streamViewer.updateMany.mockResolvedValue({ count: 0 });
+      // Going live requires a verified creator
+      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'CREATOR', kycStatus: 'VERIFIED', status: 'ACTIVE' });
 
       expectNoIngressSecrets(await service.updateStream('creator-1', 'stream-1', { title: 'New title' }));
       expectNoIngressSecrets(await service.startStream('creator-1', 'stream-1'));

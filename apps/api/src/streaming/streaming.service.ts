@@ -389,7 +389,7 @@ export class StreamingService {
     const cleanReason = reason?.trim() || null;
     let result: any;
     if (stream.status === 'SCHEDULED') {
-      result = withoutStreamKey(
+      result = withoutIngressSecrets(
         await this.prisma.liveStream.update({
           where: { id: streamId },
           data: { status: 'CANCELLED', endedAt: new Date() },
