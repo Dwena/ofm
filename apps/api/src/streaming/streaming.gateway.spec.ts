@@ -255,6 +255,22 @@ describe('StreamingGateway', () => {
       expect(mockStreamingService.updateViewerStats).toHaveBeenCalledWith('stream-1', 1, 1);
     });
 
+    it('never sends the stream key or the RTMP ingest URL to the viewer', async () => {
+      mockStreamingService.getStreamForRealtime.mockResolvedValue({
+        ...liveStream,
+        streamKey: 'stream_secretKey123',
+        streamUrl: 'rtmp://ingest.example.com/live/stream_secretKey123',
+      });
+      const result = await gateway.handleJoinStream(createSocket('s1', 'user-1'), { streamId: 'stream-1' });
+
+      expect(result).toMatchObject({ success: true });
+      expect(result).not.toHaveProperty('streamKey');
+      expect(result).not.toHaveProperty('streamUrl');
+      const sent = JSON.stringify([result, emitted]);
+      expect(sent).not.toContain('stream_secretKey123');
+      expect(sent).not.toContain('rtmp://');
+    });
+
     it('counts a user with several tabs once', async () => {
       await gateway.handleJoinStream(createSocket('s1', 'user-1'), { streamId: 'stream-1' });
       const result = await gateway.handleJoinStream(createSocket('s2', 'user-1'), { streamId: 'stream-1' });

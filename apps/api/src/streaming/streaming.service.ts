@@ -47,10 +47,16 @@ export const MAX_CHAT_MESSAGE_LENGTH = 500;
 export const MIN_PPV_PRICE = 1;
 
 /**
- * The stream key is a secret of the creator's broadcast: never list it
+ * The stream key is a secret of the creator's broadcast, and the RTMP ingest
+ * URL (streamUrl) embeds it: anyone holding either can push video to the
+ * live. Only the creator's own stream detail carries them, never a list or
+ * a viewer response.
  */
-const withoutStreamKey = <T extends { streamKey?: string | null }>({ streamKey: _streamKey, ...stream }: T) =>
-  stream;
+const withoutIngressSecrets = <T extends { streamKey?: string | null; streamUrl?: string | null }>({
+  streamKey: _streamKey,
+  streamUrl: _streamUrl,
+  ...stream
+}: T) => stream;
 
 /**
  * Next milestone of a live (first one not reached, by amount), fetched with
@@ -285,7 +291,7 @@ export class StreamingService {
         },
       },
     });
-    return withoutStreamKey(updated);
+    return withoutIngressSecrets(updated);
   }
 
   /**
@@ -333,7 +339,7 @@ export class StreamingService {
     if (source === 'OBS') {
       await this.bindIngress(userId, streamId);
     }
-    return withoutStreamKey(started);
+    return withoutIngressSecrets(started);
   }
 
   /**
@@ -449,7 +455,7 @@ export class StreamingService {
     // Every video connection of the live ends with its LiveKit room
     await this.closeLiveKitRoom(streamId);
 
-    return withoutStreamKey(ended);
+    return withoutIngressSecrets(ended);
   }
 
   /**
@@ -482,7 +488,7 @@ export class StreamingService {
         viewerCount: 'desc',
       },
     });
-    return streams.map((stream) => withTipGoalSummary(withoutStreamKey(stream)));
+    return streams.map((stream) => withTipGoalSummary(withoutIngressSecrets(stream)));
   }
 
   /**
@@ -513,7 +519,7 @@ export class StreamingService {
         scheduledFor: 'asc',
       },
     });
-    return streams.map((stream) => withTipGoalSummary(withoutStreamKey(stream)));
+    return streams.map((stream) => withTipGoalSummary(withoutIngressSecrets(stream)));
   }
 
   /**
@@ -551,7 +557,7 @@ export class StreamingService {
     });
 
     const publicStreams = streams.map(({ tipGoals = [], ...stream }) => ({
-      ...withoutStreamKey(stream),
+      ...withoutIngressSecrets(stream),
       tipTotal: Number(stream.tipTotal ?? 0),
       tipGoals: tipGoals.map(toTipGoalView),
     }));
@@ -672,7 +678,7 @@ export class StreamingService {
       throw new NotFoundException('Stream not found');
     }
 
-    const { streamKey, ...publicStream } = stream;
+    const { streamKey, streamUrl, ...publicStream } = stream;
     const access: StreamAccessResult = userId
       ? await this.checkViewAccess(userId, stream)
       : { allowed: stream.visibility === 'PUBLIC' && !stream.isPpv, isCreator: false };
@@ -686,8 +692,8 @@ export class StreamingService {
       ...publicStream,
       ...tipState,
       creator,
-      // The stream key is only useful to the creator
-      streamKey: access.isCreator ? streamKey : undefined,
+      // The stream key and the RTMP ingest URL (which embeds it) are secrets of the creator
+      ...(access.isCreator ? { streamKey, streamUrl } : {}),
       hasAccess: access.allowed,
       accessDeniedReason: access.reason ?? null,
       transport: this.liveTransport,
