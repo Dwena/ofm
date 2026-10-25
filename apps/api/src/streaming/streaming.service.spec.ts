@@ -589,4 +589,104 @@ describe('StreamingService', () => {
       expect(result.purchased).toBe(true);
     });
   });
+
+  describe('ingress secrets (stream key, RTMP ingest URL)', () => {
+    const STREAM_KEY = 'stream_secretKey123';
+    const STREAM_URL = `rtmp://ingest.example.com/live/${STREAM_KEY}`;
+    const row = (extra: Record<string, unknown> = {}) => ({
+      ...baseStream,
+      status: 'LIVE',
+      source: 'BROWSER',
+      streamKey: STREAM_KEY,
+      streamUrl: STREAM_URL,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      creator: { id: 'creator-1', username: 'alice', creatorProfile: { allowTips: true, minimumTip: 1 } },
+      ...extra,
+    });
+
+    // Neither field, nor the key anywhere else in the serialized response
+    const expectNoIngressSecrets = (value: unknown) => {
+      const items = Array.isArray(value) ? value : [value];
+      expect(items.length).toBeGreaterThan(0);
+      for (const item of items) {
+        expect(item).not.toHaveProperty('streamKey');
+        expect(item).not.toHaveProperty('streamUrl');
+      }
+      const json = JSON.stringify(value);
+      expect(json).not.toContain(STREAM_KEY);
+      expect(json).not.toContain('rtmp://');
+    };
+
+    it('hides them from viewers of the stream detail, allowed or not', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(row());
+      const allowed = await service.getStreamById('stream-1', 'user-1');
+      expect(allowed.hasAccess).toBe(true);
+      expectNoIngressSecrets(allowed);
+
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(row({ visibility: 'PRIVATE' }));
+      const denied = await service.getStreamById('stream-1', 'user-1');
+      expect(denied.hasAccess).toBe(false);
+      expectNoIngressSecrets(denied);
+    });
+
+    it('hides them from anonymous requests and from admins/moderators', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(row());
+      expectNoIngressSecrets(await service.getStreamById('stream-1'));
+
+      mockPrismaService.user.findUnique.mockResolvedValue({ role: 'ADMIN' });
+      const admin = await service.getStreamById('stream-1', 'admin-1');
+      expect(admin.hasAccess).toBe(true);
+      expectNoIngressSecrets(admin);
+    });
+
+    it('keeps them in the creator\'s own stream detail', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(row());
+      const result = await service.getStreamById('stream-1', 'creator-1');
+      expect(result).toMatchObject({ streamKey: STREAM_KEY, streamUrl: STREAM_URL });
+    });
+
+    it('never lists them in the live and scheduled discovery lists', async () => {
+      mockPrismaService.liveStream.findMany.mockResolvedValue([row(), row({ id: 'stream-2' })]);
+      expectNoIngressSecrets(await service.getLiveStreams('user-1'));
+      // Even the creator's own lives in the discovery list
+      expectNoIngressSecrets(await service.getLiveStreams('creator-1'));
+
+      mockPrismaService.liveStream.findMany.mockResolvedValue([row({ status: 'SCHEDULED' })]);
+      expectNoIngressSecrets(await service.getScheduledStreams());
+      expectNoIngressSecrets(await service.getScheduledStreams('user-1'));
+    });
+
+    it('never lists them in a creator\'s lives, for visitors or the creator', async () => {
+      mockPrismaService.liveStream.findMany.mockResolvedValue([row({ tipGoals: [] })]);
+      expectNoIngressSecrets(await service.getCreatorStreams('creator-1', 'user-1'));
+
+      mockPrismaService.transaction.findMany.mockResolvedValue([]);
+      mockPrismaService.$queryRaw.mockResolvedValue([]);
+      expectNoIngressSecrets(await service.getCreatorStreams('creator-1', 'creator-1'));
+    });
+
+    it('strips them from the update / start / end responses', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue({
+        creatorId: 'creator-1',
+        status: 'SCHEDULED',
+        source: 'BROWSER',
+        startedAt: null,
+      });
+      mockPrismaService.liveStream.findFirst.mockResolvedValue(null);
+      mockPrismaService.liveStream.update.mockResolvedValue(row());
+      mockPrismaService.streamViewer.updateMany.mockResolvedValue({ count: 0 });
+
+      expectNoIngressSecrets(await service.updateStream('creator-1', 'stream-1', { title: 'New title' }));
+      expectNoIngressSecrets(await service.startStream('creator-1', 'stream-1'));
+      expectNoIngressSecrets(await service.endStream('creator-1', 'stream-1'));
+    });
+
+    it('does not load them for the realtime access checks (socket join, LiveKit token)', async () => {
+      mockPrismaService.liveStream.findUnique.mockResolvedValue(null);
+      await service.getStreamForRealtime('stream-1');
+      const { select } = mockPrismaService.liveStream.findUnique.mock.calls[0][0];
+      expect(select).not.toHaveProperty('streamKey');
+      expect(select).not.toHaveProperty('streamUrl');
+    });
+  });
 });
